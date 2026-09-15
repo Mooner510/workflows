@@ -172,16 +172,20 @@ jobs:
           OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
         with:
-          working-directory: services/api
+          working-directory: .
           production-branch: main
+          script: infra/deploy/release.sh
+          arguments-json: '["v1.2.0", "<commit>", "<image-digest>"]'
 ```
+
+`arguments-json`은 비밀값이 아닌 version, commit, digest 같은 script 인자를 안전하게 전달할 때만 사용합니다. Secret은 `env:`로 명시적으로 주입합니다.
 
 공용 deploy action은 다음만 담당합니다.
 
 - `workflow_dispatch` 또는 stable published Release인지 검증
 - manual deploy가 production branch에서 시작됐는지 검증
 - 실제 checkout된 commit이 production branch history에 포함되는지 검증
-- deploy script 경로 검증
+- deploy script 경로와 인자 형식 검증
 - project-owned deploy script 실행
 
 실제 배포 구현은 project에 둡니다.
