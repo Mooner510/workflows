@@ -165,9 +165,19 @@ Gharp runner name/workspace는 job마다 ephemeral이지만 underlying host cach
 └─ tool-cache/    # Java / Go / Node runner tool cache
 ```
 
-언어 setup action은 `RUNNER_TOOL_CACHE=/opt/cache/tool-cache`을 사용합니다. 동일 버전 runtime이 이미 있으면 재다운로드하지 않습니다.
+Gharp가 각 ephemeral runner container를 생성할 때 host cache를 직접 전달해야 합니다.
 
-이 경로는 runner workspace가 아니며 checkout/build 결과를 저장하는 용도로 사용하지 않습니다. 프로젝트별 source/build output은 기존 ephemeral workspace를 사용합니다.
+```text
+-v /opt/cache:/opt/cache
+RUNNER_TOOL_CACHE=/opt/cache/tool-cache
+AGENT_TOOLSDIRECTORY=/opt/cache/tool-cache
+```
+
+`RUNNER_TOOL_CACHE`는 GitHub runner가 제공하는 예약 변수이므로 workflow `env:`로 덮어쓰지 않습니다. 공용 Go/Node/Android workflow는 runner가 `/opt/cache/tool-cache`를 제공하는지 검증하고, 잘못된 runner에서는 즉시 실패합니다.
+
+Android workflow는 `ANDROID_HOME`/`ANDROID_SDK_ROOT=/opt/cache/android-sdk`, `GRADLE_USER_HOME=/opt/cache/gradle`을 사용합니다. 동일 SDK/JDK/runtime이 이미 존재하면 다시 다운로드하지 않습니다.
+
+이 경로는 runner workspace가 아니며 checkout/build 결과를 저장하는 용도로 사용하지 않습니다. 프로젝트별 source/build output은 기존 ephemeral workspace를 사용하고, `/opt/cache`에는 secret/signing material을 저장하지 않습니다.
 
 ## Security
 
@@ -236,7 +246,7 @@ jq
 Docker
 ```
 
-Runner host는 `/opt/cache`를 생성/사용할 수 있어야 합니다. Persistent self-hosted runner에서는 신뢰하지 않는 fork/public PR 코드를 실행하지 않습니다.
+Runner host는 `/opt/cache`를 생성/사용할 수 있어야 하고, Gharp ephemeral runner에는 `/opt/cache:/opt/cache` bind mount와 `/opt/cache/tool-cache` tool-directory 설정이 필요합니다. Persistent self-hosted runner에서는 신뢰하지 않는 fork/public PR 코드를 실행하지 않습니다.
 
 ## Version
 
