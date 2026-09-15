@@ -17,7 +17,7 @@ on:
         type: string
         default: ''
     secrets:
-      private_token:
+      CI_PRIVATE_REPO_TOKEN:
         description: Optional GitHub token with read access to private Go module repositories.
         required: false
 
@@ -46,7 +46,7 @@ jobs:
         shell: bash
         env:
           COMPONENTS_JSON: ${{ inputs.components }}
-          GO_PRIVATE_TOKEN: ${{ secrets.private_token }}
+          CI_PRIVATE_REPO_TOKEN: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
           GOPRIVATE: ${{ inputs.go_private_patterns }}
           GONOSUMDB: ${{ inputs.go_private_patterns }}
         run: |
@@ -67,9 +67,9 @@ jobs:
           export GIT_CONFIG_GLOBAL="$git_config"
           trap 'rm -f "$git_config"' EXIT
 
-          if [[ -n "${GO_PRIVATE_TOKEN:-}" ]]; then
-            echo "::add-mask::$GO_PRIVATE_TOKEN"
-            git config --global url."https://x-access-token:${GO_PRIVATE_TOKEN}@github.com/".insteadOf "https://github.com/"
+          if [[ -n "${CI_PRIVATE_REPO_TOKEN:-}" ]]; then
+            echo "::add-mask::$CI_PRIVATE_REPO_TOKEN"
+            git config --global url."https://x-access-token:${CI_PRIVATE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
           fi
 
           declare -A verified_modules=()
