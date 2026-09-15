@@ -33,6 +33,7 @@ jobs:
   detect:
     name: Detect changes
     runs-on: [self-hosted, linux]
+    timeout-minutes: 10
 
     outputs:
       all_matrix: ${{ steps.detect.outputs.all_matrix }}
@@ -171,8 +172,6 @@ jobs:
             git cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2>/dev/null || git fetch --no-tags origin "$PUSH_BEFORE_SHA"
             git diff --name-only --diff-filter=ACMRD "$PUSH_BEFORE_SHA" "$HEAD_SHA" >"$changed_file_list"
           else
-            # workflow_dispatch, schedule, a new branch, or an event without a reliable base.
-            # Running everything is safer than silently missing a component.
             force_all=true
             echo "No reliable diff base for event '$EVENT_NAME'; every configured component is affected."
           fi
@@ -191,12 +190,10 @@ jobs:
           for ((i = 0; i < count; i++)); do
             component="$(jq -c ".[$i]" <<<"$components")"
             name="$(jq -r '.name' <<<"$component")"
-            path="$(jq -r '.path' <<<"$component")"
             affected="$force_all"
 
             if [[ "$affected" != "true" ]]; then
               while IFS= read -r changed; do
-                # A workflow change can alter the behavior of every component.
                 if [[ "$changed" == ".github/workflows/"* ]]; then
                   affected=true
                   break
@@ -215,7 +212,7 @@ jobs:
 
             if [[ "$affected" == "true" ]]; then
               selected="$(jq -c --argjson component "$component" '. + [$component]' <<<"$selected")"
-              echo "Affected: $name ($path)"
+              echo "Affected: $name ($(jq -r '.path' <<<"$component"))"
             fi
           done
 
@@ -296,4 +293,4 @@ jobs:
     with:
       working_directory: ${{ matrix.component.path }}
       java_version: ${{ matrix.component.java_version || '17' }}
-      gradle_tasks: ${{ matrix.component.gradle_tasks || 'lint test assembleDebug' }}
+      gradle_tasks: ${{ matrix.component.gradle_tasks || 'lintDebug testDebugUnitTest assembleDebug' }}
