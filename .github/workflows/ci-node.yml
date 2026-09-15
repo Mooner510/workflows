@@ -170,7 +170,7 @@ jobs:
               run_script "$PACKAGE_MANAGER" "$component" lint
             fi
 
-            for script in check-types typecheck type-check; do
+            for script in check-types typecheck type-check check; do
               if has_script "$component" "$script"; then
                 run_script "$PACKAGE_MANAGER" "$component" "$script"
                 break
