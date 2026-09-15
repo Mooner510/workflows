@@ -98,8 +98,10 @@ jobs:
                   [[ -f "$cursor/pnpm-lock.yaml" ]] && ((matches+=1))
                   [[ -f "$cursor/yarn.lock" ]] && ((matches+=1))
                   [[ -f "$cursor/package-lock.json" ]] && ((matches+=1))
+                  [[ -f "$cursor/bun.lock" ]] && ((matches+=1))
+                  [[ -f "$cursor/bun.lockb" ]] && ((matches+=1))
                   if (( matches > 1 )); then
-                    echo "::error::Multiple Node lockfiles found in '$cursor'."
+                    echo "::error::Multiple Node package-manager lockfiles found in '$cursor'."
                     exit 1
                   fi
                   if (( matches == 1 )); then
