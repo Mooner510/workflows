@@ -54,8 +54,7 @@ jobs:
           {
             "name": "web",
             "type": "node",
-            "path": "apps/web",
-            "watch": ["packages/ui", "pnpm-lock.yaml"]
+            "path": "apps/web"
           },
           {
             "name": "android",
@@ -65,7 +64,21 @@ jobs:
         ]
 ```
 
-`path`는 항상 감시됩니다. `watch`는 추가 영향 경로입니다.
+기본적으로 `path`는 자동 감시되고 `watch`는 추가 영향 경로입니다.
+
+Repository root가 실제 작업 경로지만 일부 경로 변경에만 반응해야 하면:
+
+```json
+{
+  "name": "go",
+  "type": "go",
+  "path": ".",
+  "watch_path": false,
+  "watch": ["go.mod", "go.sum", "cmd", "internal", "pkg"]
+}
+```
+
+`watch_path: false`는 `path` 자체를 변경 감지에서 제외합니다. 이 경우 `watch`가 최소 하나 필요합니다.
 
 변경된 component만 대상으로 다음을 실행합니다.
 
@@ -85,8 +98,9 @@ detect
 | --- | --- |
 | `name` | component 이름 |
 | `type` | `go`, `node`, `android` |
-| `path` | component 경로 |
+| `path` | component 작업 경로 |
 | `watch` | 추가 영향 경로 |
+| `watch_path` | 기본 `true`; `false`면 `path`를 변경 감지에서 제외 |
 | `go_version` | 기본 `stable` |
 | `node_version` | 기본 `24` |
 | `java_version` | 기본 `17` |
@@ -112,12 +126,12 @@ Node.js:
 ```text
 locked install
 lint
-check-types / typecheck / type-check
+check-types / typecheck / type-check / check
 test
 build
 ```
 
-pnpm/Yarn은 root `package.json`의 `packageManager` 버전을 고정합니다.
+존재하는 script만 실행하며 type/check 계열은 첫 번째로 발견된 하나만 실행합니다. pnpm/Yarn은 root `package.json`의 `packageManager` 버전을 고정합니다.
 
 Android:
 
@@ -140,19 +154,11 @@ assembleDebug
 
 ## CD
 
-CD도 공통 부분은 중앙화합니다. 다만 **전체 deploy workflow는 프로젝트에 둡니다.**
+CD도 공통 부분은 중앙화하지만 **전체 deploy workflow는 프로젝트에 둡니다.**
 
-프로젝트마다 다음이 다르기 때문입니다.
+Project별 Release/image build, GHCR naming, migration, Android release, service rollout, Environment Secret 이름은 서로 다릅니다. 또한 reusable workflow 호출 job에는 caller의 `environment:`를 붙일 수 없으므로, project `deploy.yml`이 `environment: production`을 소유합니다.
 
-- Release/image build와 publish 방식
-- 서비스 개수와 image 이름
-- DB migration
-- Android release
-- 필요한 Environment Secret 이름
-
-GitHub에서 reusable workflow를 호출하는 job에는 `environment:`를 지정할 수 없습니다. 모든 Environment Secret을 범용 workflow에서 자동 전달하기 위해 전체 `secrets` context를 직렬화하는 방식도 사용하지 않습니다.
-
-따라서 프로젝트의 `deploy.yml`이 `environment: production`을 소유하고 필요한 secret만 Deploy step에 명시적으로 주입한 뒤, 공용 `deploy` action을 호출합니다.
+필요한 secret만 Deploy step에 명시적으로 주입하고 공용 deploy action을 호출합니다.
 
 ```yaml
 jobs:
@@ -170,7 +176,6 @@ jobs:
         uses: Mooner510/workflows/.github/actions/deploy@v1
         env:
           OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
         with:
           working-directory: .
           production-branch: main
@@ -178,7 +183,7 @@ jobs:
           arguments-json: '["v1.2.0", "<commit>", "<image-digest>"]'
 ```
 
-`arguments-json`은 비밀값이 아닌 version, commit, digest 같은 script 인자를 안전하게 전달할 때만 사용합니다. Secret은 `env:`로 명시적으로 주입합니다.
+`arguments-json`은 version, commit, digest 같은 비밀이 아닌 script 인자를 JSON string array로 전달합니다. Secret은 `env:`로 주입합니다.
 
 공용 deploy action은 다음만 담당합니다.
 
@@ -188,13 +193,7 @@ jobs:
 - deploy script 경로와 인자 형식 검증
 - project-owned deploy script 실행
 
-실제 배포 구현은 project에 둡니다.
-
-```text
-<component>/.ci/deploy.sh
-```
-
-즉 중앙 repo에는 공통 안전 절차만 있고, GHCR build/publish, migration, service rollout 같은 project-specific CD 로직은 넣지 않습니다.
+GHCR build/publish, migration, service rollout 같은 project-specific CD 로직은 각 project에 둡니다.
 
 Application/runtime secret은 GitHub Environment Secrets를 사용합니다. DB CLI credential과 Android signing material만 서버 장기 보관 예외입니다.
 
