@@ -12,6 +12,10 @@ on:
         required: false
         type: boolean
         default: false
+    secrets:
+      private_repo_token:
+        description: Optional read-only GitHub token for private Go modules.
+        required: false
     outputs:
       changed_components:
         description: JSON array of changed components.
@@ -124,6 +128,14 @@ jobs:
             fi
             if ! jq -e '(.watch_path == null) or ((.watch_path | type) == "boolean")' <<<"$component" >/dev/null; then
               echo "::error::Component '$name' watch_path must be boolean when set."
+              exit 1
+            fi
+            if ! jq -e '(.go_private == null) or ((.go_private | type) == "string")' <<<"$component" >/dev/null; then
+              echo "::error::Component '$name' go_private must be a string when set."
+              exit 1
+            fi
+            if ! jq -e '(.semgrep_advisory_rules == null) or ((.semgrep_advisory_rules | type) == "array" and all(.semgrep_advisory_rules[]; type == "string"))' <<<"$component" >/dev/null; then
+              echo "::error::Component '$name' semgrep_advisory_rules must be an array of rule IDs when set."
               exit 1
             fi
             while IFS= read -r watch; do
@@ -240,6 +252,8 @@ jobs:
     with:
       components: ${{ toJSON(matrix.group.components) }}
       go_version: ${{ matrix.group.version }}
+    secrets:
+      private_repo_token: ${{ secrets.private_repo_token }}
 
   ci_node:
     name: CI / Node ${{ matrix.group.version }}
