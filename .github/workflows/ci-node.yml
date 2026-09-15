@@ -22,7 +22,6 @@ jobs:
     timeout-minutes: 30
     env:
       CI: 'true'
-      BUN_INSTALL_CACHE_DIR: /opt/cache/tool-cache/bun/install-cache
 
     steps:
       - name: Checkout caller repository
@@ -30,15 +29,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Verify persistent tool cache
+      - name: Prepare runner environment
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${RUNNER_TOOL_CACHE:-}" != "/opt/cache/tool-cache" ]]; then
-            echo "::error::Self-hosted runner must provide RUNNER_TOOL_CACHE=/opt/cache/tool-cache."
-            exit 1
+          if [[ "${RUNNER_TOOL_CACHE:-}" == "/opt/cache/tool-cache" ]]; then
+            bun_cache="/opt/cache/tool-cache/bun/install-cache"
+            echo "Using shared /opt/cache runner cache."
+          else
+            bun_cache="${BUN_INSTALL_CACHE_DIR:-$RUNNER_TEMP/bun-install-cache}"
+            echo "Using standard self-hosted runner paths."
           fi
-          mkdir -p "$RUNNER_TOOL_CACHE" "$BUN_INSTALL_CACHE_DIR"
+          mkdir -p "$bun_cache"
+          echo "BUN_INSTALL_CACHE_DIR=$bun_cache" >>"$GITHUB_ENV"
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
