@@ -238,7 +238,7 @@ jobs:
       git_log_opts: ${{ needs.detect.outputs.git_log_opts }}
 
   ci_go:
-    name: Go
+    name: ${{ matrix.group.version && format('Go {0}', matrix.group.version) || 'Go' }}
     needs: detect
     if: needs.detect.outputs.has_go == 'true'
     strategy:
@@ -254,7 +254,7 @@ jobs:
       CI_PRIVATE_REPO_TOKEN: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
 
   ci_node:
-    name: Node
+    name: ${{ matrix.group.version && format('Node {0}', matrix.group.version) || 'Node' }}
     needs: detect
     if: needs.detect.outputs.has_node == 'true'
     strategy:
@@ -267,7 +267,7 @@ jobs:
       node_version: ${{ matrix.group.version }}
 
   ci_android:
-    name: Android
+    name: ${{ matrix.group.version && format('Android Java {0}', matrix.group.version) || 'Android' }}
     needs: detect
     if: needs.detect.outputs.has_android == 'true'
     strategy:
