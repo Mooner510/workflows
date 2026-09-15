@@ -1,0 +1,11 @@
+{
+  "name": "bun-ci-canary",
+  "private": true,
+  "packageManager": "bun@1.3.13",
+  "scripts": {
+    "lint": "bun -e \"console.log('bun lint ok')\"",
+    "check-types": "bun -e \"console.log('bun types ok')\"",
+    "test": "bun -e \"console.log('bun test ok')\"",
+    "build": "bun -e \"console.log('bun build ok')\""
+  }
+}
