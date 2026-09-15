@@ -72,7 +72,6 @@ jobs:
                 echo "::error::Multiple package-manager lockfiles found in '$cursor'. Keep exactly one."
                 exit 1
               fi
-
               if (( ${#matches[@]} == 1 )); then
                 PACKAGE_ROOT="$cursor"
                 PACKAGE_MANAGER="${matches[0]}"
@@ -87,15 +86,16 @@ jobs:
             exit 1
           }
 
-          run_script_if_present() {
+          has_script() {
+            local component="$1"
+            local script="$2"
+            (cd "$component" && node -e 'const p=require("./package.json"); process.exit(p.scripts && p.scripts[process.argv[1]] ? 0 : 1)' "$script")
+          }
+
+          run_script() {
             local manager="$1"
             local component="$2"
             local script="$3"
-
-            if ! (cd "$component" && node -e 'const p=require("./package.json"); process.exit(p.scripts && p.scripts[process.argv[1]] ? 0 : 1)' "$script"); then
-              return 1
-            fi
-
             case "$manager" in
               npm)  (cd "$component" && npm run "$script") ;;
               pnpm) (cd "$component" && pnpm run "$script") ;;
@@ -161,15 +161,23 @@ jobs:
             fi
 
             echo "==> Node component: $name"
-            run_script_if_present "$PACKAGE_MANAGER" "$component" lint || true
+            if has_script "$component" lint; then
+              run_script "$PACKAGE_MANAGER" "$component" lint
+            fi
 
             for script in check-types typecheck type-check; do
-              if run_script_if_present "$PACKAGE_MANAGER" "$component" "$script"; then
+              if has_script "$component" "$script"; then
+                run_script "$PACKAGE_MANAGER" "$component" "$script"
                 break
               fi
             done
 
-            run_script_if_present "$PACKAGE_MANAGER" "$component" test || true
-            run_script_if_present "$PACKAGE_MANAGER" "$component" build || true
+            if has_script "$component" test; then
+              run_script "$PACKAGE_MANAGER" "$component" test
+            fi
+            if has_script "$component" build; then
+              run_script "$PACKAGE_MANAGER" "$component" build
+            fi
+
             checked_components[$component]=1
           done < <(jq -c '.[]' <<<"$components")
