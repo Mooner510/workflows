@@ -1,0 +1,44 @@
+name: Deploy entrypoint
+description: Validate and execute a repository-owned deployment script from a trusted caller job.
+
+inputs:
+  working-directory:
+    description: Component root relative to the caller repository.
+    required: true
+  script:
+    description: Deployment script relative to the component root.
+    required: false
+    default: .ci/deploy.sh
+
+runs:
+  using: composite
+  steps:
+    - name: Validate and run deployment script
+      shell: bash
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        DEPLOY_SCRIPT: ${{ inputs.script }}
+      run: |
+        set -euo pipefail
+
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
+
+        if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
+          echo "::error::working-directory must resolve inside the caller repository."
+          exit 1
+        fi
+
+        if [[ -z "$DEPLOY_SCRIPT" ]] || [[ "$DEPLOY_SCRIPT" == /* ]] || [[ "$DEPLOY_SCRIPT" == ".." || "$DEPLOY_SCRIPT" == ../* || "$DEPLOY_SCRIPT" == */../* || "$DEPLOY_SCRIPT" == */.. ]]; then
+          echo "::error::script must be a safe path relative to the component."
+          exit 1
+        fi
+
+        script="$(realpath -e "$component/$DEPLOY_SCRIPT" 2>/dev/null || true)"
+        if [[ -z "$script" ]] || [[ "$script" != "$component/"* ]] || [[ ! -f "$script" ]]; then
+          echo "::error::Deployment script '$DEPLOY_SCRIPT' must be a file inside the component."
+          exit 1
+        fi
+
+        cd "$component"
+        bash "$script"
