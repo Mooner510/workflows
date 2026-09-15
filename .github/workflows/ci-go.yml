@@ -11,6 +11,10 @@ on:
         required: false
         type: string
         default: stable
+    secrets:
+      private_repo_token:
+        description: Optional read-only GitHub token for private Go modules.
+        required: false
 
 permissions:
   contents: read
@@ -37,6 +41,7 @@ jobs:
         shell: bash
         env:
           COMPONENTS_JSON: ${{ inputs.components }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.private_repo_token }}
         run: |
           set -euo pipefail
 
@@ -47,6 +52,21 @@ jobs:
           if [[ "$(jq 'type' <<<"$components")" != '"array"' ]] || [[ "$(jq 'length' <<<"$components")" -eq 0 ]]; then
             echo "::error::components must be a non-empty JSON array."
             exit 1
+          fi
+
+          private_patterns="$(jq -r '[.[] | (.go_private // empty)] | map(select(length > 0)) | unique | join(",")' <<<"$components")"
+          if [[ -n "$private_patterns" ]]; then
+            if [[ -z "${PRIVATE_REPO_TOKEN:-}" ]]; then
+              echo "::error::A private Go module is configured ($private_patterns), but private_repo_token was not provided."
+              exit 1
+            fi
+            export GOPRIVATE="$private_patterns"
+            export GONOSUMDB="$private_patterns"
+            auth="$(printf 'x-access-token:%s' "$PRIVATE_REPO_TOKEN" | base64 | tr -d '\n')"
+            export GIT_CONFIG_COUNT=1
+            export GIT_CONFIG_KEY_0='http.https://github.com/.extraheader'
+            export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
+            unset auth
           fi
 
           declare -A verified_modules=()
