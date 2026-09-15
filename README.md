@@ -141,6 +141,8 @@ testDebugUnitTest
 assembleDebug
 ```
 
+Android SDK command-line tools와 라이선스는 CI가 자동으로 준비하며, Gradle이 프로젝트에 필요한 SDK 패키지를 내려받을 수 있습니다.
+
 ## Security
 
 공용 Security는 다음 네 도구만 사용합니다.
@@ -207,8 +209,6 @@ Git
 jq
 Docker
 ```
-
-Android CI에는 Android SDK가 추가로 필요합니다.
 
 Persistent self-hosted runner에서는 신뢰하지 않는 fork/public PR 코드를 실행하지 않습니다.
 
