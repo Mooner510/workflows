@@ -1,0 +1,24 @@
+name: Bun CI Canary
+
+on:
+  push:
+    branches:
+      - feature/bun-node-ci
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    uses: ./.github/workflows/ci-node.yml
+    with:
+      components: |
+        [
+          {
+            "name": "bun-canary",
+            "type": "node",
+            "path": "test/bun-ci",
+            "node_version": "24"
+          }
+        ]
+      node_version: '24'
