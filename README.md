@@ -22,7 +22,7 @@
 runs-on: [self-hosted, linux]
 ```
 
-> `v1` tag 생성 전 테스트는 정확한 commit SHA를 사용합니다.
+`v1`은 검증된 v1 계열 최신 버전을 가리키는 **movable stable branch**입니다. Caller는 기본적으로 `@v1`을 사용하고, 중앙 변경은 검증 완료 후에만 `v1` ref를 앞으로 이동합니다.
 
 ## CI
 
@@ -214,10 +214,10 @@ Persistent self-hosted runner에서는 신뢰하지 않는 fork/public PR 코드
 
 ## Version
 
-안정 버전은 major tag를 사용합니다.
+기본 호출은 movable major ref를 사용합니다.
 
 ```text
 @v1
 ```
 
-더 강한 고정이 필요하면 full commit SHA를 사용합니다.
+`v1`은 검증된 v1 계열 변경에 대해서만 앞으로 이동합니다. 실행을 특정 구현에 완전히 고정해야 하는 caller만 full commit SHA를 사용합니다.
