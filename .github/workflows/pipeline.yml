@@ -41,8 +41,11 @@ jobs:
     outputs:
       all_components: ${{ steps.detect.outputs.all_components }}
       go_groups: ${{ steps.detect.outputs.go_groups }}
+      go_versions: ${{ steps.detect.outputs.go_versions }}
       node_groups: ${{ steps.detect.outputs.node_groups }}
+      node_versions: ${{ steps.detect.outputs.node_versions }}
       android_groups: ${{ steps.detect.outputs.android_groups }}
+      android_versions: ${{ steps.detect.outputs.android_versions }}
       has_changes: ${{ steps.detect.outputs.has_changes }}
       has_go: ${{ steps.detect.outputs.has_go }}
       has_node: ${{ steps.detect.outputs.has_node }}
@@ -208,9 +211,12 @@ jobs:
           node_components="$(jq -c '[.[] | select(.type == "node")]' <<<"$selected")"
           android_components="$(jq -c '[.[] | select(.type == "android")]' <<<"$selected")"
 
-          go_groups="$(jq -c 'group_by(.go_version // "stable") | map({version:(.[0].go_version // "stable"), components:.})' <<<"$go_components")"
-          node_groups="$(jq -c 'group_by(.node_version // "24") | map({version:(.[0].node_version // "24"), components:.})' <<<"$node_components")"
-          android_groups="$(jq -c 'group_by(.java_version // "17") | map({version:(.[0].java_version // "17"), components:.})' <<<"$android_components")"
+          go_groups="$(jq -c 'group_by(.go_version // "stable") | map({key:(.[0].go_version // "stable"), value:.}) | from_entries' <<<"$go_components")"
+          node_groups="$(jq -c 'group_by(.node_version // "24") | map({key:(.[0].node_version // "24"), value:.}) | from_entries' <<<"$node_components")"
+          android_groups="$(jq -c 'group_by(.java_version // "17") | map({key:(.[0].java_version // "17"), value:.}) | from_entries' <<<"$android_components")"
+          go_versions="$(jq -c 'keys' <<<"$go_groups")"
+          node_versions="$(jq -c 'keys' <<<"$node_groups")"
+          android_versions="$(jq -c 'keys' <<<"$android_groups")"
 
           bool_for_length() {
             [[ "$(jq 'length' <<<"$1")" -gt 0 ]] && printf 'true' || printf 'false'
@@ -219,8 +225,11 @@ jobs:
           {
             echo "all_components=$selected"
             echo "go_groups=$go_groups"
+            echo "go_versions=$go_versions"
             echo "node_groups=$node_groups"
+            echo "node_versions=$node_versions"
             echo "android_groups=$android_groups"
+            echo "android_versions=$android_versions"
             echo "has_changes=$(bool_for_length "$selected")"
             echo "has_go=$(bool_for_length "$go_components")"
             echo "has_node=$(bool_for_length "$node_components")"
@@ -238,43 +247,43 @@ jobs:
       git_log_opts: ${{ needs.detect.outputs.git_log_opts }}
 
   ci_go:
-    name: ${{ matrix.group.version && format('Go {0}', matrix.group.version) || 'Go' }}
+    name: Go
     needs: detect
     if: needs.detect.outputs.has_go == 'true'
     strategy:
       fail-fast: false
       matrix:
-        group: ${{ fromJSON(needs.detect.outputs.go_groups) }}
+        version: ${{ fromJSON(needs.detect.outputs.go_versions) }}
     uses: ./.github/workflows/ci-go.yml
     with:
-      components: ${{ toJSON(matrix.group.components) }}
-      go_version: ${{ matrix.group.version }}
+      components: ${{ toJSON(fromJSON(needs.detect.outputs.go_groups)[matrix.version]) }}
+      go_version: ${{ matrix.version }}
       go_private_patterns: ${{ inputs.go_private_patterns }}
     secrets:
       CI_PRIVATE_REPO_TOKEN: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
 
   ci_node:
-    name: ${{ matrix.group.version && format('Node {0}', matrix.group.version) || 'Node' }}
+    name: Node
     needs: detect
     if: needs.detect.outputs.has_node == 'true'
     strategy:
       fail-fast: false
       matrix:
-        group: ${{ fromJSON(needs.detect.outputs.node_groups) }}
+        version: ${{ fromJSON(needs.detect.outputs.node_versions) }}
     uses: ./.github/workflows/ci-node.yml
     with:
-      components: ${{ toJSON(matrix.group.components) }}
-      node_version: ${{ matrix.group.version }}
+      components: ${{ toJSON(fromJSON(needs.detect.outputs.node_groups)[matrix.version]) }}
+      node_version: ${{ matrix.version }}
 
   ci_android:
-    name: ${{ matrix.group.version && format('Android Java {0}', matrix.group.version) || 'Android' }}
+    name: Android
     needs: detect
     if: needs.detect.outputs.has_android == 'true'
     strategy:
       fail-fast: false
       matrix:
-        group: ${{ fromJSON(needs.detect.outputs.android_groups) }}
+        version: ${{ fromJSON(needs.detect.outputs.android_versions) }}
     uses: ./.github/workflows/ci-android.yml
     with:
-      components: ${{ toJSON(matrix.group.components) }}
-      java_version: ${{ matrix.group.version }}
+      components: ${{ toJSON(fromJSON(needs.detect.outputs.android_groups)[matrix.version]) }}
+      java_version: ${{ matrix.version }}
