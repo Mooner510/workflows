@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       type:
-        description: Component type: go, node, or android.
+        description: 'Component type: go, node, or android.'
         required: true
         type: string
       version:
