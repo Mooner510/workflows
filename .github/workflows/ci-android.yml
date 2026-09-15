@@ -14,7 +14,7 @@ on:
         description: Space-separated Gradle tasks.
         required: false
         type: string
-        default: lint test assembleDebug
+        default: lintDebug testDebugUnitTest assembleDebug
 
 permissions:
   contents: read
@@ -23,6 +23,7 @@ jobs:
   ci:
     name: Android
     runs-on: [self-hosted, linux]
+    timeout-minutes: 45
 
     steps:
       - name: Checkout caller repository
