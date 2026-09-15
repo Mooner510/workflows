@@ -67,8 +67,9 @@ runs:
           exit 1
         fi
 
-        if ! git merge-base --is-ancestor "$GITHUB_SHA" "$production_ref"; then
-          echo "::error::Commit '$GITHUB_SHA' is not contained in production branch '$PRODUCTION_BRANCH'."
+        deployment_sha="$(git rev-parse HEAD)"
+        if ! git merge-base --is-ancestor "$deployment_sha" "$production_ref"; then
+          echo "::error::Checked-out commit '$deployment_sha' is not contained in production branch '$PRODUCTION_BRANCH'."
           exit 1
         fi
 
