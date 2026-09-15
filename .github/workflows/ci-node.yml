@@ -18,6 +18,7 @@ jobs:
   ci:
     name: Node
     runs-on: [self-hosted, linux]
+    timeout-minutes: 30
     env:
       CI: 'true'
 
@@ -85,16 +86,25 @@ jobs:
             exit 1
           fi
 
+          if [[ "$package_manager" == "pnpm" ]]; then
+            if [[ ! -f "$package_root/package.json" ]]; then
+              echo "::error::pnpm requires package.json at the package-manager root with a pinned packageManager field."
+              exit 1
+            fi
+
+            package_manager_field="$(node -p 'require(process.argv[1]).packageManager || ""' "$package_root/package.json")"
+            if [[ ! "$package_manager_field" =~ ^pnpm@[0-9] ]]; then
+              echo "::error::pnpm projects must pin packageManager, for example \"pnpm@10.17.1\"."
+              exit 1
+            fi
+          fi
+
           if [[ "$package_manager" == "pnpm" || "$package_manager" == "yarn" ]]; then
             if ! command -v corepack >/dev/null; then
               echo "::error::corepack is required for $package_manager on the self-hosted runner."
               exit 1
             fi
             corepack enable
-
-            if [[ -f "$package_root/package.json" ]] && ! node -e 'const p=require(process.argv[1]); process.exit(typeof p.packageManager === "string" ? 0 : 1)' "$package_root/package.json"; then
-              echo "::warning::$package_manager is used without packageManager in the package-root package.json; pinning the package-manager version is recommended."
-            fi
           fi
 
           {
