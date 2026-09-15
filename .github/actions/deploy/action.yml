@@ -28,8 +28,17 @@ runs:
         command -v git >/dev/null || { echo "::error::git is required on the self-hosted runner."; exit 1; }
         command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
 
+        if ! git check-ref-format --branch "$PRODUCTION_BRANCH" >/dev/null 2>&1; then
+          echo "::error::Invalid production-branch '$PRODUCTION_BRANCH'."
+          exit 1
+        fi
+
         case "$GITHUB_EVENT_NAME" in
           workflow_dispatch)
+            if [[ "$GITHUB_REF" != "refs/heads/$PRODUCTION_BRANCH" ]]; then
+              echo "::error::Manual production deployment must be dispatched from branch '$PRODUCTION_BRANCH'."
+              exit 1
+            fi
             ;;
           release)
             action="$(jq -r '.action // empty' "$GITHUB_EVENT_PATH")"
@@ -51,11 +60,6 @@ runs:
             exit 1
             ;;
         esac
-
-        if ! git check-ref-format --branch "$PRODUCTION_BRANCH" >/dev/null 2>&1; then
-          echo "::error::Invalid production-branch '$PRODUCTION_BRANCH'."
-          exit 1
-        fi
 
         production_ref="refs/remotes/origin/$PRODUCTION_BRANCH"
         if ! git show-ref --verify --quiet "$production_ref"; then
