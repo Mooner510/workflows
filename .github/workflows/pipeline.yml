@@ -122,9 +122,18 @@ jobs:
               echo "::error::Component '$name' watch must be an array of repository-relative path strings."
               exit 1
             fi
+            if ! jq -e '(.watch_path == null) or ((.watch_path | type) == "boolean")' <<<"$component" >/dev/null; then
+              echo "::error::Component '$name' watch_path must be boolean when set."
+              exit 1
+            fi
             while IFS= read -r watch; do
               validate_relative_path "$watch" "Component '$name' watch entry"
             done < <(jq -r '.watch // [] | .[]' <<<"$component")
+
+            if [[ "$(jq -r '.watch_path // true' <<<"$component")" == "false" ]] && [[ "$(jq '.watch // [] | length' <<<"$component")" -eq 0 ]]; then
+              echo "::error::Component '$name' must define at least one watch entry when watch_path is false."
+              exit 1
+            fi
           done
 
           force_all=false
@@ -176,7 +185,7 @@ jobs:
                     affected=true
                     break 2
                   fi
-                done < <(jq -r '([.path] + (.watch // [])) | unique | .[]' <<<"$component")
+                done < <(jq -r '((if (.watch_path // true) then [.path] else [] end) + (.watch // [])) | unique | .[]' <<<"$component")
               done <"$changed_file_list"
             fi
 
