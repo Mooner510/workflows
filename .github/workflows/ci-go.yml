@@ -29,12 +29,20 @@ jobs:
     name: Go
     runs-on: [self-hosted, linux]
     timeout-minutes: 30
+    env:
+      RUNNER_TOOL_CACHE: /opt/cache/tool-cache
 
     steps:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Prepare persistent tool cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TOOL_CACHE"
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
