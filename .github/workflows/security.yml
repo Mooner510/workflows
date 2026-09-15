@@ -49,8 +49,10 @@ jobs:
 
           scan_targets="$RUNNER_TEMP/workflows-security-targets.txt"
           dependency_targets="$RUNNER_TEMP/workflows-dependency-targets.txt"
+          advisory_rules="$RUNNER_TEMP/workflows-semgrep-advisory-rules.txt"
           : >"$scan_targets"
           : >"$dependency_targets"
+          : >"$advisory_rules"
 
           while IFS= read -r component_json; do
             name="$(jq -r '.name // empty' <<<"$component_json")"
@@ -66,6 +68,15 @@ jobs:
               echo "::error::Component '$name' must resolve inside the repository."
               exit 1
             fi
+
+            while IFS= read -r rule; do
+              [[ -z "$rule" ]] && continue
+              if [[ ! "$rule" =~ ^[A-Za-z0-9._-]+$ ]]; then
+                echo "::error::Invalid Semgrep advisory rule ID '$rule' for component '$name'."
+                exit 1
+              fi
+              printf '%s\n' "$rule" >>"$advisory_rules"
+            done < <(jq -r '.semgrep_advisory_rules // [] | .[]' <<<"$component_json")
 
             component_rel="$(realpath --relative-to="$workspace" "$component")"
             [[ "$component_rel" == "." ]] && component_container="/src" || component_container="/src/$component_rel"
@@ -112,9 +123,11 @@ jobs:
 
           sort -u -o "$scan_targets" "$scan_targets"
           sort -u -o "$dependency_targets" "$dependency_targets"
+          sort -u -o "$advisory_rules" "$advisory_rules"
           {
             echo "scan_targets=$scan_targets"
             echo "dependency_targets=$dependency_targets"
+            echo "advisory_rules=$advisory_rules"
           } >>"$GITHUB_OUTPUT"
 
       - name: Stage workspace for Docker scanners
@@ -133,7 +146,7 @@ jobs:
           trap 'docker rm -f "$helper" >/dev/null 2>&1 || true' EXIT
           docker cp "$GITHUB_WORKSPACE/." "$helper:/src"
 
-      - name: Semgrep SAST
+      - name: Semgrep SAST findings
         shell: bash
         env:
           TARGET_FILE: ${{ steps.targets.outputs.scan_targets }}
@@ -145,7 +158,34 @@ jobs:
             --security-opt=no-new-privileges \
             -v "$SECURITY_WORKSPACE_VOLUME:/src:ro" \
             semgrep/semgrep@sha256:012c8fe81c14da2d7691b90fcd826ce07f460a3301442b16c460575c87d3efb6 \
-            semgrep scan --config p/default --error --metrics off --disable-version-check "${targets[@]}"
+            semgrep scan --config p/default --metrics off --disable-version-check "${targets[@]}"
+
+      - name: Semgrep SAST blocking policy
+        shell: bash
+        env:
+          TARGET_FILE: ${{ steps.targets.outputs.scan_targets }}
+          ADVISORY_RULE_FILE: ${{ steps.targets.outputs.advisory_rules }}
+        run: |
+          set -euo pipefail
+          mapfile -t targets <"$TARGET_FILE"
+          exclude_args=()
+          while IFS= read -r rule; do
+            [[ -z "$rule" ]] && continue
+            exclude_args+=(--exclude-rule "$rule")
+          done <"$ADVISORY_RULE_FILE"
+
+          if (( ${#exclude_args[@]} > 0 )); then
+            echo "Semgrep advisory-only rules:"
+            sed 's/^/  - /' "$ADVISORY_RULE_FILE"
+          fi
+
+          docker run --rm \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges \
+            -v "$SECURITY_WORKSPACE_VOLUME:/src:ro" \
+            semgrep/semgrep@sha256:012c8fe81c14da2d7691b90fcd826ce07f460a3301442b16c460575c87d3efb6 \
+            semgrep scan --config p/default --error --metrics off --disable-version-check \
+              "${exclude_args[@]}" "${targets[@]}"
 
       - name: OSV dependency vulnerabilities
         shell: bash
