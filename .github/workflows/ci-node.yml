@@ -46,157 +46,47 @@ jobs:
           node-version: ${{ inputs.node_version }}
           package-manager-cache: false
 
-      - name: Detect package managers
-        id: managers
+      - name: Detect Bun project
+        id: bun
         shell: bash
         env:
           COMPONENTS_JSON: ${{ inputs.components }}
         run: |
           set -euo pipefail
 
-          command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
           workspace="$(realpath "$GITHUB_WORKSPACE")"
           components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
 
-          if [[ "$(jq 'type' <<<"$components")" != '"array"' ]] || [[ "$(jq 'length' <<<"$components")" -eq 0 ]]; then
-            echo "::error::components must be a non-empty JSON array."
-            exit 1
-          fi
-
-          declare -A bun_versions=()
-
           while IFS= read -r component_json; do
-            name="$(jq -r '.name // empty' <<<"$component_json")"
             path="$(jq -r '.path // empty' <<<"$component_json")"
             component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
-
-            if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
-              echo "::error::Node component '$name' must resolve inside the repository."
-              exit 1
-            fi
+            [[ -n "$component" ]] || continue
 
             cursor="$component"
-            root=""
-            manager=""
-
             while :; do
-              matches=()
-              [[ -f "$cursor/pnpm-lock.yaml" ]] && matches+=("pnpm")
-              [[ -f "$cursor/yarn.lock" ]] && matches+=("yarn")
-              [[ -f "$cursor/package-lock.json" ]] && matches+=("npm")
-              [[ -f "$cursor/bun.lock" ]] && matches+=("bun")
-              [[ -f "$cursor/bun.lockb" ]] && matches+=("bun")
-
-              if (( ${#matches[@]} > 1 )); then
-                echo "::error::Multiple package-manager lockfiles found in '$cursor'. Keep exactly one."
-                exit 1
+              if [[ -f "$cursor/bun.lock" || -f "$cursor/bun.lockb" ]]; then
+                [[ -f "$cursor/package.json" ]] || {
+                  echo "::error::Bun package root must contain package.json."
+                  exit 1
+                }
+                relative="$(realpath --relative-to="$workspace" "$cursor/package.json")"
+                echo "required=true" >>"$GITHUB_OUTPUT"
+                echo "version_file=$relative" >>"$GITHUB_OUTPUT"
+                exit 0
               fi
-              if (( ${#matches[@]} == 1 )); then
-                root="$cursor"
-                manager="${matches[0]}"
-                break
-              fi
-
               [[ "$cursor" == "$workspace" ]] && break
               cursor="$(dirname "$cursor")"
             done
-
-            if [[ -z "$root" ]]; then
-              echo "::error::No package-manager lockfile found from Node component '$name' up to the repository root."
-              exit 1
-            fi
-
-            if [[ "$manager" == "bun" ]]; then
-              if [[ ! -f "$root/package.json" ]]; then
-                echo "::error::Bun requires package.json at the package-manager root."
-                exit 1
-              fi
-
-              package_manager_field="$(node -p 'require(process.argv[1]).packageManager || ""' "$root/package.json")"
-              if [[ ! "$package_manager_field" =~ ^bun@[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)*$ ]]; then
-                echo "::error::Bun projects must pin packageManager, for example \"bun@1.4.2\"."
-                exit 1
-              fi
-
-              bun_version="${package_manager_field#bun@}"
-              bun_versions["$bun_version"]=1
-            fi
           done < <(jq -c '.[]' <<<"$components")
 
-          if (( ${#bun_versions[@]} > 1 )); then
-            echo "::error::All Bun package roots in one Node CI job must use the same pinned Bun version."
-            printf 'Found Bun versions: %s\n' "${!bun_versions[*]}"
-            exit 1
-          fi
-
-          if (( ${#bun_versions[@]} == 1 )); then
-            echo "bun_required=true" >>"$GITHUB_OUTPUT"
-            echo "bun_version=${!bun_versions[@]}" >>"$GITHUB_OUTPUT"
-          else
-            echo "bun_required=false" >>"$GITHUB_OUTPUT"
-            echo "bun_version=" >>"$GITHUB_OUTPUT"
-          fi
-
-      - name: Restore Bun from persistent tool cache
-        if: steps.managers.outputs.bun_required == 'true'
-        shell: bash
-        env:
-          BUN_VERSION: ${{ steps.managers.outputs.bun_version }}
-        run: |
-          set -euo pipefail
-
-          case "${RUNNER_ARCH:-}" in
-            X64) bun_arch="x64" ;;
-            ARM64) bun_arch="arm64" ;;
-            *)
-              echo "::error::Unsupported runner architecture for Bun: ${RUNNER_ARCH:-unknown}."
-              exit 1
-              ;;
-          esac
-
-          cached="$RUNNER_TOOL_CACHE/bun/runtime/$BUN_VERSION/$bun_arch/bun"
-          bun_bin="$HOME/.bun/bin"
-          mkdir -p "$bun_bin"
-
-          if [[ -x "$cached" ]]; then
-            install -m 0755 "$cached" "$bun_bin/bun"
-            ln -sf bun "$bun_bin/bunx"
-          fi
+          echo "required=false" >>"$GITHUB_OUTPUT"
+          echo "version_file=" >>"$GITHUB_OUTPUT"
 
       - name: Set up Bun
-        if: steps.managers.outputs.bun_required == 'true'
+        if: steps.bun.outputs.required == 'true'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: ${{ steps.managers.outputs.bun_version }}
-          no-cache: true
-
-      - name: Persist Bun in tool cache
-        if: steps.managers.outputs.bun_required == 'true'
-        shell: bash
-        env:
-          BUN_VERSION: ${{ steps.managers.outputs.bun_version }}
-        run: |
-          set -euo pipefail
-
-          case "${RUNNER_ARCH:-}" in
-            X64) bun_arch="x64" ;;
-            ARM64) bun_arch="arm64" ;;
-            *)
-              echo "::error::Unsupported runner architecture for Bun: ${RUNNER_ARCH:-unknown}."
-              exit 1
-              ;;
-          esac
-
-          bun_path="$(command -v bun)"
-          target_dir="$RUNNER_TOOL_CACHE/bun/runtime/$BUN_VERSION/$bun_arch"
-          target="$target_dir/bun"
-          mkdir -p "$target_dir"
-
-          if [[ ! -x "$target" ]]; then
-            temp="$target.tmp.$$"
-            install -m 0755 "$bun_path" "$temp"
-            mv -f "$temp" "$target"
-          fi
+          bun-version-file: ${{ steps.bun.outputs.version_file }}
 
       - name: Install and check affected Node components
         shell: bash
@@ -300,9 +190,18 @@ jobs:
                 echo "::error::yarn projects must pin packageManager, for example \"yarn@4.9.2\"."
                 exit 1
               fi
-              if [[ "$PACKAGE_MANAGER" == "bun" ]] && [[ ! "$package_manager_field" =~ ^bun@[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)*$ ]]; then
-                echo "::error::Bun projects must pin packageManager, for example \"bun@1.4.2\"."
-                exit 1
+              if [[ "$PACKAGE_MANAGER" == "bun" ]]; then
+                if [[ ! "$package_manager_field" =~ ^bun@[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                  echo "::error::Bun projects must pin packageManager, for example \"bun@1.4.2\"."
+                  exit 1
+                fi
+                command -v bun >/dev/null || { echo "::error::bun is required for Bun projects."; exit 1; }
+                expected_bun="${package_manager_field#bun@}"
+                actual_bun="$(bun --version)"
+                if [[ "$actual_bun" != "$expected_bun" ]]; then
+                  echo "::error::All Bun package roots in one Node CI job must use the same pinned Bun version. Expected $expected_bun, active $actual_bun."
+                  exit 1
+                fi
               fi
             fi
 
@@ -328,7 +227,6 @@ jobs:
                   fi
                   ;;
                 bun)
-                  command -v bun >/dev/null || { echo "::error::bun is required for Bun projects."; exit 1; }
                   (cd "$PACKAGE_ROOT" && bun install --frozen-lockfile)
                   ;;
               esac
