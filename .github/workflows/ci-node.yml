@@ -22,7 +22,6 @@ jobs:
     timeout-minutes: 30
     env:
       CI: 'true'
-      RUNNER_TOOL_CACHE: /opt/cache/tool-cache
 
     steps:
       - name: Checkout caller repository
@@ -30,10 +29,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Prepare persistent tool cache
+      - name: Verify persistent tool cache
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${RUNNER_TOOL_CACHE:-}" != "/opt/cache/tool-cache" ]]; then
+            echo "::error::Self-hosted runner must provide RUNNER_TOOL_CACHE=/opt/cache/tool-cache."
+            exit 1
+          fi
           mkdir -p "$RUNNER_TOOL_CACHE"
 
       - name: Set up Node.js
