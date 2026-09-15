@@ -1,0 +1,91 @@
+name: Reusable Android CI
+
+on:
+  workflow_call:
+    inputs:
+      components:
+        description: JSON array of affected Android components.
+        required: true
+        type: string
+      java_version:
+        required: false
+        type: string
+        default: '17'
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Android
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Java
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+
+      - name: Run affected Android checks
+        shell: bash
+        env:
+          COMPONENTS_JSON: ${{ inputs.components }}
+        run: |
+          set -euo pipefail
+
+          command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+          workspace="$(realpath "$GITHUB_WORKSPACE")"
+          components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+
+          if [[ "$(jq 'type' <<<"$components")" != '"array"' ]] || [[ "$(jq 'length' <<<"$components")" -eq 0 ]]; then
+            echo "::error::components must be a non-empty JSON array."
+            exit 1
+          fi
+
+          declare -A checked=()
+
+          while IFS= read -r component_json; do
+            name="$(jq -r '.name // empty' <<<"$component_json")"
+            path="$(jq -r '.path // empty' <<<"$component_json")"
+            tasks_string="$(jq -r '.gradle_tasks // "lintDebug testDebugUnitTest assembleDebug"' <<<"$component_json")"
+            component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+
+            if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
+              echo "::error::Android component '$name' must resolve inside the repository."
+              exit 1
+            fi
+            if [[ ! -f "$component/gradlew" ]]; then
+              echo "::error::Android component '$name' must point to a Gradle wrapper root containing gradlew."
+              exit 1
+            fi
+
+            read -r -a tasks <<<"$tasks_string"
+            if (( ${#tasks[@]} == 0 )); then
+              echo "::error::gradle_tasks for '$name' must contain at least one task."
+              exit 1
+            fi
+            for task in "${tasks[@]}"; do
+              if [[ ! "$task" =~ ^[A-Za-z0-9_:.-]+$ ]]; then
+                echo "::error::Invalid Gradle task '$task' for '$name'."
+                exit 1
+              fi
+            done
+
+            key="$component|$tasks_string"
+            if [[ -n "${checked[$key]+x}" ]]; then
+              continue
+            fi
+
+            echo "==> Android component: $name"
+            cd "$component"
+            chmod +x ./gradlew
+            ./gradlew --no-daemon "${tasks[@]}"
+            checked[$key]=1
+          done < <(jq -c '.[]' <<<"$components")
