@@ -152,7 +152,22 @@ testDebugUnitTest
 assembleDebug
 ```
 
-Android SDK command-line tools와 라이선스는 CI가 자동으로 준비하며, Gradle이 프로젝트에 필요한 SDK 패키지를 내려받을 수 있습니다.
+Android SDK command-line tools와 라이선스는 CI가 자동으로 준비합니다. SDK는 `/opt/cache/android-sdk`에 영속 저장하며 이미 준비된 경우 setup/download를 건너뜁니다. Gradle user home은 `/opt/cache/gradle`을 사용하므로 wrapper/dependency/build cache를 ephemeral runner 간 재사용합니다.
+
+## Persistent cache
+
+Gharp runner name/workspace는 job마다 ephemeral이지만 underlying host cache는 다음 고정 경로를 사용합니다.
+
+```text
+/opt/cache/
+├─ android-sdk/   # Android SDK, platforms/build-tools
+├─ gradle/        # GRADLE_USER_HOME
+└─ tool-cache/    # Java / Go / Node runner tool cache
+```
+
+언어 setup action은 `RUNNER_TOOL_CACHE=/opt/cache/tool-cache`을 사용합니다. 동일 버전 runtime이 이미 있으면 재다운로드하지 않습니다.
+
+이 경로는 runner workspace가 아니며 checkout/build 결과를 저장하는 용도로 사용하지 않습니다. 프로젝트별 source/build output은 기존 ephemeral workspace를 사용합니다.
 
 ## Security
 
@@ -221,7 +236,7 @@ jq
 Docker
 ```
 
-Persistent self-hosted runner에서는 신뢰하지 않는 fork/public PR 코드를 실행하지 않습니다.
+Runner host는 `/opt/cache`를 생성/사용할 수 있어야 합니다. Persistent self-hosted runner에서는 신뢰하지 않는 fork/public PR 코드를 실행하지 않습니다.
 
 ## Version
 
