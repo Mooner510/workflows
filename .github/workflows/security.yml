@@ -131,8 +131,32 @@ jobs:
             printf '%s\n' "$dependency_container" >>"$dependency_targets"
           done < <(jq -c '.[]' <<<"$components")
 
-          sort -u -o "$scan_targets" "$scan_targets"
-          sort -u -o "$dependency_targets" "$dependency_targets"
+          dedupe_tree_targets() {
+            local source="$1"
+            local output="${source}.dedup"
+            local target kept covered
+            local -a ordered=()
+
+            mapfile -t ordered < <(awk '{ print length($0) "\t" $0 }' "$source" | sort -n -k1,1 -k2,2 | cut -f2-)
+            : >"$output"
+
+            for target in "${ordered[@]}"; do
+              covered=false
+              while IFS= read -r kept; do
+                if [[ "$target" == "$kept" || "$target" == "$kept/"* ]]; then
+                  covered=true
+                  break
+                fi
+              done <"$output"
+
+              [[ "$covered" == "true" ]] || printf '%s\n' "$target" >>"$output"
+            done
+
+            mv "$output" "$source"
+          }
+
+          dedupe_tree_targets "$scan_targets"
+          dedupe_tree_targets "$dependency_targets"
 
           {
             echo "scan_targets=$scan_targets"
@@ -180,6 +204,24 @@ jobs:
                 "$target"
           done <"$TARGET_FILE"
 
+      - name: Gitleaks current files
+        shell: bash
+        env:
+          TARGET_FILE: ${{ steps.targets.outputs.scan_targets }}
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r target; do
+            echo "==> Gitleaks files: $target"
+            docker run --rm \
+              --network=none \
+              --cap-drop=ALL \
+              --security-opt=no-new-privileges \
+              -v "$GITHUB_WORKSPACE:/src:ro" \
+              ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+              dir --redact --no-banner "$target"
+          done <"$TARGET_FILE"
+
       - name: Gitleaks git history secrets
         shell: bash
         env:
@@ -188,6 +230,7 @@ jobs:
           set -euo pipefail
 
           docker run --rm \
+            --network=none \
             --cap-drop=ALL \
             --security-opt=no-new-privileges \
             -e GIT_CONFIG_COUNT=1 \
