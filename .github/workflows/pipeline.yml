@@ -12,6 +12,15 @@ on:
         required: false
         type: boolean
         default: false
+      go_private_patterns:
+        description: Optional GOPRIVATE pattern for private Go modules.
+        required: false
+        type: string
+        default: ''
+    secrets:
+      go_private_token:
+        description: Optional GitHub token with read access to private Go module repositories.
+        required: false
     outputs:
       changed_components:
         description: JSON array of changed components.
@@ -240,6 +249,9 @@ jobs:
     with:
       components: ${{ toJSON(matrix.group.components) }}
       go_version: ${{ matrix.group.version }}
+      go_private_patterns: ${{ inputs.go_private_patterns }}
+    secrets:
+      private_token: ${{ secrets.go_private_token }}
 
   ci_node:
     name: CI / Node ${{ matrix.group.version }}
