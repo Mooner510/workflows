@@ -18,7 +18,7 @@ on:
         type: string
         default: ''
     secrets:
-      go_private_token:
+      CI_PRIVATE_REPO_TOKEN:
         description: Optional GitHub token with read access to private Go module repositories.
         required: false
     outputs:
@@ -251,7 +251,7 @@ jobs:
       go_version: ${{ matrix.group.version }}
       go_private_patterns: ${{ inputs.go_private_patterns }}
     secrets:
-      private_token: ${{ secrets.go_private_token }}
+      CI_PRIVATE_REPO_TOKEN: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
 
   ci_node:
     name: CI / Node ${{ matrix.group.version }}
