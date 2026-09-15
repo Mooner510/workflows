@@ -21,7 +21,6 @@ jobs:
     runs-on: [self-hosted, linux]
     timeout-minutes: 45
     env:
-      RUNNER_TOOL_CACHE: /opt/cache/tool-cache
       ANDROID_HOME: /opt/cache/android-sdk
       ANDROID_SDK_ROOT: /opt/cache/android-sdk
       GRADLE_USER_HOME: /opt/cache/gradle
@@ -37,6 +36,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${RUNNER_TOOL_CACHE:-}" != "/opt/cache/tool-cache" ]]; then
+            echo "::error::Self-hosted runner must provide RUNNER_TOOL_CACHE=/opt/cache/tool-cache."
+            exit 1
+          fi
           mkdir -p "$RUNNER_TOOL_CACHE" "$ANDROID_SDK_ROOT" "$GRADLE_USER_HOME"
 
           sdkmanager="$ANDROID_SDK_ROOT/cmdline-tools/20.0/bin/sdkmanager"
