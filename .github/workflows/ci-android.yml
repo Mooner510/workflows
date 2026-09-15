@@ -20,6 +20,11 @@ jobs:
     name: Android
     runs-on: [self-hosted, linux]
     timeout-minutes: 45
+    env:
+      RUNNER_TOOL_CACHE: /opt/cache/tool-cache
+      ANDROID_HOME: /opt/cache/android-sdk
+      ANDROID_SDK_ROOT: /opt/cache/android-sdk
+      GRADLE_USER_HOME: /opt/cache/gradle
 
     steps:
       - name: Checkout caller repository
@@ -27,16 +32,43 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Prepare persistent CI caches
+        id: cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TOOL_CACHE" "$ANDROID_SDK_ROOT" "$GRADLE_USER_HOME"
+
+          sdkmanager="$ANDROID_SDK_ROOT/cmdline-tools/20.0/bin/sdkmanager"
+          if [[ -x "$sdkmanager" ]] && [[ -f "$ANDROID_SDK_ROOT/licenses/android-sdk-license" ]]; then
+            echo "android_sdk_ready=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "android_sdk_ready=false" >>"$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Java
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
         with:
           distribution: temurin
           java-version: ${{ inputs.java_version }}
 
-      - name: Set up Android SDK
+      - name: Bootstrap Android SDK
+        if: steps.cache.outputs.android_sdk_ready != 'true'
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
         with:
           packages: ''
+
+      - name: Configure Android SDK paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager_dir="$ANDROID_SDK_ROOT/cmdline-tools/20.0/bin"
+          [[ -x "$sdkmanager_dir/sdkmanager" ]] || {
+            echo "::error::Android sdkmanager is missing after setup."
+            exit 1
+          }
+          echo "$sdkmanager_dir" >>"$GITHUB_PATH"
+          echo "$ANDROID_SDK_ROOT/platform-tools" >>"$GITHUB_PATH"
 
       - name: Run affected Android checks
         shell: bash
