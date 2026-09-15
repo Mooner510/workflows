@@ -22,6 +22,7 @@ jobs:
     timeout-minutes: 30
     env:
       CI: 'true'
+      BUN_INSTALL_CACHE_DIR: /opt/cache/tool-cache/bun/install-cache
 
     steps:
       - name: Checkout caller repository
@@ -37,13 +38,55 @@ jobs:
             echo "::error::Self-hosted runner must provide RUNNER_TOOL_CACHE=/opt/cache/tool-cache."
             exit 1
           fi
-          mkdir -p "$RUNNER_TOOL_CACHE"
+          mkdir -p "$RUNNER_TOOL_CACHE" "$BUN_INSTALL_CACHE_DIR"
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node_version }}
           package-manager-cache: false
+
+      - name: Detect Bun project
+        id: bun
+        shell: bash
+        env:
+          COMPONENTS_JSON: ${{ inputs.components }}
+        run: |
+          set -euo pipefail
+
+          workspace="$(realpath "$GITHUB_WORKSPACE")"
+          components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+
+          while IFS= read -r component_json; do
+            path="$(jq -r '.path // empty' <<<"$component_json")"
+            component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+            [[ -n "$component" ]] || continue
+
+            cursor="$component"
+            while :; do
+              if [[ -f "$cursor/bun.lock" || -f "$cursor/bun.lockb" ]]; then
+                [[ -f "$cursor/package.json" ]] || {
+                  echo "::error::Bun package root must contain package.json."
+                  exit 1
+                }
+                relative="$(realpath --relative-to="$workspace" "$cursor/package.json")"
+                echo "required=true" >>"$GITHUB_OUTPUT"
+                echo "version_file=$relative" >>"$GITHUB_OUTPUT"
+                exit 0
+              fi
+              [[ "$cursor" == "$workspace" ]] && break
+              cursor="$(dirname "$cursor")"
+            done
+          done < <(jq -c '.[]' <<<"$components")
+
+          echo "required=false" >>"$GITHUB_OUTPUT"
+          echo "version_file=" >>"$GITHUB_OUTPUT"
+
+      - name: Set up Bun
+        if: steps.bun.outputs.required == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: ${{ steps.bun.outputs.version_file }}
 
       - name: Install and check affected Node components
         shell: bash
@@ -77,6 +120,8 @@ jobs:
               [[ -f "$cursor/pnpm-lock.yaml" ]] && matches+=("pnpm")
               [[ -f "$cursor/yarn.lock" ]] && matches+=("yarn")
               [[ -f "$cursor/package-lock.json" ]] && matches+=("npm")
+              [[ -f "$cursor/bun.lock" ]] && matches+=("bun")
+              [[ -f "$cursor/bun.lockb" ]] && matches+=("bun")
 
               if (( ${#matches[@]} > 1 )); then
                 echo "::error::Multiple package-manager lockfiles found in '$cursor'. Keep exactly one."
@@ -110,6 +155,7 @@ jobs:
               npm)  (cd "$component" && npm run "$script") ;;
               pnpm) (cd "$component" && pnpm run "$script") ;;
               yarn) (cd "$component" && yarn run "$script") ;;
+              bun)  (cd "$component" && bun run "$script") ;;
             esac
           }
 
@@ -129,7 +175,7 @@ jobs:
 
             resolve_project "$component"
 
-            if [[ "$PACKAGE_MANAGER" == "pnpm" || "$PACKAGE_MANAGER" == "yarn" ]]; then
+            if [[ "$PACKAGE_MANAGER" == "pnpm" || "$PACKAGE_MANAGER" == "yarn" || "$PACKAGE_MANAGER" == "bun" ]]; then
               if [[ ! -f "$PACKAGE_ROOT/package.json" ]]; then
                 echo "::error::$PACKAGE_MANAGER requires package.json at the package-manager root."
                 exit 1
@@ -143,6 +189,19 @@ jobs:
               if [[ "$PACKAGE_MANAGER" == "yarn" ]] && [[ ! "$package_manager_field" =~ ^yarn@[0-9]+\.[0-9]+\.[0-9]+([+-].*)?$ ]]; then
                 echo "::error::yarn projects must pin packageManager, for example \"yarn@4.9.2\"."
                 exit 1
+              fi
+              if [[ "$PACKAGE_MANAGER" == "bun" ]]; then
+                if [[ ! "$package_manager_field" =~ ^bun@[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                  echo "::error::Bun projects must pin packageManager, for example \"bun@1.4.2\"."
+                  exit 1
+                fi
+                command -v bun >/dev/null || { echo "::error::bun is required for Bun projects."; exit 1; }
+                expected_bun="${package_manager_field#bun@}"
+                actual_bun="$(bun --version)"
+                if [[ "$actual_bun" != "$expected_bun" ]]; then
+                  echo "::error::All Bun package roots in one Node CI job must use the same pinned Bun version. Expected $expected_bun, active $actual_bun."
+                  exit 1
+                fi
               fi
             fi
 
@@ -166,6 +225,9 @@ jobs:
                   else
                     (cd "$PACKAGE_ROOT" && yarn install --immutable)
                   fi
+                  ;;
+                bun)
+                  (cd "$PACKAGE_ROOT" && bun install --frozen-lockfile)
                   ;;
               esac
               installed_roots[$PACKAGE_ROOT]=1
