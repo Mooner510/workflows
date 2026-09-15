@@ -9,11 +9,13 @@ Supported targets:
 - JavaScript/TypeScript web apps such as React, Next.js, and Vite
 - JavaScript/TypeScript Node.js servers such as NestJS and Express
 
-Every job runs on:
+All central jobs use:
 
 ```yaml
 runs-on: [self-hosted, linux]
 ```
+
+Additional runner labels such as `x64` or `prod` are not required.
 
 ## Architecture
 
@@ -29,21 +31,25 @@ detect changes
                |
         pipeline success
                |
-          optional CD
+     explicit production CD
 ```
 
-Change detection runs once. Only affected components are sent to Security and CI. Security and CI are independent and therefore run in parallel when runner capacity is available. A deployment job can depend on the reusable pipeline job, so CD cannot start unless all required Security and CI jobs succeed.
+Change detection runs once. Only affected components are sent to Security and CI. Security and CI are independent and can run in parallel when runner capacity is available.
 
-## Reusable workflows
+Production mutation is not triggered by a normal push. A deployment workflow must be explicitly started by the project policy, normally by a stable Release or `workflow_dispatch`, perform full verification, and then deploy from a job that targets the caller repository's `production` GitHub Environment.
+
+## Shared building blocks
 
 - `.github/workflows/pipeline.yml`: change detection and orchestration
 - `.github/workflows/security.yml`: shared security scanning
 - `.github/workflows/ci-go.yml`: Go CI
 - `.github/workflows/ci-node.yml`: Node.js CI
 - `.github/workflows/ci-android.yml`: Android CI
-- `.github/workflows/deploy.yml`: optional deployment entrypoint
+- `.github/actions/deploy/action.yml`: validated deployment-script entrypoint for production jobs
 
-`pipeline.yml` uses GitHub's `$/` same-repository syntax for nested reusable workflows. This keeps the nested workflow files on the exact same central-workflows commit as the pipeline that was selected by the caller.
+`pipeline.yml` uses GitHub's `$/` same-repository syntax for nested reusable workflows so nested workflows are taken from the same central-workflows commit selected by the caller.
+
+Deployment is a composite action instead of a reusable workflow. GitHub Environment secrets belong to the caller repository and cannot be attached to a job that only calls a reusable workflow. A normal caller job can set `environment: production`, receive its Environment secrets, and invoke the central deploy action as a step.
 
 ## Runner requirements
 
@@ -69,14 +75,14 @@ Required fields:
 Optional fields:
 
 - `watch`: repository-relative paths that affect the component; exact/path-prefix matching, not globs
-- `deploy`: expose the changed component for deployment when `true`
+- `deploy`: expose the component through deployment outputs when `true`
 - `deploy_script`: deployment script relative to the component, default `.ci/deploy.sh`
 - `go_version`: default `stable`
 - `node_version`: default `24`
 - `java_version`: default `17`
-- `gradle_tasks`: default `lint test assembleDebug`
+- `gradle_tasks`: default `lintDebug testDebugUnitTest assembleDebug`
 
-Example:
+Example CI caller:
 
 ```yaml
 name: CI
@@ -112,8 +118,7 @@ jobs:
           {
             "name": "android",
             "type": "android",
-            "path": "apps/android",
-            "java_version": "17"
+            "path": "apps/android"
           }
         ]
 ```
@@ -130,22 +135,24 @@ Every changed component gets:
 - OSV-Scanner for known dependency vulnerabilities
 - Trivy for exposed secrets and configuration mistakes
 
-Scanner images are pinned by digest and receive the source tree read-only. The Docker socket is not mounted into the scanner containers.
+Scanner images are pinned by digest and receive the source tree read-only. The Docker socket is not mounted into scanner containers.
 
 Node dependency scanning requires one committed `pnpm-lock.yaml`, `yarn.lock`, or `package-lock.json`. The workflow walks upward from the component to the repository root, so monorepos with a shared root lockfile are supported.
 
 Go components require `go.mod`.
 
-Android dependency-vulnerability coverage is complete when the repository contains supported dependency metadata such as Gradle lockfiles or `gradle/verification-metadata.xml`. If those files are absent, the workflow warns and still runs SAST, secret, and configuration scans instead of pretending dependency coverage is complete.
+Android dependency-vulnerability coverage is complete when supported dependency metadata such as Gradle lockfiles or `gradle/verification-metadata.xml` is present. Without it, the workflow warns and still runs SAST, secret, and configuration scans.
 
-A scheduled caller can periodically set `force_all: true` to rescan unchanged components for newly disclosed vulnerabilities.
+A scheduled caller can set `force_all: true` to rescan unchanged components for newly disclosed vulnerabilities.
 
 ## CI behavior
 
 Go:
 
 ```text
+gofmt check
 go mod download
+go mod verify
 go vet ./...
 go test ./...
 go build ./...
@@ -160,21 +167,50 @@ test
 build
 ```
 
+pnpm projects must commit a root `package.json` with a pinned `packageManager`, for example:
+
+```json
+{
+  "packageManager": "pnpm@10.17.1"
+}
+```
+
 Android uses the repository Gradle wrapper. Default tasks:
 
 ```text
-lint test assembleDebug
+lintDebug
+testDebugUnitTest
+assembleDebug
 ```
 
-## Optional deployment
+## Production deployment
 
-Deployment is deliberately outside `pipeline.yml`, so deployment secrets do not enter Security or CI jobs.
+Application/runtime secrets should normally be stored as GitHub Environment secrets in the caller repository's `production` environment. They are exposed only to the production job that needs them.
+
+Host-persistent exceptions are limited to infrastructure material that must be read directly by server-side tooling, such as project DB credentials managed by the DB CLI and Android signing material managed by the Android CLI.
+
+A reusable workflow cannot consume the caller repository's Environment secrets by attaching the caller's environment to the reusable-workflow call. Therefore the production job is intentionally local to the project and calls the central composite deploy action.
+
+Example manual production workflow:
 
 ```yaml
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
 jobs:
-  pipeline:
+  verify:
     uses: Mooner510/workflows/.github/workflows/pipeline.yml@v1
     with:
+      force_all: true
       components: |
         [
           {
@@ -186,44 +222,43 @@ jobs:
         ]
 
   deploy:
-    needs: pipeline
-    if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/master' &&
-      needs.pipeline.outputs.has_deployments == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        component: ${{ fromJSON(needs.pipeline.outputs.deploy_components) }}
-    uses: Mooner510/workflows/.github/workflows/deploy.yml@v1
-    with:
-      working_directory: ${{ matrix.component.path }}
-      script: ${{ matrix.component.deploy_script || '.ci/deploy.sh' }}
-    secrets:
-      deploy_env: ${{ secrets.DEPLOY_ENV }}
+    needs: verify
+    environment: production
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 30
+    env:
+      OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Deploy
+        uses: Mooner510/workflows/.github/actions/deploy@v1
+        with:
+          working-directory: services/api
 ```
 
-The project owns the deployment implementation at a checked-in script such as:
+The project owns the deployment implementation at a checked-in entrypoint such as:
 
 ```text
 <component>/.ci/deploy.sh
 ```
 
-The reusable deployment workflow validates the script path and does not `eval` caller-provided commands.
+The central deploy action validates that the entrypoint stays inside the selected component and executes it without `eval`. Environment secrets remain job environment variables; the central action does not serialize them into a long-lived `secret/deploy.env` file.
+
+Normal application deployment scripts must preserve the production contract: verified immutable artifact/digest, migration before rollout when required, deployment, and health verification. Secrets must not be written to repository history, deployment history, status, or logs.
 
 ## Versioning
 
-Consumers should normally use a stable major tag such as `@v1`. For maximum immutability, pin the reusable workflow to a full commit SHA.
+Consumers should normally use a stable major tag such as `@v1`. For maximum immutability, pin the reusable workflow/action to a full commit SHA.
 
 Third-party GitHub Actions and security-scanner images used internally are pinned to immutable commit or image digests.
 
 ## Self-hosted runner trust boundary
 
-Do not execute arbitrary untrusted pull-request code on a persistent self-hosted runner that also has deployment credentials or access to sensitive internal networks.
+Do not execute arbitrary untrusted pull-request code on a persistent self-hosted runner that has Docker access, deployment credentials, or sensitive internal-network access.
 
-For production, prefer separate trust boundaries:
-
-- CI/Security runners without deployment secrets
-- restricted deployment runners for trusted deployment events
-
-If public or otherwise untrusted contributions are allowed, use ephemeral isolation for PR execution.
+GitHub Environment secrets reduce long-lived secret storage on the server, but once a production job starts, those secrets are available to that self-hosted runner for the duration of the job. Treat the runner as trusted production infrastructure.
