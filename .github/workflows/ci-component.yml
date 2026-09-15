@@ -35,10 +35,6 @@ jobs:
     timeout-minutes: 45
     env:
       CI: 'true'
-      ANDROID_HOME: /opt/cache/android-sdk
-      ANDROID_SDK_ROOT: /opt/cache/android-sdk
-      GRADLE_USER_HOME: /opt/cache/gradle
-      BUN_INSTALL_CACHE_DIR: /opt/cache/tool-cache/bun/install-cache
 
     steps:
       - name: Checkout caller repository
@@ -46,20 +42,41 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Verify persistent tool cache
+      - name: Prepare runner environment
         shell: bash
         run: |
           set -euo pipefail
           command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
-          if [[ "${RUNNER_TOOL_CACHE:-}" != "/opt/cache/tool-cache" ]]; then
-            echo "::error::Self-hosted runner must provide RUNNER_TOOL_CACHE=/opt/cache/tool-cache."
-            exit 1
-          fi
-          mkdir -p "$RUNNER_TOOL_CACHE"
-          if [[ "${{ inputs.type }}" == "node" ]]; then
-            mkdir -p "$BUN_INSTALL_CACHE_DIR"
-          elif [[ "${{ inputs.type }}" == "android" ]]; then
-            mkdir -p "$ANDROID_SDK_ROOT" "$GRADLE_USER_HOME"
+
+          if [[ "${RUNNER_TOOL_CACHE:-}" == "/opt/cache/tool-cache" ]]; then
+            mkdir -p /opt/cache/tool-cache
+            echo "Using shared /opt/cache runner cache."
+
+            if [[ "${{ inputs.type }}" == "node" ]]; then
+              bun_cache="/opt/cache/tool-cache/bun/install-cache"
+              mkdir -p "$bun_cache"
+              echo "BUN_INSTALL_CACHE_DIR=$bun_cache" >>"$GITHUB_ENV"
+            elif [[ "${{ inputs.type }}" == "android" ]]; then
+              mkdir -p /opt/cache/android-sdk /opt/cache/gradle
+              echo "ANDROID_HOME=/opt/cache/android-sdk" >>"$GITHUB_ENV"
+              echo "ANDROID_SDK_ROOT=/opt/cache/android-sdk" >>"$GITHUB_ENV"
+              echo "GRADLE_USER_HOME=/opt/cache/gradle" >>"$GITHUB_ENV"
+            fi
+          else
+            echo "Using standard self-hosted runner paths."
+
+            if [[ "${{ inputs.type }}" == "node" ]]; then
+              bun_cache="${BUN_INSTALL_CACHE_DIR:-$RUNNER_TEMP/bun-install-cache}"
+              mkdir -p "$bun_cache"
+              echo "BUN_INSTALL_CACHE_DIR=$bun_cache" >>"$GITHUB_ENV"
+            elif [[ "${{ inputs.type }}" == "android" ]]; then
+              android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$RUNNER_TEMP/android-sdk}}"
+              gradle_home="${GRADLE_USER_HOME:-$HOME/.gradle}"
+              mkdir -p "$android_sdk" "$gradle_home"
+              echo "ANDROID_HOME=$android_sdk" >>"$GITHUB_ENV"
+              echo "ANDROID_SDK_ROOT=$android_sdk" >>"$GITHUB_ENV"
+              echo "GRADLE_USER_HOME=$gradle_home" >>"$GITHUB_ENV"
+            fi
           fi
 
       - name: Set up Go
