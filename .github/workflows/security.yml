@@ -3,13 +3,15 @@ name: Reusable Security Scan
 on:
   workflow_call:
     inputs:
-      component_type:
-        description: One of go, node, android.
+      components:
+        description: JSON array of affected components.
         required: true
         type: string
-      working_directory:
-        required: true
+      git_log_opts:
+        description: Commit range passed to Gitleaks git history scanning.
+        required: false
         type: string
+        default: --all
 
 permissions:
   contents: read
@@ -24,103 +26,126 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Resolve scan paths
-        id: path
+      - name: Resolve unique scan targets
+        id: targets
         shell: bash
         env:
-          COMPONENT_TYPE: ${{ inputs.component_type }}
-          WORKING_DIRECTORY: ${{ inputs.working_directory }}
+          COMPONENTS_JSON: ${{ inputs.components }}
         run: |
           set -euo pipefail
 
           command -v docker >/dev/null || { echo "::error::Docker is required on the self-hosted runner."; exit 1; }
-
-          case "$COMPONENT_TYPE" in
-            go|node|android) ;;
-            *)
-              echo "::error::Unsupported component_type '$COMPONENT_TYPE'."
-              exit 1
-              ;;
-          esac
+          command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
 
           workspace="$(realpath "$GITHUB_WORKSPACE")"
-          component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
-
-          if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
-            echo "::error::working_directory must resolve inside the repository."
+          components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+          if [[ "$(jq 'type' <<<"$components")" != '"array"' ]] || [[ "$(jq 'length' <<<"$components")" -eq 0 ]]; then
+            echo "::error::components must be a non-empty JSON array."
             exit 1
           fi
 
-          dependency_root="$component"
+          scan_targets="$RUNNER_TEMP/workflows-security-targets.txt"
+          dependency_targets="$RUNNER_TEMP/workflows-dependency-targets.txt"
+          : >"$scan_targets"
+          : >"$dependency_targets"
 
-          case "$COMPONENT_TYPE" in
-            go)
-              if ! find "$component" -name go.mod -type f -print -quit | grep -q .; then
-                echo "::error::No go.mod found in the Go component."
-                exit 1
-              fi
-              ;;
-            node)
-              cursor="$component"
-              lock_found=false
+          while IFS= read -r component_json; do
+            name="$(jq -r '.name // empty' <<<"$component_json")"
+            type="$(jq -r '.type // empty' <<<"$component_json")"
+            path="$(jq -r '.path // empty' <<<"$component_json")"
+            component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
 
-              while :; do
-                matches=0
-                [[ -f "$cursor/pnpm-lock.yaml" ]] && ((matches+=1))
-                [[ -f "$cursor/yarn.lock" ]] && ((matches+=1))
-                [[ -f "$cursor/package-lock.json" ]] && ((matches+=1))
+            case "$type" in
+              go|node|android) ;;
+              *) echo "::error::Unsupported component type '$type' for '$name'."; exit 1 ;;
+            esac
 
-                if (( matches > 1 )); then
-                  echo "::error::Multiple package-manager lockfiles found in '$cursor'. Keep exactly one."
+            if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
+              echo "::error::Component '$name' must resolve inside the repository."
+              exit 1
+            fi
+
+            component_rel="$(realpath --relative-to="$workspace" "$component")"
+            [[ "$component_rel" == "." ]] && component_container="/src" || component_container="/src/$component_rel"
+            printf '%s\n' "$component_container" >>"$scan_targets"
+
+            dependency_root="$component"
+            case "$type" in
+              go)
+                cursor="$component"
+                dependency_root=""
+                while :; do
+                  if [[ -f "$cursor/go.mod" ]]; then
+                    dependency_root="$cursor"
+                    break
+                  fi
+                  [[ "$cursor" == "$workspace" ]] && break
+                  cursor="$(dirname "$cursor")"
+                done
+                if [[ -z "$dependency_root" ]]; then
+                  echo "::error::No go.mod found from Go component '$name' up to the repository root."
                   exit 1
                 fi
-
-                if (( matches == 1 )); then
-                  dependency_root="$cursor"
-                  lock_found=true
-                  break
+                ;;
+              node)
+                cursor="$component"
+                dependency_root=""
+                while :; do
+                  matches=0
+                  [[ -f "$cursor/pnpm-lock.yaml" ]] && ((matches+=1))
+                  [[ -f "$cursor/yarn.lock" ]] && ((matches+=1))
+                  [[ -f "$cursor/package-lock.json" ]] && ((matches+=1))
+                  if (( matches > 1 )); then
+                    echo "::error::Multiple Node lockfiles found in '$cursor'."
+                    exit 1
+                  fi
+                  if (( matches == 1 )); then
+                    dependency_root="$cursor"
+                    break
+                  fi
+                  [[ "$cursor" == "$workspace" ]] && break
+                  cursor="$(dirname "$cursor")"
+                done
+                if [[ -z "$dependency_root" ]]; then
+                  echo "::error::No Node lockfile found from '$name' up to the repository root."
+                  exit 1
                 fi
+                ;;
+              android)
+                if ! find "$component" -type f \( \
+                  -name gradle.lockfile -o \
+                  -name buildscript-gradle.lockfile -o \
+                  -name verification-metadata.xml -o \
+                  -name pom.xml \
+                \) -print -quit | grep -q .; then
+                  echo "::warning::No OSV-supported Java dependency metadata found for Android component '$name'; dependency coverage is incomplete."
+                fi
+                ;;
+            esac
 
-                [[ "$cursor" == "$workspace" ]] && break
-                cursor="$(dirname "$cursor")"
-              done
+            dependency_rel="$(realpath --relative-to="$workspace" "$dependency_root")"
+            [[ "$dependency_rel" == "." ]] && dependency_container="/src" || dependency_container="/src/$dependency_rel"
+            printf '%s\n' "$dependency_container" >>"$dependency_targets"
+          done < <(jq -c '.[]' <<<"$components")
 
-              if [[ "$lock_found" != "true" ]]; then
-                echo "::error::No Node lockfile found from the component up to the repository root."
-                exit 1
-              fi
-              ;;
-            android)
-              if ! find "$component" -type f \( \
-                -name gradle.lockfile -o \
-                -name buildscript-gradle.lockfile -o \
-                -name verification-metadata.xml -o \
-                -name pom.xml \
-              \) -print -quit | grep -q .; then
-                echo "::warning::No OSV-supported Java dependency metadata was found. SAST, secret, and configuration scans will still run, but Android dependency-vulnerability coverage is incomplete. Enable Gradle dependency locking or commit gradle/verification-metadata.xml for complete coverage."
-              fi
-              ;;
-          esac
-
-          component_rel="$(realpath --relative-to="$workspace" "$component")"
-          dependency_rel="$(realpath --relative-to="$workspace" "$dependency_root")"
-
-          [[ "$component_rel" == "." ]] && component_container="/src" || component_container="/src/$component_rel"
-          [[ "$dependency_rel" == "." ]] && dependency_container="/src" || dependency_container="/src/$dependency_rel"
+          sort -u -o "$scan_targets" "$scan_targets"
+          sort -u -o "$dependency_targets" "$dependency_targets"
 
           {
-            echo "component_container=$component_container"
-            echo "dependency_container=$dependency_container"
+            echo "scan_targets=$scan_targets"
+            echo "dependency_targets=$dependency_targets"
           } >>"$GITHUB_OUTPUT"
 
       - name: Semgrep SAST
         shell: bash
         env:
-          TARGET: ${{ steps.path.outputs.component_container }}
+          TARGET_FILE: ${{ steps.targets.outputs.scan_targets }}
         run: |
           set -euo pipefail
+          mapfile -t targets <"$TARGET_FILE"
 
           docker run --rm \
             --cap-drop=ALL \
@@ -132,49 +157,72 @@ jobs:
               --error \
               --metrics off \
               --disable-version-check \
-              "$TARGET"
+              "${targets[@]}"
 
       - name: OSV dependency vulnerabilities
         shell: bash
         env:
-          TARGET: ${{ steps.path.outputs.dependency_container }}
+          TARGET_FILE: ${{ steps.targets.outputs.dependency_targets }}
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r target; do
+            echo "==> OSV: $target"
+            docker run --rm \
+              --cap-drop=ALL \
+              --security-opt=no-new-privileges \
+              -v "$GITHUB_WORKSPACE:/src:ro" \
+              ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475 \
+              scan source \
+                --recursive \
+                --allow-no-lockfiles \
+                --no-call-analysis=go \
+                "$target"
+          done <"$TARGET_FILE"
+
+      - name: Gitleaks git history secrets
+        shell: bash
+        env:
+          GIT_LOG_OPTS: ${{ inputs.git_log_opts }}
         run: |
           set -euo pipefail
 
           docker run --rm \
             --cap-drop=ALL \
             --security-opt=no-new-privileges \
+            -e GIT_CONFIG_COUNT=1 \
+            -e GIT_CONFIG_KEY_0=safe.directory \
+            -e GIT_CONFIG_VALUE_0=/src \
             -v "$GITHUB_WORKSPACE:/src:ro" \
-            ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475 \
-            scan source \
-              --recursive \
-              --allow-no-lockfiles \
-              --no-call-analysis=go \
-              "$TARGET"
+            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git --redact --no-banner --log-opts="$GIT_LOG_OPTS" /src
 
-      - name: Trivy secrets and misconfiguration
+      - name: Trivy misconfiguration
         shell: bash
         env:
-          TARGET: ${{ steps.path.outputs.component_container }}
+          TARGET_FILE: ${{ steps.targets.outputs.scan_targets }}
         run: |
           set -euo pipefail
 
           docker volume create workflows-trivy-cache >/dev/null
 
-          docker run --rm \
-            --cap-drop=ALL \
-            --security-opt=no-new-privileges \
-            -v "$GITHUB_WORKSPACE:/src:ro" \
-            -v workflows-trivy-cache:/root/.cache/trivy \
-            ghcr.io/aquasecurity/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 \
-            fs \
-              --scanners secret,misconfig \
-              --severity HIGH,CRITICAL \
-              --exit-code 1 \
-              --no-progress \
-              --skip-version-check \
-              --skip-dirs .git \
-              --skip-dirs node_modules \
-              --skip-dirs build \
-              --skip-dirs .gradle \
-              "$TARGET"
+          while IFS= read -r target; do
+            echo "==> Trivy: $target"
+            docker run --rm \
+              --cap-drop=ALL \
+              --security-opt=no-new-privileges \
+              -v "$GITHUB_WORKSPACE:/src:ro" \
+              -v workflows-trivy-cache:/root/.cache/trivy \
+              ghcr.io/aquasecurity/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 \
+              fs \
+                --scanners misconfig \
+                --severity HIGH,CRITICAL \
+                --exit-code 1 \
+                --no-progress \
+                --skip-version-check \
+                --skip-dirs .git \
+                --skip-dirs node_modules \
+                --skip-dirs build \
+                --skip-dirs .gradle \
+                "$target"
+          done <"$TARGET_FILE"
