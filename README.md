@@ -121,6 +121,17 @@ go test
 go build
 ```
 
+Private GitHub Go module이 있으면 caller가 범위와 read-only token만 전달합니다.
+
+```yaml
+with:
+  go_private_patterns: 'github.com/example/*'
+secrets:
+  go_private_token: ${{ secrets.GO_PRIVATE_TOKEN }}
+```
+
+토큰은 runner의 임시 Git config에만 기록되고 job 종료 시 삭제됩니다.
+
 Node.js:
 
 ```text
