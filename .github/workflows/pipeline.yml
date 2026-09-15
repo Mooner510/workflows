@@ -232,20 +232,20 @@ jobs:
     name: Security
     needs: detect
     if: needs.detect.outputs.has_changes == 'true'
-    uses: $/.github/workflows/security.yml
+    uses: ./.github/workflows/security.yml
     with:
       components: ${{ needs.detect.outputs.all_components }}
       git_log_opts: ${{ needs.detect.outputs.git_log_opts }}
 
   ci_go:
-    name: CI / Go ${{ matrix.group.version }}
+    name: Go
     needs: detect
     if: needs.detect.outputs.has_go == 'true'
     strategy:
       fail-fast: false
       matrix:
         group: ${{ fromJSON(needs.detect.outputs.go_groups) }}
-    uses: $/.github/workflows/ci-go.yml
+    uses: ./.github/workflows/ci-go.yml
     with:
       components: ${{ toJSON(matrix.group.components) }}
       go_version: ${{ matrix.group.version }}
@@ -254,27 +254,27 @@ jobs:
       CI_PRIVATE_REPO_TOKEN: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
 
   ci_node:
-    name: CI / Node ${{ matrix.group.version }}
+    name: Node
     needs: detect
     if: needs.detect.outputs.has_node == 'true'
     strategy:
       fail-fast: false
       matrix:
         group: ${{ fromJSON(needs.detect.outputs.node_groups) }}
-    uses: $/.github/workflows/ci-node.yml
+    uses: ./.github/workflows/ci-node.yml
     with:
       components: ${{ toJSON(matrix.group.components) }}
       node_version: ${{ matrix.group.version }}
 
   ci_android:
-    name: CI / Android Java ${{ matrix.group.version }}
+    name: Android
     needs: detect
     if: needs.detect.outputs.has_android == 'true'
     strategy:
       fail-fast: false
       matrix:
         group: ${{ fromJSON(needs.detect.outputs.android_groups) }}
-    uses: $/.github/workflows/ci-android.yml
+    uses: ./.github/workflows/ci-android.yml
     with:
       components: ${{ toJSON(matrix.group.components) }}
       java_version: ${{ matrix.group.version }}
