@@ -1,9 +1,12 @@
 name: Deploy entrypoint
-description: Validate and execute a repository-owned deployment script from a trusted caller job.
+description: Validate production source and execute a repository-owned deployment script.
 
 inputs:
   working-directory:
     description: Component root relative to the caller repository.
+    required: true
+  production-branch:
+    description: Branch whose history is allowed to reach production, for example master or main.
     required: true
   script:
     description: Deployment script relative to the component root.
@@ -13,13 +16,57 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Validate and run deployment script
+    - name: Validate production source and deployment script
       shell: bash
       env:
         WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        PRODUCTION_BRANCH: ${{ inputs.production-branch }}
         DEPLOY_SCRIPT: ${{ inputs.script }}
       run: |
         set -euo pipefail
+
+        command -v git >/dev/null || { echo "::error::git is required on the self-hosted runner."; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+
+        case "$GITHUB_EVENT_NAME" in
+          workflow_dispatch)
+            ;;
+          release)
+            action="$(jq -r '.action // empty' "$GITHUB_EVENT_PATH")"
+            draft="$(jq -r '.release.draft // true' "$GITHUB_EVENT_PATH")"
+            prerelease="$(jq -r '.release.prerelease // true' "$GITHUB_EVENT_PATH")"
+            tag="$(jq -r '.release.tag_name // empty' "$GITHUB_EVENT_PATH")"
+
+            if [[ "$action" != "published" ]] || [[ "$draft" != "false" ]] || [[ "$prerelease" != "false" ]]; then
+              echo "::error::Production release deployment requires a published, non-draft, non-prerelease GitHub Release."
+              exit 1
+            fi
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Production release tag must match vMAJOR.MINOR.PATCH."
+              exit 1
+            fi
+            ;;
+          *)
+            echo "::error::Production deployment is allowed only from workflow_dispatch or a stable published release."
+            exit 1
+            ;;
+        esac
+
+        if ! git check-ref-format --branch "$PRODUCTION_BRANCH" >/dev/null 2>&1; then
+          echo "::error::Invalid production-branch '$PRODUCTION_BRANCH'."
+          exit 1
+        fi
+
+        production_ref="refs/remotes/origin/$PRODUCTION_BRANCH"
+        if ! git show-ref --verify --quiet "$production_ref"; then
+          echo "::error::Production branch '$PRODUCTION_BRANCH' is not available locally. Checkout with fetch-depth: 0 before deployment."
+          exit 1
+        fi
+
+        if ! git merge-base --is-ancestor "$GITHUB_SHA" "$production_ref"; then
+          echo "::error::Commit '$GITHUB_SHA' is not contained in production branch '$PRODUCTION_BRANCH'."
+          exit 1
+        fi
 
         workspace="$(realpath "$GITHUB_WORKSPACE")"
         component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
