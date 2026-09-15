@@ -142,7 +142,7 @@ test
 build
 ```
 
-존재하는 script만 실행하며 type/check 계열은 첫 번째로 발견된 하나만 실행합니다. pnpm/Yarn은 root `package.json`의 `packageManager` 버전을 고정합니다.
+npm, pnpm, Yarn, Bun lockfile을 자동 감지합니다. Bun은 별도 component type이 아니라 `node` component에서 처리합니다. 존재하는 script만 실행하며 type/check 계열은 첫 번째로 발견된 하나만 실행합니다. pnpm/Yarn/Bun은 root `package.json`의 `packageManager` 버전을 고정합니다.
 
 Android:
 
@@ -152,11 +152,13 @@ testDebugUnitTest
 assembleDebug
 ```
 
-Android SDK command-line tools와 라이선스는 CI가 자동으로 준비합니다. SDK는 `/opt/cache/android-sdk`에 영속 저장하며 이미 준비된 경우 setup/download를 건너뜁니다. Gradle user home은 `/opt/cache/gradle`을 사용하므로 wrapper/dependency/build cache를 ephemeral runner 간 재사용합니다.
+Android SDK command-line tools와 라이선스는 CI가 자동으로 준비합니다. Gharp의 공유 cache가 제공되면 `/opt/cache/android-sdk`와 `/opt/cache/gradle`을 재사용하고, 일반 self-hosted runner에서는 기존 Android/Gradle 경로 또는 runner 기본 경로를 사용합니다.
 
 ## Persistent cache
 
-Gharp runner name/workspace는 job마다 ephemeral이지만 underlying host cache는 다음 고정 경로를 사용합니다.
+`/opt/cache`는 **Gharp ephemeral runner용 선택적 최적화**입니다. 일반 GitHub self-hosted repository/organization runner는 `/opt/cache` 없이도 동일한 workflow를 실행할 수 있습니다.
+
+Gharp에서 persistent cache를 사용할 경우 다음 경로를 사용합니다.
 
 ```text
 /opt/cache/
@@ -165,7 +167,7 @@ Gharp runner name/workspace는 job마다 ephemeral이지만 underlying host cach
 └─ tool-cache/    # Java / Go / Node runner tool cache
 ```
 
-Gharp가 각 ephemeral runner container를 생성할 때 host cache를 직접 전달해야 합니다.
+Gharp가 각 ephemeral runner container를 생성할 때 host cache를 전달합니다.
 
 ```text
 -v /opt/cache:/opt/cache
@@ -173,11 +175,11 @@ RUNNER_TOOL_CACHE=/opt/cache/tool-cache
 AGENT_TOOLSDIRECTORY=/opt/cache/tool-cache
 ```
 
-`RUNNER_TOOL_CACHE`는 GitHub runner가 제공하는 예약 변수이므로 workflow `env:`로 덮어쓰지 않습니다. 공용 Go/Node/Android workflow는 runner가 `/opt/cache/tool-cache`를 제공하는지 검증하고, 잘못된 runner에서는 즉시 실패합니다.
+`RUNNER_TOOL_CACHE=/opt/cache/tool-cache`가 제공되면 workflow가 Gharp persistent cache를 사용합니다. 다른 값이거나 해당 변수가 없는 일반 self-hosted runner에서는 runner가 제공하는 tool cache와 기본 writable 경로를 그대로 사용하며 실패시키지 않습니다.
 
-Android workflow는 `ANDROID_HOME`/`ANDROID_SDK_ROOT=/opt/cache/android-sdk`, `GRADLE_USER_HOME=/opt/cache/gradle`을 사용합니다. 동일 SDK/JDK/runtime이 이미 존재하면 다시 다운로드하지 않습니다.
+Bun cache도 Gharp에서는 `/opt/cache/tool-cache/bun/install-cache`를 사용하고, 일반 self-hosted runner에서는 기존 `BUN_INSTALL_CACHE_DIR` 또는 `RUNNER_TEMP` 아래 경로를 사용합니다.
 
-이 경로는 runner workspace가 아니며 checkout/build 결과를 저장하는 용도로 사용하지 않습니다. 프로젝트별 source/build output은 기존 ephemeral workspace를 사용하고, `/opt/cache`에는 secret/signing material을 저장하지 않습니다.
+이 경로는 runner workspace가 아니며 checkout/build 결과를 저장하는 용도로 사용하지 않습니다. 프로젝트별 source/build output은 기존 runner workspace를 사용하고, cache에는 secret/signing material을 저장하지 않습니다.
 
 ## Security
 
@@ -187,6 +189,8 @@ Android workflow는 `ANDROID_HOME`/`ANDROID_SDK_ROOT=/opt/cache/android-sdk`, `G
 - OSV-Scanner: dependency vulnerability
 - Gitleaks: 현재 파일 + Git history secret scan
 - Trivy: Dockerfile/IaC misconfiguration
+
+Node dependency root 탐색은 npm, pnpm, Yarn, Bun lockfile을 모두 지원합니다.
 
 모두 self-hosted runner에서 실행하며 scanner image는 digest로 고정합니다.
 
@@ -246,7 +250,7 @@ jq
 Docker
 ```
 
-Runner host는 `/opt/cache`를 생성/사용할 수 있어야 하고, Gharp ephemeral runner에는 `/opt/cache:/opt/cache` bind mount와 `/opt/cache/tool-cache` tool-directory 설정이 필요합니다. Persistent self-hosted runner에서는 신뢰하지 않는 fork/public PR 코드를 실행하지 않습니다.
+일반 GitHub self-hosted repository/organization runner와 Gharp ephemeral runner를 모두 지원합니다. Gharp에서 persistent cache를 사용할 때만 `/opt/cache:/opt/cache` bind mount와 `/opt/cache/tool-cache` tool-directory 설정을 추가합니다. Persistent self-hosted runner에서는 신뢰하지 않는 fork/public PR 코드를 실행하지 않습니다.
 
 ## Version
 
