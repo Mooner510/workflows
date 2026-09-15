@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   security:
-    name: SAST, dependencies, secrets, configuration
+    name: Check
     runs-on: [self-hosted, linux]
     timeout-minutes: 30
 
