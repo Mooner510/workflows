@@ -18,6 +18,7 @@ jobs:
   ci:
     name: Go
     runs-on: [self-hosted, linux]
+    timeout-minutes: 30
 
     steps:
       - name: Checkout caller repository
@@ -54,9 +55,25 @@ jobs:
           go-version: ${{ inputs.go_version }}
           cache: false
 
+      - name: Check formatting
+        shell: bash
+        working-directory: ${{ steps.path.outputs.target }}
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l .)"
+          if [[ -n "$unformatted" ]]; then
+            echo "::error::gofmt is required for the following files:"
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
+
       - name: Download dependencies
         working-directory: ${{ steps.path.outputs.target }}
         run: go mod download
+
+      - name: Verify modules
+        working-directory: ${{ steps.path.outputs.target }}
+        run: go mod verify
 
       - name: Vet
         working-directory: ${{ steps.path.outputs.target }}
