@@ -6,8 +6,6 @@
 
 - Go
 - Node.js / JavaScript / TypeScript
-  - React / Next.js / Vite
-  - NestJS / Express
 - Android / Java / Kotlin
 
 모든 중앙 Job은 다음 runner를 사용합니다.
@@ -18,7 +16,7 @@ runs-on: [self-hosted, linux]
 
 ## 사용 방법
 
-프로젝트에는 보통 두 workflow만 둡니다.
+프로젝트에는 보통 다음 두 workflow만 둡니다.
 
 ```text
 .github/workflows/
@@ -26,9 +24,11 @@ runs-on: [self-hosted, linux]
 └─ deploy.yml   # production 배포가 필요한 경우
 ```
 
+> `v1` tag가 생성된 뒤에는 `@v1`을 사용합니다. 그 전 테스트는 검증할 commit SHA로 `@<sha>`를 사용합니다.
+
 ### 1. CI 추가
 
-프로젝트의 `.github/workflows/ci.yml`에서 `pipeline.yml`을 호출합니다.
+`.github/workflows/ci.yml`:
 
 ```yaml
 name: CI
@@ -51,13 +51,13 @@ jobs:
             "name": "api",
             "type": "go",
             "path": "services/api",
-            "watch": ["services/api", "shared/proto"]
+            "watch": ["shared/proto"]
           },
           {
             "name": "web",
             "type": "node",
             "path": "apps/web",
-            "watch": ["apps/web", "packages/ui", "pnpm-lock.yaml"]
+            "watch": ["packages/ui", "pnpm-lock.yaml"]
           },
           {
             "name": "android",
@@ -67,13 +67,19 @@ jobs:
         ]
 ```
 
-변경된 component만 자동으로 감지해 **Security와 CI를 병렬 실행**합니다.
+`path`는 항상 자동 감시됩니다. `watch`는 여기에 **추가로** 영향을 주는 경로만 적습니다.
+
+변경된 component만 감지하여 Security와 CI를 실행합니다.
 
 ```text
 detect
   ├─ security
-  └─ CI
+  ├─ Go CI
+  ├─ Node CI
+  └─ Android CI
 ```
+
+같은 Go module, 같은 Node lockfile root, 같은 언어 버전을 공유하는 component는 setup/install/verify를 가능한 한 한 번만 수행합니다.
 
 ### 2. Component 설정
 
@@ -89,32 +95,21 @@ detect
 
 | 필드 | 설명 |
 | --- | --- |
-| `watch` | 이 component에 영향을 주는 추가 경로 |
+| `watch` | `path` 외에 이 component에 영향을 주는 경로 |
 | `go_version` | Go 버전, 기본 `stable` |
 | `node_version` | Node.js 버전, 기본 `24` |
 | `java_version` | Java 버전, 기본 `17` |
-| `gradle_tasks` | Android CI task 변경 |
+| `gradle_tasks` | Android task 변경. 기본 `lintDebug testDebugUnitTest assembleDebug` |
 
-공용 package나 root lockfile 변경도 영향을 받는다면 `watch`에 추가합니다.
-
-```json
-{
-  "name": "web",
-  "type": "node",
-  "path": "apps/web",
-  "watch": ["apps/web", "packages/ui", "pnpm-lock.yaml"]
-}
-```
+파일 rename/move는 이전 경로와 새 경로가 모두 변경으로 취급됩니다.
 
 ### 3. Production 배포 추가
 
-일반 push에서는 production을 변경하지 않습니다.
+일반 push는 production을 변경하지 않습니다.
 
-Production은 stable Release 또는 `workflow_dispatch` 같은 **명시적 배포 workflow**에서 실행합니다.
+Production은 stable GitHub Release 또는 `workflow_dispatch`에서 명시적으로 실행합니다.
 
-프로젝트의 GitHub Environment에 `production`을 만들고 application/runtime secret을 등록합니다.
-
-예:
+먼저 repository에 GitHub Environment `production`을 만들고 application/runtime secret을 등록합니다.
 
 ```text
 Settings
@@ -157,30 +152,42 @@ jobs:
     environment: production
     runs-on: [self-hosted, linux]
     timeout-minutes: 30
-    env:
-      OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
-      JWT_SECRET: ${{ secrets.JWT_SECRET }}
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Checkout production source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Deploy
         uses: Mooner510/workflows/.github/actions/deploy@v1
+        env:
+          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
         with:
           working-directory: services/api
+          production-branch: master
 ```
 
-각 프로젝트는 실제 배포 로직만 component 내부에 둡니다.
+`production-branch`에는 실제 production source branch를 적습니다. `main`을 쓰는 프로젝트라면 `main`으로 변경합니다.
+
+중앙 deploy action은 다음을 검사한 뒤 project의 deploy script를 실행합니다.
+
+- 실행 이벤트가 `workflow_dispatch` 또는 stable published Release인지
+- 배포 commit이 `production-branch` history에 포함되는지
+- Release 사용 시 tag가 `vMAJOR.MINOR.PATCH`이고 draft/pre-release가 아닌지
+- deploy script가 선택한 component 내부에 있는지
+
+실제 배포 로직은 project에 둡니다.
 
 ```text
 services/api/.ci/deploy.sh
 ```
 
-중앙 deploy action은 이 script의 경로를 검증한 뒤 실행합니다.
+배포 script는 project 정책에 따라 immutable artifact/digest, 필요한 migration, rollout, health 확인을 수행합니다.
 
-일반 application/runtime secret은 GitHub Environment Secrets를 사용합니다. 서버에 장기 보관하는 예외는 DB CLI가 관리하는 DB credential과 Android signing material입니다.
+Application/runtime secret은 GitHub Environment Secrets를 사용합니다. DB CLI가 직접 관리하는 DB credential과 Android signing material은 서버 장기 보관 예외입니다.
 
 ## 기본 CI
 
@@ -188,15 +195,18 @@ services/api/.ci/deploy.sh
 
 ```text
 gofmt check
+go mod download
 go mod verify
-go vet ./...
-go test ./...
-go build ./...
+go vet
+go test
+go build
 ```
+
+같은 Go module의 format/download/verify는 한 번만 수행합니다.
 
 ### Node.js
 
-lockfile을 기준으로 의존성을 설치하고, 존재하는 script만 순서대로 실행합니다.
+lockfile root마다 의존성을 한 번 설치한 뒤 각 component의 존재하는 script를 실행합니다.
 
 ```text
 lint
@@ -205,7 +215,7 @@ test
 build
 ```
 
-pnpm 프로젝트는 `packageManager` 버전을 고정해야 합니다.
+pnpm 프로젝트는 root `package.json`에서 버전을 고정해야 합니다.
 
 ```json
 {
@@ -225,13 +235,18 @@ assembleDebug
 
 ## Security
 
-변경된 component 전체를 검사합니다.
+변경된 component를 한 Security job에서 중복 없이 검사합니다.
 
-- Semgrep: SAST
-- OSV-Scanner: dependency vulnerability
-- Trivy: secret / misconfiguration
+- **Semgrep CE**: source SAST
+- **OSV-Scanner**: dependency vulnerability
+- **Gitleaks**: git history secret scan
+- **Trivy**: Dockerfile/IaC 등 misconfiguration
 
-정기 전체 검사가 필요하면 caller에서 `force_all: true`로 실행합니다.
+스캐너는 self-hosted runner에서 로컬로 실행하며 서비스별 유료 요청량에 의존하지 않습니다. Scanner image는 digest로 고정합니다.
+
+Gitleaks는 현재 commit range를 검사하므로 commit 후 삭제된 secret도 잡을 수 있습니다. 전체 재검사가 필요한 실행에서는 전체 history를 검사합니다.
+
+Android는 Gradle dependency locking 또는 `gradle/verification-metadata.xml` 같은 지원 metadata가 없으면 dependency vulnerability coverage가 제한되며 warning을 출력합니다.
 
 ## Runner 요구사항
 
@@ -246,12 +261,14 @@ Docker
 
 Android 빌드는 Android SDK도 필요합니다.
 
+**persistent self-hosted runner에서는 신뢰하지 않는 fork/public PR 코드를 실행하지 않습니다.** CI 과정의 dependency install/test/build 자체가 repository 코드를 실행할 수 있기 때문입니다.
+
 ## Version
 
-기본 사용:
+안정 버전이 발행되면 기본적으로 major tag를 사용합니다.
 
 ```text
 @v1
 ```
 
-완전한 immutable pin이 필요하면 commit SHA를 사용합니다.
+특정 버전을 완전히 고정해야 하면 commit SHA를 사용합니다.
