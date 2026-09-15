@@ -3,7 +3,8 @@ name: Reusable Node CI
 on:
   workflow_call:
     inputs:
-      working_directory:
+      components:
+        description: JSON array of affected Node components.
         required: true
         type: string
       node_version:
@@ -34,151 +35,141 @@ jobs:
           node-version: ${{ inputs.node_version }}
           package-manager-cache: false
 
-      - name: Resolve component and package-manager root
-        id: project
+      - name: Install and check affected Node components
         shell: bash
         env:
-          WORKING_DIRECTORY: ${{ inputs.working_directory }}
+          COMPONENTS_JSON: ${{ inputs.components }}
         run: |
           set -euo pipefail
 
+          command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
           workspace="$(realpath "$GITHUB_WORKSPACE")"
-          component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
+          components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
 
-          if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
-            echo "::error::working_directory must resolve inside the repository."
+          if [[ "$(jq 'type' <<<"$components")" != '"array"' ]] || [[ "$(jq 'length' <<<"$components")" -eq 0 ]]; then
+            echo "::error::components must be a non-empty JSON array."
             exit 1
           fi
 
-          if [[ ! -f "$component/package.json" ]]; then
-            echo "::error::Node components must contain package.json."
-            exit 1
-          fi
+          declare -A installed_roots=()
+          declare -A checked_components=()
 
-          cursor="$component"
-          package_root=""
-          package_manager=""
+          resolve_project() {
+            local component="$1"
+            local cursor="$component"
+            local matches=()
 
-          while :; do
-            matches=()
+            PACKAGE_ROOT=""
+            PACKAGE_MANAGER=""
 
-            [[ -f "$cursor/pnpm-lock.yaml" ]] && matches+=("pnpm")
-            [[ -f "$cursor/yarn.lock" ]] && matches+=("yarn")
-            [[ -f "$cursor/package-lock.json" ]] && matches+=("npm")
+            while :; do
+              matches=()
+              [[ -f "$cursor/pnpm-lock.yaml" ]] && matches+=("pnpm")
+              [[ -f "$cursor/yarn.lock" ]] && matches+=("yarn")
+              [[ -f "$cursor/package-lock.json" ]] && matches+=("npm")
 
-            if (( ${#matches[@]} > 1 )); then
-              echo "::error::Multiple package-manager lockfiles found in '$cursor'. Keep exactly one."
-              exit 1
-            fi
-
-            if (( ${#matches[@]} == 1 )); then
-              package_root="$cursor"
-              package_manager="${matches[0]}"
-              break
-            fi
-
-            [[ "$cursor" == "$workspace" ]] && break
-            cursor="$(dirname "$cursor")"
-          done
-
-          if [[ -z "$package_root" ]]; then
-            echo "::error::No package-manager lockfile found from the component up to the repository root. Commit pnpm-lock.yaml, yarn.lock, or package-lock.json."
-            exit 1
-          fi
-
-          if [[ "$package_manager" == "pnpm" ]]; then
-            if [[ ! -f "$package_root/package.json" ]]; then
-              echo "::error::pnpm requires package.json at the package-manager root with a pinned packageManager field."
-              exit 1
-            fi
-
-            package_manager_field="$(node -p 'require(process.argv[1]).packageManager || ""' "$package_root/package.json")"
-            if [[ ! "$package_manager_field" =~ ^pnpm@[0-9] ]]; then
-              echo "::error::pnpm projects must pin packageManager, for example \"pnpm@10.17.1\"."
-              exit 1
-            fi
-          fi
-
-          if [[ "$package_manager" == "pnpm" || "$package_manager" == "yarn" ]]; then
-            if ! command -v corepack >/dev/null; then
-              echo "::error::corepack is required for $package_manager on the self-hosted runner."
-              exit 1
-            fi
-            corepack enable
-          fi
-
-          {
-            echo "component=$component"
-            echo "package_root=$package_root"
-            echo "package_manager=$package_manager"
-          } >>"$GITHUB_OUTPUT"
-
-      - name: Install dependencies
-        shell: bash
-        working-directory: ${{ steps.project.outputs.package_root }}
-        env:
-          PACKAGE_MANAGER: ${{ steps.project.outputs.package_manager }}
-        run: |
-          set -euo pipefail
-
-          case "$PACKAGE_MANAGER" in
-            npm)
-              npm ci
-              ;;
-            pnpm)
-              pnpm install --frozen-lockfile
-              ;;
-            yarn)
-              yarn_major="$(yarn --version | cut -d. -f1)"
-              if [[ "$yarn_major" == "1" ]]; then
-                yarn install --frozen-lockfile
-              else
-                yarn install --immutable
+              if (( ${#matches[@]} > 1 )); then
+                echo "::error::Multiple package-manager lockfiles found in '$cursor'. Keep exactly one."
+                exit 1
               fi
-              ;;
-            *)
-              echo "::error::Unsupported package manager '$PACKAGE_MANAGER'."
-              exit 1
-              ;;
-          esac
 
-      - name: Lint, type-check, test, and build when configured
-        shell: bash
-        working-directory: ${{ steps.project.outputs.component }}
-        env:
-          PACKAGE_MANAGER: ${{ steps.project.outputs.package_manager }}
-        run: |
-          set -euo pipefail
+              if (( ${#matches[@]} == 1 )); then
+                PACKAGE_ROOT="$cursor"
+                PACKAGE_MANAGER="${matches[0]}"
+                return
+              fi
 
-          has_script() {
-            node -e 'const p=require("./package.json"); process.exit(p.scripts && p.scripts[process.argv[1]] ? 0 : 1)' "$1"
+              [[ "$cursor" == "$workspace" ]] && break
+              cursor="$(dirname "$cursor")"
+            done
+
+            echo "::error::No package-manager lockfile found from '$component' up to the repository root."
+            exit 1
           }
 
-          run_script() {
-            local script="$1"
+          run_script_if_present() {
+            local manager="$1"
+            local component="$2"
+            local script="$3"
 
-            case "$PACKAGE_MANAGER" in
-              npm) npm run "$script" ;;
-              pnpm) pnpm run "$script" ;;
-              yarn) yarn run "$script" ;;
+            if ! (cd "$component" && node -e 'const p=require("./package.json"); process.exit(p.scripts && p.scripts[process.argv[1]] ? 0 : 1)' "$script"); then
+              return 1
+            fi
+
+            case "$manager" in
+              npm)  (cd "$component" && npm run "$script") ;;
+              pnpm) (cd "$component" && pnpm run "$script") ;;
+              yarn) (cd "$component" && yarn run "$script") ;;
             esac
           }
 
-          if has_script lint; then
-            run_script lint
-          fi
+          while IFS= read -r component_json; do
+            name="$(jq -r '.name // empty' <<<"$component_json")"
+            path="$(jq -r '.path // empty' <<<"$component_json")"
+            component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
 
-          for script in check-types typecheck type-check; do
-            if has_script "$script"; then
-              run_script "$script"
-              break
+            if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
+              echo "::error::Node component '$name' must resolve inside the repository."
+              exit 1
             fi
-          done
+            if [[ ! -f "$component/package.json" ]]; then
+              echo "::error::Node component '$name' must contain package.json."
+              exit 1
+            fi
 
-          if has_script test; then
-            run_script test
-          fi
+            resolve_project "$component"
 
-          if has_script build; then
-            run_script build
-          fi
+            if [[ "$PACKAGE_MANAGER" == "pnpm" ]]; then
+              if [[ ! -f "$PACKAGE_ROOT/package.json" ]]; then
+                echo "::error::pnpm requires package.json at the package-manager root."
+                exit 1
+              fi
+              package_manager_field="$(node -p 'require(process.argv[1]).packageManager || ""' "$PACKAGE_ROOT/package.json")"
+              if [[ ! "$package_manager_field" =~ ^pnpm@[0-9]+\.[0-9]+\.[0-9]+([+-].*)?$ ]]; then
+                echo "::error::pnpm projects must pin packageManager, for example \"pnpm@10.17.1\"."
+                exit 1
+              fi
+            fi
+
+            if [[ -z "${installed_roots[$PACKAGE_ROOT]+x}" ]]; then
+              echo "==> Install: $(realpath --relative-to="$workspace" "$PACKAGE_ROOT") ($PACKAGE_MANAGER)"
+              case "$PACKAGE_MANAGER" in
+                npm)
+                  (cd "$PACKAGE_ROOT" && npm ci)
+                  ;;
+                pnpm)
+                  command -v corepack >/dev/null || { echo "::error::corepack is required for pnpm."; exit 1; }
+                  corepack enable
+                  (cd "$PACKAGE_ROOT" && pnpm install --frozen-lockfile)
+                  ;;
+                yarn)
+                  command -v corepack >/dev/null || { echo "::error::corepack is required for yarn."; exit 1; }
+                  corepack enable
+                  yarn_major="$(cd "$PACKAGE_ROOT" && yarn --version | cut -d. -f1)"
+                  if [[ "$yarn_major" == "1" ]]; then
+                    (cd "$PACKAGE_ROOT" && yarn install --frozen-lockfile)
+                  else
+                    (cd "$PACKAGE_ROOT" && yarn install --immutable)
+                  fi
+                  ;;
+              esac
+              installed_roots[$PACKAGE_ROOT]=1
+            fi
+
+            if [[ -n "${checked_components[$component]+x}" ]]; then
+              continue
+            fi
+
+            echo "==> Node component: $name"
+            run_script_if_present "$PACKAGE_MANAGER" "$component" lint || true
+
+            for script in check-types typecheck type-check; do
+              if run_script_if_present "$PACKAGE_MANAGER" "$component" "$script"; then
+                break
+              fi
+            done
+
+            run_script_if_present "$PACKAGE_MANAGER" "$component" test || true
+            run_script_if_present "$PACKAGE_MANAGER" "$component" build || true
+            checked_components[$component]=1
+          done < <(jq -c '.[]' <<<"$components")
