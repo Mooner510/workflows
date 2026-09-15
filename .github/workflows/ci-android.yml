@@ -49,7 +49,7 @@ jobs:
           workspace="$(realpath "$GITHUB_WORKSPACE")"
           components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
 
-          if [[ "$(jq 'type' <<<"$components")" != '"array'" ]] || [[ "$(jq 'length' <<<"$components")" -eq 0 ]]; then
+          if [[ "$(jq 'type' <<<"$components")" != '"array"' ]] || [[ "$(jq 'length' <<<"$components")" -eq 0 ]]; then
             echo "::error::components must be a non-empty JSON array."
             exit 1
           fi
