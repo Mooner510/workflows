@@ -165,7 +165,7 @@ jobs:
 
             if [[ "$affected" != "true" ]]; then
               while IFS= read -r changed; do
-                if [[ "$changed" == ".github/workflows/"* ]]; then
+                if [[ "$changed" == ".github/workflows/"* || "$changed" == ".github/actions/"* ]]; then
                   affected=true
                   break
                 fi
