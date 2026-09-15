@@ -1,0 +1,174 @@
+name: Reusable Node CI
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        required: true
+        type: string
+      node_version:
+        required: false
+        type: string
+        default: '24'
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Node
+    runs-on: [self-hosted, linux]
+    env:
+      CI: 'true'
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node_version }}
+          package-manager-cache: false
+
+      - name: Resolve component and package-manager root
+        id: project
+        shell: bash
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+
+          workspace="$(realpath "$GITHUB_WORKSPACE")"
+          component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
+
+          if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
+            echo "::error::working_directory must resolve inside the repository."
+            exit 1
+          fi
+
+          if [[ ! -f "$component/package.json" ]]; then
+            echo "::error::Node components must contain package.json."
+            exit 1
+          fi
+
+          cursor="$component"
+          package_root=""
+          package_manager=""
+
+          while :; do
+            matches=()
+
+            [[ -f "$cursor/pnpm-lock.yaml" ]] && matches+=("pnpm")
+            [[ -f "$cursor/yarn.lock" ]] && matches+=("yarn")
+            [[ -f "$cursor/package-lock.json" ]] && matches+=("npm")
+
+            if (( ${#matches[@]} > 1 )); then
+              echo "::error::Multiple package-manager lockfiles found in '$cursor'. Keep exactly one."
+              exit 1
+            fi
+
+            if (( ${#matches[@]} == 1 )); then
+              package_root="$cursor"
+              package_manager="${matches[0]}"
+              break
+            fi
+
+            [[ "$cursor" == "$workspace" ]] && break
+            cursor="$(dirname "$cursor")"
+          done
+
+          if [[ -z "$package_root" ]]; then
+            echo "::error::No package-manager lockfile found from the component up to the repository root. Commit pnpm-lock.yaml, yarn.lock, or package-lock.json."
+            exit 1
+          fi
+
+          if [[ "$package_manager" == "pnpm" || "$package_manager" == "yarn" ]]; then
+            if ! command -v corepack >/dev/null; then
+              echo "::error::corepack is required for $package_manager on the self-hosted runner."
+              exit 1
+            fi
+            corepack enable
+
+            if [[ -f "$package_root/package.json" ]] && ! node -e 'const p=require(process.argv[1]); process.exit(typeof p.packageManager === "string" ? 0 : 1)' "$package_root/package.json"; then
+              echo "::warning::$package_manager is used without packageManager in the package-root package.json; pinning the package-manager version is recommended."
+            fi
+          fi
+
+          {
+            echo "component=$component"
+            echo "package_root=$package_root"
+            echo "package_manager=$package_manager"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        shell: bash
+        working-directory: ${{ steps.project.outputs.package_root }}
+        env:
+          PACKAGE_MANAGER: ${{ steps.project.outputs.package_manager }}
+        run: |
+          set -euo pipefail
+
+          case "$PACKAGE_MANAGER" in
+            npm)
+              npm ci
+              ;;
+            pnpm)
+              pnpm install --frozen-lockfile
+              ;;
+            yarn)
+              yarn_major="$(yarn --version | cut -d. -f1)"
+              if [[ "$yarn_major" == "1" ]]; then
+                yarn install --frozen-lockfile
+              else
+                yarn install --immutable
+              fi
+              ;;
+            *)
+              echo "::error::Unsupported package manager '$PACKAGE_MANAGER'."
+              exit 1
+              ;;
+          esac
+
+      - name: Lint, type-check, test, and build when configured
+        shell: bash
+        working-directory: ${{ steps.project.outputs.component }}
+        env:
+          PACKAGE_MANAGER: ${{ steps.project.outputs.package_manager }}
+        run: |
+          set -euo pipefail
+
+          has_script() {
+            node -e 'const p=require("./package.json"); process.exit(p.scripts && p.scripts[process.argv[1]] ? 0 : 1)' "$1"
+          }
+
+          run_script() {
+            local script="$1"
+
+            case "$PACKAGE_MANAGER" in
+              npm) npm run "$script" ;;
+              pnpm) pnpm run "$script" ;;
+              yarn) yarn run "$script" ;;
+            esac
+          }
+
+          if has_script lint; then
+            run_script lint
+          fi
+
+          for script in check-types typecheck type-check; do
+            if has_script "$script"; then
+              run_script "$script"
+              break
+            fi
+          done
+
+          if has_script test; then
+            run_script test
+          fi
+
+          if has_script build; then
+            run_script build
+          fi

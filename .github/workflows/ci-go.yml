@@ -1,0 +1,71 @@
+name: Reusable Go CI
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        required: true
+        type: string
+      go_version:
+        required: false
+        type: string
+        default: stable
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Go
+    runs-on: [self-hosted, linux]
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate component path
+        id: path
+        shell: bash
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+
+          workspace="$(realpath "$GITHUB_WORKSPACE")"
+          target="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
+
+          if [[ -z "$target" ]] || { [[ "$target" != "$workspace" ]] && [[ "$target" != "$workspace/"* ]]; }; then
+            echo "::error::working_directory must resolve inside the repository."
+            exit 1
+          fi
+
+          if [[ ! -f "$target/go.mod" ]]; then
+            echo "::error::Go components must point to a module directory containing go.mod."
+            exit 1
+          fi
+
+          echo "target=$target" >>"$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ inputs.go_version }}
+          cache: false
+
+      - name: Download dependencies
+        working-directory: ${{ steps.path.outputs.target }}
+        run: go mod download
+
+      - name: Vet
+        working-directory: ${{ steps.path.outputs.target }}
+        run: go vet ./...
+
+      - name: Test
+        working-directory: ${{ steps.path.outputs.target }}
+        run: go test ./...
+
+      - name: Build
+        working-directory: ${{ steps.path.outputs.target }}
+        run: go build ./...

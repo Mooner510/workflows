@@ -1,0 +1,85 @@
+name: Reusable Android CI
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        required: true
+        type: string
+      java_version:
+        required: false
+        type: string
+        default: '17'
+      gradle_tasks:
+        description: Space-separated Gradle tasks.
+        required: false
+        type: string
+        default: lint test assembleDebug
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Android
+    runs-on: [self-hosted, linux]
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate component path
+        id: path
+        shell: bash
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+
+          workspace="$(realpath "$GITHUB_WORKSPACE")"
+          target="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
+
+          if [[ -z "$target" ]] || { [[ "$target" != "$workspace" ]] && [[ "$target" != "$workspace/"* ]]; }; then
+            echo "::error::working_directory must resolve inside the repository."
+            exit 1
+          fi
+
+          if [[ ! -f "$target/gradlew" ]]; then
+            echo "::error::Android components must point to the Gradle wrapper root containing gradlew."
+            exit 1
+          fi
+
+          echo "target=$target" >>"$GITHUB_OUTPUT"
+
+      - name: Set up Java
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+
+      - name: Run Gradle CI
+        shell: bash
+        working-directory: ${{ steps.path.outputs.target }}
+        env:
+          GRADLE_TASKS: ${{ inputs.gradle_tasks }}
+        run: |
+          set -euo pipefail
+
+          chmod +x ./gradlew
+
+          read -r -a tasks <<<"$GRADLE_TASKS"
+          if (( ${#tasks[@]} == 0 )); then
+            echo "::error::gradle_tasks must contain at least one task."
+            exit 1
+          fi
+
+          for task in "${tasks[@]}"; do
+            if [[ ! "$task" =~ ^[A-Za-z0-9_:.-]+$ ]]; then
+              echo "::error::Invalid Gradle task '$task'."
+              exit 1
+            fi
+          done
+
+          ./gradlew --no-daemon "${tasks[@]}"

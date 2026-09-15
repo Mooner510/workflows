@@ -1,0 +1,299 @@
+name: Reusable CI Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      components:
+        description: JSON array describing repository components.
+        required: true
+        type: string
+      force_all:
+        description: Run all configured components without change detection.
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      changed_components:
+        description: JSON array of changed components.
+        value: ${{ jobs.detect.outputs.all_matrix }}
+      deploy_components:
+        description: JSON array of changed components with deploy=true.
+        value: ${{ jobs.detect.outputs.deploy_matrix }}
+      has_changes:
+        description: Whether at least one configured component changed.
+        value: ${{ jobs.detect.outputs.has_changes }}
+      has_deployments:
+        description: Whether at least one changed component has deploy=true.
+        value: ${{ jobs.detect.outputs.has_deployments }}
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    name: Detect changes
+    runs-on: [self-hosted, linux]
+
+    outputs:
+      all_matrix: ${{ steps.detect.outputs.all_matrix }}
+      go_matrix: ${{ steps.detect.outputs.go_matrix }}
+      node_matrix: ${{ steps.detect.outputs.node_matrix }}
+      android_matrix: ${{ steps.detect.outputs.android_matrix }}
+      deploy_matrix: ${{ steps.detect.outputs.deploy_matrix }}
+      has_changes: ${{ steps.detect.outputs.has_changes }}
+      has_go: ${{ steps.detect.outputs.has_go }}
+      has_node: ${{ steps.detect.outputs.has_node }}
+      has_android: ${{ steps.detect.outputs.has_android }}
+      has_deployments: ${{ steps.detect.outputs.has_deployments }}
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Validate configuration and detect affected components
+        id: detect
+        shell: bash
+        env:
+          COMPONENTS_JSON: ${{ inputs.components }}
+          FORCE_ALL: ${{ inputs.force_all }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          command -v git >/dev/null || { echo "::error::git is required on the self-hosted runner."; exit 1; }
+          command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+
+          components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+
+          if [[ "$(jq 'type' <<<"$components")" != '"array"' ]] || [[ "$(jq 'length' <<<"$components")" -eq 0 ]]; then
+            echo "::error::components must be a non-empty JSON array."
+            exit 1
+          fi
+
+          duplicate_names="$(jq -r 'group_by(.name)[] | select(length > 1) | .[0].name' <<<"$components")"
+          if [[ -n "$duplicate_names" ]]; then
+            echo "::error::Component names must be unique: ${duplicate_names//$'\n'/, }"
+            exit 1
+          fi
+
+          workspace="$(realpath "$GITHUB_WORKSPACE")"
+
+          validate_relative_path() {
+            local value="$1"
+            local label="$2"
+
+            if [[ -z "$value" ]] || [[ "$value" == /* ]] || [[ "$value" == *$'\n'* ]] || [[ "$value" == *$'\r'* ]]; then
+              echo "::error::$label must be a non-empty repository-relative path."
+              exit 1
+            fi
+
+            if [[ "$value" == ".." || "$value" == ../* || "$value" == */../* || "$value" == */.. ]]; then
+              echo "::error::$label must not contain '..' path traversal."
+              exit 1
+            fi
+          }
+
+          count="$(jq 'length' <<<"$components")"
+          for ((i = 0; i < count; i++)); do
+            component="$(jq -c ".[$i]" <<<"$components")"
+            name="$(jq -r '.name // empty' <<<"$component")"
+            type="$(jq -r '.type // empty' <<<"$component")"
+            path="$(jq -r '.path // empty' <<<"$component")"
+
+            if [[ "$(jq 'type' <<<"$component")" != '"object"' ]]; then
+              echo "::error::Every components entry must be an object."
+              exit 1
+            fi
+
+            if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+              echo "::error::Invalid component name '$name'. Use letters, numbers, '.', '_' or '-'."
+              exit 1
+            fi
+
+            case "$type" in
+              go|node|android) ;;
+              *)
+                echo "::error::Component '$name' has unsupported type '$type'. Expected go, node, or android."
+                exit 1
+                ;;
+            esac
+
+            validate_relative_path "$path" "Component '$name' path"
+
+            resolved="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+            if [[ -z "$resolved" ]] || { [[ "$resolved" != "$workspace" ]] && [[ "$resolved" != "$workspace/"* ]]; }; then
+              echo "::error::Component '$name' path '$path' does not resolve inside the repository."
+              exit 1
+            fi
+
+            if ! jq -e '(.watch == null) or ((.watch | type) == "array" and all(.watch[]; type == "string"))' <<<"$component" >/dev/null; then
+              echo "::error::Component '$name' watch must be an array of repository-relative path strings."
+              exit 1
+            fi
+
+            while IFS= read -r watch; do
+              validate_relative_path "$watch" "Component '$name' watch entry"
+            done < <(jq -r --arg path "$path" '.watch // [$path] | .[]' <<<"$component")
+
+            if ! jq -e '(.deploy == null) or (.deploy | type == "boolean")' <<<"$component" >/dev/null; then
+              echo "::error::Component '$name' deploy must be a boolean."
+              exit 1
+            fi
+
+            deploy_script="$(jq -r '.deploy_script // ".ci/deploy.sh"' <<<"$component")"
+            validate_relative_path "$deploy_script" "Component '$name' deploy_script"
+          done
+
+          force_all=false
+          changed_file_list="$(mktemp)"
+          trap 'rm -f "$changed_file_list"' EXIT
+
+          if [[ "$FORCE_ALL" == "true" ]]; then
+            force_all=true
+            echo "force_all=true: every configured component is affected."
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_sha="$PR_BASE_SHA"
+            head_sha="$HEAD_SHA"
+
+            git cat-file -e "${base_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$base_sha"
+            git cat-file -e "${head_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$head_sha"
+
+            merge_base="$(git merge-base "$base_sha" "$head_sha")"
+            git diff --name-only --diff-filter=ACMRD "$merge_base" "$head_sha" >"$changed_file_list"
+          elif [[ "$EVENT_NAME" == "push" ]] && [[ -n "${PUSH_BEFORE_SHA:-}" ]] && [[ ! "$PUSH_BEFORE_SHA" =~ ^0+$ ]]; then
+            git cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2>/dev/null || git fetch --no-tags origin "$PUSH_BEFORE_SHA"
+            git diff --name-only --diff-filter=ACMRD "$PUSH_BEFORE_SHA" "$HEAD_SHA" >"$changed_file_list"
+          else
+            # workflow_dispatch, schedule, a new branch, or an event without a reliable base.
+            # Running everything is safer than silently missing a component.
+            force_all=true
+            echo "No reliable diff base for event '$EVENT_NAME'; every configured component is affected."
+          fi
+
+          if [[ "$force_all" != "true" ]]; then
+            echo "Changed files:"
+            if [[ -s "$changed_file_list" ]]; then
+              sed 's/^/  - /' "$changed_file_list"
+            else
+              echo "  (none)"
+            fi
+          fi
+
+          selected='[]'
+
+          for ((i = 0; i < count; i++)); do
+            component="$(jq -c ".[$i]" <<<"$components")"
+            name="$(jq -r '.name' <<<"$component")"
+            path="$(jq -r '.path' <<<"$component")"
+            affected="$force_all"
+
+            if [[ "$affected" != "true" ]]; then
+              while IFS= read -r changed; do
+                # A workflow change can alter the behavior of every component.
+                if [[ "$changed" == ".github/workflows/"* ]]; then
+                  affected=true
+                  break
+                fi
+
+                while IFS= read -r watch; do
+                  watch="${watch%/}"
+
+                  if [[ "$watch" == "." ]] || [[ "$changed" == "$watch" ]] || [[ "$changed" == "$watch/"* ]]; then
+                    affected=true
+                    break 2
+                  fi
+                done < <(jq -r '.watch // [.path] | .[]' <<<"$component")
+              done <"$changed_file_list"
+            fi
+
+            if [[ "$affected" == "true" ]]; then
+              selected="$(jq -c --argjson component "$component" '. + [$component]' <<<"$selected")"
+              echo "Affected: $name ($path)"
+            fi
+          done
+
+          go_matrix="$(jq -c '[.[] | select(.type == "go")]' <<<"$selected")"
+          node_matrix="$(jq -c '[.[] | select(.type == "node")]' <<<"$selected")"
+          android_matrix="$(jq -c '[.[] | select(.type == "android")]' <<<"$selected")"
+          deploy_matrix="$(jq -c '[.[] | select(.deploy == true)]' <<<"$selected")"
+
+          bool_for_length() {
+            if [[ "$(jq 'length' <<<"$1")" -gt 0 ]]; then
+              printf 'true'
+            else
+              printf 'false'
+            fi
+          }
+
+          {
+            echo "all_matrix=$(jq -c '.' <<<"$selected")"
+            echo "go_matrix=$go_matrix"
+            echo "node_matrix=$node_matrix"
+            echo "android_matrix=$android_matrix"
+            echo "deploy_matrix=$deploy_matrix"
+            echo "has_changes=$(bool_for_length "$selected")"
+            echo "has_go=$(bool_for_length "$go_matrix")"
+            echo "has_node=$(bool_for_length "$node_matrix")"
+            echo "has_android=$(bool_for_length "$android_matrix")"
+            echo "has_deployments=$(bool_for_length "$deploy_matrix")"
+          } >>"$GITHUB_OUTPUT"
+
+  security:
+    name: Security / ${{ matrix.component.name }}
+    needs: detect
+    if: needs.detect.outputs.has_changes == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(needs.detect.outputs.all_matrix) }}
+    uses: $/.github/workflows/security.yml
+    with:
+      component_type: ${{ matrix.component.type }}
+      working_directory: ${{ matrix.component.path }}
+
+  ci_go:
+    name: CI / ${{ matrix.component.name }}
+    needs: detect
+    if: needs.detect.outputs.has_go == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(needs.detect.outputs.go_matrix) }}
+    uses: $/.github/workflows/ci-go.yml
+    with:
+      working_directory: ${{ matrix.component.path }}
+      go_version: ${{ matrix.component.go_version || 'stable' }}
+
+  ci_node:
+    name: CI / ${{ matrix.component.name }}
+    needs: detect
+    if: needs.detect.outputs.has_node == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(needs.detect.outputs.node_matrix) }}
+    uses: $/.github/workflows/ci-node.yml
+    with:
+      working_directory: ${{ matrix.component.path }}
+      node_version: ${{ matrix.component.node_version || '24' }}
+
+  ci_android:
+    name: CI / ${{ matrix.component.name }}
+    needs: detect
+    if: needs.detect.outputs.has_android == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(needs.detect.outputs.android_matrix) }}
+    uses: $/.github/workflows/ci-android.yml
+    with:
+      working_directory: ${{ matrix.component.path }}
+      java_version: ${{ matrix.component.java_version || '17' }}
+      gradle_tasks: ${{ matrix.component.gradle_tasks || 'lint test assembleDebug' }}
