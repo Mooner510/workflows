@@ -15,16 +15,10 @@ on:
     outputs:
       changed_components:
         description: JSON array of changed components.
-        value: ${{ jobs.detect.outputs.all_matrix }}
-      deploy_components:
-        description: JSON array of changed components with deploy=true.
-        value: ${{ jobs.detect.outputs.deploy_matrix }}
+        value: ${{ jobs.detect.outputs.all_components }}
       has_changes:
         description: Whether at least one configured component changed.
         value: ${{ jobs.detect.outputs.has_changes }}
-      has_deployments:
-        description: Whether at least one changed component has deploy=true.
-        value: ${{ jobs.detect.outputs.has_deployments }}
 
 permissions:
   contents: read
@@ -36,16 +30,15 @@ jobs:
     timeout-minutes: 10
 
     outputs:
-      all_matrix: ${{ steps.detect.outputs.all_matrix }}
-      go_matrix: ${{ steps.detect.outputs.go_matrix }}
-      node_matrix: ${{ steps.detect.outputs.node_matrix }}
-      android_matrix: ${{ steps.detect.outputs.android_matrix }}
-      deploy_matrix: ${{ steps.detect.outputs.deploy_matrix }}
+      all_components: ${{ steps.detect.outputs.all_components }}
+      go_groups: ${{ steps.detect.outputs.go_groups }}
+      node_groups: ${{ steps.detect.outputs.node_groups }}
+      android_groups: ${{ steps.detect.outputs.android_groups }}
       has_changes: ${{ steps.detect.outputs.has_changes }}
       has_go: ${{ steps.detect.outputs.has_go }}
       has_node: ${{ steps.detect.outputs.has_node }}
       has_android: ${{ steps.detect.outputs.has_android }}
-      has_deployments: ${{ steps.detect.outputs.has_deployments }}
+      git_log_opts: ${{ steps.detect.outputs.git_log_opts }}
 
     steps:
       - name: Checkout caller repository
@@ -72,7 +65,6 @@ jobs:
           command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
 
           components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
-
           if [[ "$(jq 'type' <<<"$components")" != '"array"' ]] || [[ "$(jq 'length' <<<"$components")" -eq 0 ]]; then
             echo "::error::components must be a non-empty JSON array."
             exit 1
@@ -89,12 +81,10 @@ jobs:
           validate_relative_path() {
             local value="$1"
             local label="$2"
-
             if [[ -z "$value" ]] || [[ "$value" == /* ]] || [[ "$value" == *$'\n'* ]] || [[ "$value" == *$'\r'* ]]; then
               echo "::error::$label must be a non-empty repository-relative path."
               exit 1
             fi
-
             if [[ "$value" == ".." || "$value" == ../* || "$value" == */../* || "$value" == */.. ]]; then
               echo "::error::$label must not contain '..' path traversal."
               exit 1
@@ -112,22 +102,16 @@ jobs:
               echo "::error::Every components entry must be an object."
               exit 1
             fi
-
             if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
-              echo "::error::Invalid component name '$name'. Use letters, numbers, '.', '_' or '-'."
+              echo "::error::Invalid component name '$name'."
               exit 1
             fi
-
             case "$type" in
               go|node|android) ;;
-              *)
-                echo "::error::Component '$name' has unsupported type '$type'. Expected go, node, or android."
-                exit 1
-                ;;
+              *) echo "::error::Component '$name' has unsupported type '$type'."; exit 1 ;;
             esac
 
             validate_relative_path "$path" "Component '$name' path"
-
             resolved="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
             if [[ -z "$resolved" ]] || { [[ "$resolved" != "$workspace" ]] && [[ "$resolved" != "$workspace/"* ]]; }; then
               echo "::error::Component '$name' path '$path' does not resolve inside the repository."
@@ -138,23 +122,15 @@ jobs:
               echo "::error::Component '$name' watch must be an array of repository-relative path strings."
               exit 1
             fi
-
             while IFS= read -r watch; do
               validate_relative_path "$watch" "Component '$name' watch entry"
-            done < <(jq -r --arg path "$path" '.watch // [$path] | .[]' <<<"$component")
-
-            if ! jq -e '(.deploy == null) or (.deploy | type == "boolean")' <<<"$component" >/dev/null; then
-              echo "::error::Component '$name' deploy must be a boolean."
-              exit 1
-            fi
-
-            deploy_script="$(jq -r '.deploy_script // ".ci/deploy.sh"' <<<"$component")"
-            validate_relative_path "$deploy_script" "Component '$name' deploy_script"
+            done < <(jq -r '.watch // [] | .[]' <<<"$component")
           done
 
           force_all=false
           changed_file_list="$(mktemp)"
           trap 'rm -f "$changed_file_list"' EXIT
+          git_log_opts="--all"
 
           if [[ "$FORCE_ALL" == "true" ]]; then
             force_all=true
@@ -162,15 +138,15 @@ jobs:
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             base_sha="$PR_BASE_SHA"
             head_sha="$HEAD_SHA"
-
             git cat-file -e "${base_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$base_sha"
             git cat-file -e "${head_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$head_sha"
-
             merge_base="$(git merge-base "$base_sha" "$head_sha")"
-            git diff --name-only --diff-filter=ACMRD "$merge_base" "$head_sha" >"$changed_file_list"
+            git diff --name-only --no-renames --diff-filter=ACMRD "$merge_base" "$head_sha" >"$changed_file_list"
+            git_log_opts="${merge_base}..${head_sha}"
           elif [[ "$EVENT_NAME" == "push" ]] && [[ -n "${PUSH_BEFORE_SHA:-}" ]] && [[ ! "$PUSH_BEFORE_SHA" =~ ^0+$ ]]; then
             git cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2>/dev/null || git fetch --no-tags origin "$PUSH_BEFORE_SHA"
-            git diff --name-only --diff-filter=ACMRD "$PUSH_BEFORE_SHA" "$HEAD_SHA" >"$changed_file_list"
+            git diff --name-only --no-renames --diff-filter=ACMRD "$PUSH_BEFORE_SHA" "$HEAD_SHA" >"$changed_file_list"
+            git_log_opts="${PUSH_BEFORE_SHA}..${HEAD_SHA}"
           else
             force_all=true
             echo "No reliable diff base for event '$EVENT_NAME'; every configured component is affected."
@@ -178,15 +154,10 @@ jobs:
 
           if [[ "$force_all" != "true" ]]; then
             echo "Changed files:"
-            if [[ -s "$changed_file_list" ]]; then
-              sed 's/^/  - /' "$changed_file_list"
-            else
-              echo "  (none)"
-            fi
+            [[ -s "$changed_file_list" ]] && sed 's/^/  - /' "$changed_file_list" || echo "  (none)"
           fi
 
           selected='[]'
-
           for ((i = 0; i < count; i++)); do
             component="$(jq -c ".[$i]" <<<"$components")"
             name="$(jq -r '.name' <<<"$component")"
@@ -201,12 +172,11 @@ jobs:
 
                 while IFS= read -r watch; do
                   watch="${watch%/}"
-
                   if [[ "$watch" == "." ]] || [[ "$changed" == "$watch" ]] || [[ "$changed" == "$watch/"* ]]; then
                     affected=true
                     break 2
                   fi
-                done < <(jq -r '.watch // [.path] | .[]' <<<"$component")
+                done < <(jq -r '([.path] + (.watch // [])) | unique | .[]' <<<"$component")
               done <"$changed_file_list"
             fi
 
@@ -216,81 +186,74 @@ jobs:
             fi
           done
 
-          go_matrix="$(jq -c '[.[] | select(.type == "go")]' <<<"$selected")"
-          node_matrix="$(jq -c '[.[] | select(.type == "node")]' <<<"$selected")"
-          android_matrix="$(jq -c '[.[] | select(.type == "android")]' <<<"$selected")"
-          deploy_matrix="$(jq -c '[.[] | select(.deploy == true)]' <<<"$selected")"
+          go_components="$(jq -c '[.[] | select(.type == "go")]' <<<"$selected")"
+          node_components="$(jq -c '[.[] | select(.type == "node")]' <<<"$selected")"
+          android_components="$(jq -c '[.[] | select(.type == "android")]' <<<"$selected")"
+
+          go_groups="$(jq -c 'group_by(.go_version // "stable") | map({version:(.[0].go_version // "stable"), components:.})' <<<"$go_components")"
+          node_groups="$(jq -c 'group_by(.node_version // "24") | map({version:(.[0].node_version // "24"), components:.})' <<<"$node_components")"
+          android_groups="$(jq -c 'group_by(.java_version // "17") | map({version:(.[0].java_version // "17"), components:.})' <<<"$android_components")"
 
           bool_for_length() {
-            if [[ "$(jq 'length' <<<"$1")" -gt 0 ]]; then
-              printf 'true'
-            else
-              printf 'false'
-            fi
+            [[ "$(jq 'length' <<<"$1")" -gt 0 ]] && printf 'true' || printf 'false'
           }
 
           {
-            echo "all_matrix=$(jq -c '.' <<<"$selected")"
-            echo "go_matrix=$go_matrix"
-            echo "node_matrix=$node_matrix"
-            echo "android_matrix=$android_matrix"
-            echo "deploy_matrix=$deploy_matrix"
+            echo "all_components=$selected"
+            echo "go_groups=$go_groups"
+            echo "node_groups=$node_groups"
+            echo "android_groups=$android_groups"
             echo "has_changes=$(bool_for_length "$selected")"
-            echo "has_go=$(bool_for_length "$go_matrix")"
-            echo "has_node=$(bool_for_length "$node_matrix")"
-            echo "has_android=$(bool_for_length "$android_matrix")"
-            echo "has_deployments=$(bool_for_length "$deploy_matrix")"
+            echo "has_go=$(bool_for_length "$go_components")"
+            echo "has_node=$(bool_for_length "$node_components")"
+            echo "has_android=$(bool_for_length "$android_components")"
+            echo "git_log_opts=$git_log_opts"
           } >>"$GITHUB_OUTPUT"
 
   security:
-    name: Security / ${{ matrix.component.name }}
+    name: Security
     needs: detect
     if: needs.detect.outputs.has_changes == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        component: ${{ fromJSON(needs.detect.outputs.all_matrix) }}
     uses: $/.github/workflows/security.yml
     with:
-      component_type: ${{ matrix.component.type }}
-      working_directory: ${{ matrix.component.path }}
+      components: ${{ needs.detect.outputs.all_components }}
+      git_log_opts: ${{ needs.detect.outputs.git_log_opts }}
 
   ci_go:
-    name: CI / ${{ matrix.component.name }}
+    name: CI / Go ${{ matrix.group.version }}
     needs: detect
     if: needs.detect.outputs.has_go == 'true'
     strategy:
       fail-fast: false
       matrix:
-        component: ${{ fromJSON(needs.detect.outputs.go_matrix) }}
+        group: ${{ fromJSON(needs.detect.outputs.go_groups) }}
     uses: $/.github/workflows/ci-go.yml
     with:
-      working_directory: ${{ matrix.component.path }}
-      go_version: ${{ matrix.component.go_version || 'stable' }}
+      components: ${{ toJSON(matrix.group.components) }}
+      go_version: ${{ matrix.group.version }}
 
   ci_node:
-    name: CI / ${{ matrix.component.name }}
+    name: CI / Node ${{ matrix.group.version }}
     needs: detect
     if: needs.detect.outputs.has_node == 'true'
     strategy:
       fail-fast: false
       matrix:
-        component: ${{ fromJSON(needs.detect.outputs.node_matrix) }}
+        group: ${{ fromJSON(needs.detect.outputs.node_groups) }}
     uses: $/.github/workflows/ci-node.yml
     with:
-      working_directory: ${{ matrix.component.path }}
-      node_version: ${{ matrix.component.node_version || '24' }}
+      components: ${{ toJSON(matrix.group.components) }}
+      node_version: ${{ matrix.group.version }}
 
   ci_android:
-    name: CI / ${{ matrix.component.name }}
+    name: CI / Android Java ${{ matrix.group.version }}
     needs: detect
     if: needs.detect.outputs.has_android == 'true'
     strategy:
       fail-fast: false
       matrix:
-        component: ${{ fromJSON(needs.detect.outputs.android_matrix) }}
+        group: ${{ fromJSON(needs.detect.outputs.android_groups) }}
     uses: $/.github/workflows/ci-android.yml
     with:
-      working_directory: ${{ matrix.component.path }}
-      java_version: ${{ matrix.component.java_version || '17' }}
-      gradle_tasks: ${{ matrix.component.gradle_tasks || 'lintDebug testDebugUnitTest assembleDebug' }}
+      components: ${{ toJSON(matrix.group.components) }}
+      java_version: ${{ matrix.group.version }}
