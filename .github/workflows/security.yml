@@ -169,12 +169,25 @@ jobs:
           TARGET_FILE: ${{ steps.targets.outputs.scan_targets }}
         run: |
           set -euo pipefail
-          mapfile -t targets <"$TARGET_FILE"
+          mapfile -t container_targets <"$TARGET_FILE"
+          targets=()
+
+          for target in "${container_targets[@]}"; do
+            if [[ "$target" == "/src" ]]; then
+              targets+=(".")
+            elif [[ "$target" == "/src/"* ]]; then
+              targets+=("${target#/src/}")
+            else
+              echo "::error::Invalid Semgrep target '$target'."
+              exit 1
+            fi
+          done
 
           docker run --rm \
             --cap-drop=ALL \
             --security-opt=no-new-privileges \
             -v "$GITHUB_WORKSPACE:/src:ro" \
+            -w /src \
             semgrep/semgrep@sha256:012c8fe81c14da2d7691b90fcd826ce07f460a3301442b16c460575c87d3efb6 \
             semgrep scan \
               --config p/default \
