@@ -36,7 +36,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4
         with:
-          packages: 'platform-tools platforms;android-37 build-tools;36.0.0'
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
 
       - name: Run affected Android checks
         shell: bash
@@ -49,7 +49,7 @@ jobs:
           workspace="$(realpath "$GITHUB_WORKSPACE")"
           components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
 
-          if [[ "$(jq 'type' <<<"$components")" != '"array"' ]] || [[ "$(jq 'length' <<<"$components")" -eq 0 ]]; then
+          if [[ "$(jq 'type' <<<"$components")" != '"array'" ]] || [[ "$(jq 'length' <<<"$components")" -eq 0 ]]; then
             echo "::error::components must be a non-empty JSON array."
             exit 1
           fi
