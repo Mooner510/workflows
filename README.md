@@ -172,9 +172,12 @@ jobs:
 
 `production-branch`에는 실제 production source branch를 적습니다. `main`을 쓰는 프로젝트라면 `main`으로 변경합니다.
 
+`workflow_dispatch` 배포는 **반드시 해당 `production-branch`를 선택한 상태에서 실행**해야 합니다.
+
 중앙 deploy action은 다음을 검사한 뒤 project의 deploy script를 실행합니다.
 
 - 실행 이벤트가 `workflow_dispatch` 또는 stable published Release인지
+- manual 배포가 정확히 `production-branch`에서 실행됐는지
 - 배포 commit이 `production-branch` history에 포함되는지
 - Release 사용 시 tag가 `vMAJOR.MINOR.PATCH`이고 draft/pre-release가 아닌지
 - deploy script가 선택한 component 내부에 있는지
@@ -187,7 +190,7 @@ services/api/.ci/deploy.sh
 
 배포 script는 project 정책에 따라 immutable artifact/digest, 필요한 migration, rollout, health 확인을 수행합니다.
 
-Application/runtime secret은 GitHub Environment Secrets를 사용합니다. DB CLI가 직접 관리하는 DB credential과 Android signing material은 서버 장기 보관 예외입니다.
+Application/runtime secret은 GitHub Environment Secrets를 사용하고 필요한 Deploy step에만 주입합니다. DB CLI가 직접 관리하는 DB credential과 Android signing material은 서버 장기 보관 예외입니다.
 
 ## 기본 CI
 
@@ -215,7 +218,7 @@ test
 build
 ```
 
-pnpm 프로젝트는 root `package.json`에서 버전을 고정해야 합니다.
+pnpm 또는 Yarn을 사용하는 프로젝트는 root `package.json`의 `packageManager` 버전을 고정해야 합니다.
 
 ```json
 {
@@ -239,12 +242,14 @@ assembleDebug
 
 - **Semgrep CE**: source SAST
 - **OSV-Scanner**: dependency vulnerability
-- **Gitleaks**: git history secret scan
+- **Gitleaks**: 현재 파일 + git history secret scan
 - **Trivy**: Dockerfile/IaC 등 misconfiguration
 
 스캐너는 self-hosted runner에서 로컬로 실행하며 서비스별 유료 요청량에 의존하지 않습니다. Scanner image는 digest로 고정합니다.
 
-Gitleaks는 현재 commit range를 검사하므로 commit 후 삭제된 secret도 잡을 수 있습니다. 전체 재검사가 필요한 실행에서는 전체 history를 검사합니다.
+Gitleaks는 현재 파일과 현재 commit range를 모두 검사하므로, 현재 남아 있는 secret과 commit 후 삭제된 secret을 함께 검사합니다. 전체 재검사가 필요한 실행에서는 전체 history를 검사합니다.
+
+Semgrep rule과 OSV/Trivy database·check는 최신 보안 정보를 사용하기 위해 실행 시 네트워크에서 갱신될 수 있습니다. 분석 자체는 self-hosted runner에서 수행됩니다.
 
 Android는 Gradle dependency locking 또는 `gradle/verification-metadata.xml` 같은 지원 metadata가 없으면 dependency vulnerability coverage가 제한되며 warning을 출력합니다.
 
