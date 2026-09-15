@@ -1,88 +1,34 @@
 # workflows
 
-Central reusable GitHub Actions workflows for self-hosted Linux runners.
+공용 self-hosted GitHub Actions workflow 모음입니다.
 
-Supported targets:
+지원 범위:
 
-- Go services and APIs
-- Android projects using Java/Kotlin + Gradle
-- JavaScript/TypeScript web apps such as React, Next.js, and Vite
-- JavaScript/TypeScript Node.js servers such as NestJS and Express
+- Go
+- Node.js / JavaScript / TypeScript
+  - React / Next.js / Vite
+  - NestJS / Express
+- Android / Java / Kotlin
 
-All central jobs use:
+모든 중앙 Job은 다음 runner를 사용합니다.
 
 ```yaml
 runs-on: [self-hosted, linux]
 ```
 
-Additional runner labels such as `x64` or `prod` are not required.
+## 사용 방법
 
-## Architecture
+프로젝트에는 보통 두 workflow만 둡니다.
 
 ```text
-detect changes
-      |
-      +----------------+
-      |                |
-      v                v
-   security            CI
-      |                |
-      +--------+-------+
-               |
-        pipeline success
-               |
-     explicit production CD
+.github/workflows/
+├─ ci.yml
+└─ deploy.yml   # production 배포가 필요한 경우
 ```
 
-Change detection runs once. Only affected components are sent to Security and CI. Security and CI are independent and can run in parallel when runner capacity is available.
+### 1. CI 추가
 
-Production mutation is not triggered by a normal push. A deployment workflow must be explicitly started by the project policy, normally by a stable Release or `workflow_dispatch`, perform full verification, and then deploy from a job that targets the caller repository's `production` GitHub Environment.
-
-## Shared building blocks
-
-- `.github/workflows/pipeline.yml`: change detection and orchestration
-- `.github/workflows/security.yml`: shared security scanning
-- `.github/workflows/ci-go.yml`: Go CI
-- `.github/workflows/ci-node.yml`: Node.js CI
-- `.github/workflows/ci-android.yml`: Android CI
-- `.github/actions/deploy/action.yml`: validated deployment-script entrypoint for production jobs
-
-`pipeline.yml` uses GitHub's `$/` same-repository syntax for nested reusable workflows so nested workflows are taken from the same central-workflows commit selected by the caller.
-
-Deployment is a composite action instead of a reusable workflow. GitHub Environment secrets belong to the caller repository and cannot be attached to a job that only calls a reusable workflow. A normal caller job can set `environment: production`, receive its Environment secrets, and invoke the central deploy action as a step.
-
-## Runner requirements
-
-The Linux self-hosted runner must provide:
-
-- Bash
-- Git
-- `jq`
-- Docker
-
-Android runners also need a working Android SDK installation and the SDK packages required by the project. Java, Go, and Node.js are provisioned by the workflows.
-
-## Component configuration
-
-The caller passes a JSON array to `pipeline.yml`.
-
-Required fields:
-
-- `name`: unique component name
-- `type`: `go`, `node`, or `android`
-- `path`: component root relative to the repository
-
-Optional fields:
-
-- `watch`: repository-relative paths that affect the component; exact/path-prefix matching, not globs
-- `deploy`: expose the component through deployment outputs when `true`
-- `deploy_script`: deployment script relative to the component, default `.ci/deploy.sh`
-- `go_version`: default `stable`
-- `node_version`: default `24`
-- `java_version`: default `17`
-- `gradle_tasks`: default `lintDebug testDebugUnitTest assembleDebug`
-
-Example CI caller:
+프로젝트의 `.github/workflows/ci.yml`에서 `pipeline.yml`을 호출합니다.
 
 ```yaml
 name: CI
@@ -105,15 +51,13 @@ jobs:
             "name": "api",
             "type": "go",
             "path": "services/api",
-            "watch": ["services/api", "shared/proto"],
-            "deploy": true
+            "watch": ["services/api", "shared/proto"]
           },
           {
             "name": "web",
             "type": "node",
             "path": "apps/web",
-            "watch": ["apps/web", "packages/ui", "pnpm-lock.yaml", "pnpm-workspace.yaml"],
-            "deploy": true
+            "watch": ["apps/web", "packages/ui", "pnpm-lock.yaml"]
           },
           {
             "name": "android",
@@ -123,75 +67,63 @@ jobs:
         ]
 ```
 
-If shared code or a root lockfile affects a component, include it in that component's `watch` list. Changes under `.github/workflows/` affect every configured component automatically.
-
-For events without a reliable diff base, or when `force_all: true` is used, every configured component runs rather than risking a missed check.
-
-## Security
-
-Every changed component gets:
-
-- Semgrep OSS for SAST
-- OSV-Scanner for known dependency vulnerabilities
-- Trivy for exposed secrets and configuration mistakes
-
-Scanner images are pinned by digest and receive the source tree read-only. The Docker socket is not mounted into scanner containers.
-
-Node dependency scanning requires one committed `pnpm-lock.yaml`, `yarn.lock`, or `package-lock.json`. The workflow walks upward from the component to the repository root, so monorepos with a shared root lockfile are supported.
-
-Go components require `go.mod`.
-
-Android dependency-vulnerability coverage is complete when supported dependency metadata such as Gradle lockfiles or `gradle/verification-metadata.xml` is present. Without it, the workflow warns and still runs SAST, secret, and configuration scans.
-
-A scheduled caller can set `force_all: true` to rescan unchanged components for newly disclosed vulnerabilities.
-
-## CI behavior
-
-Go:
+변경된 component만 자동으로 감지해 **Security와 CI를 병렬 실행**합니다.
 
 ```text
-gofmt check
-go mod download
-go mod verify
-go vet ./...
-go test ./...
-go build ./...
+detect
+  ├─ security
+  └─ CI
 ```
 
-Node.js finds the nearest package-manager lockfile between the component and repository root, installs with the locked package manager, and runs configured scripts in this order:
+### 2. Component 설정
 
-```text
-lint
-check-types / typecheck / type-check
-test
-build
-```
+필수 값:
 
-pnpm projects must commit a root `package.json` with a pinned `packageManager`, for example:
+| 필드 | 설명 |
+| --- | --- |
+| `name` | component 이름 |
+| `type` | `go`, `node`, `android` |
+| `path` | repository 기준 component 경로 |
+
+필요한 경우만 사용:
+
+| 필드 | 설명 |
+| --- | --- |
+| `watch` | 이 component에 영향을 주는 추가 경로 |
+| `go_version` | Go 버전, 기본 `stable` |
+| `node_version` | Node.js 버전, 기본 `24` |
+| `java_version` | Java 버전, 기본 `17` |
+| `gradle_tasks` | Android CI task 변경 |
+
+공용 package나 root lockfile 변경도 영향을 받는다면 `watch`에 추가합니다.
 
 ```json
 {
-  "packageManager": "pnpm@10.17.1"
+  "name": "web",
+  "type": "node",
+  "path": "apps/web",
+  "watch": ["apps/web", "packages/ui", "pnpm-lock.yaml"]
 }
 ```
 
-Android uses the repository Gradle wrapper. Default tasks:
+### 3. Production 배포 추가
+
+일반 push에서는 production을 변경하지 않습니다.
+
+Production은 stable Release 또는 `workflow_dispatch` 같은 **명시적 배포 workflow**에서 실행합니다.
+
+프로젝트의 GitHub Environment에 `production`을 만들고 application/runtime secret을 등록합니다.
+
+예:
 
 ```text
-lintDebug
-testDebugUnitTest
-assembleDebug
+Settings
+→ Environments
+→ production
+→ Environment secrets
 ```
 
-## Production deployment
-
-Application/runtime secrets should normally be stored as GitHub Environment secrets in the caller repository's `production` environment. They are exposed only to the production job that needs them.
-
-Host-persistent exceptions are limited to infrastructure material that must be read directly by server-side tooling, such as project DB credentials managed by the DB CLI and Android signing material managed by the Android CLI.
-
-A reusable workflow cannot consume the caller repository's Environment secrets by attaching the caller's environment to the reusable-workflow call. Therefore the production job is intentionally local to the project and calls the central composite deploy action.
-
-Example manual production workflow:
+`.github/workflows/deploy.yml` 예시:
 
 ```yaml
 name: Deploy
@@ -216,8 +148,7 @@ jobs:
           {
             "name": "api",
             "type": "go",
-            "path": "services/api",
-            "deploy": true
+            "path": "services/api"
           }
         ]
 
@@ -229,9 +160,9 @@ jobs:
     env:
       OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
       JWT_SECRET: ${{ secrets.JWT_SECRET }}
+
     steps:
-      - name: Checkout release source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -241,24 +172,86 @@ jobs:
           working-directory: services/api
 ```
 
-The project owns the deployment implementation at a checked-in entrypoint such as:
+각 프로젝트는 실제 배포 로직만 component 내부에 둡니다.
 
 ```text
-<component>/.ci/deploy.sh
+services/api/.ci/deploy.sh
 ```
 
-The central deploy action validates that the entrypoint stays inside the selected component and executes it without `eval`. Environment secrets remain job environment variables; the central action does not serialize them into a long-lived `secret/deploy.env` file.
+중앙 deploy action은 이 script의 경로를 검증한 뒤 실행합니다.
 
-Normal application deployment scripts must preserve the production contract: verified immutable artifact/digest, migration before rollout when required, deployment, and health verification. Secrets must not be written to repository history, deployment history, status, or logs.
+일반 application/runtime secret은 GitHub Environment Secrets를 사용합니다. 서버에 장기 보관하는 예외는 DB CLI가 관리하는 DB credential과 Android signing material입니다.
 
-## Versioning
+## 기본 CI
 
-Consumers should normally use a stable major tag such as `@v1`. For maximum immutability, pin the reusable workflow/action to a full commit SHA.
+### Go
 
-Third-party GitHub Actions and security-scanner images used internally are pinned to immutable commit or image digests.
+```text
+gofmt check
+go mod verify
+go vet ./...
+go test ./...
+go build ./...
+```
 
-## Self-hosted runner trust boundary
+### Node.js
 
-Do not execute arbitrary untrusted pull-request code on a persistent self-hosted runner that has Docker access, deployment credentials, or sensitive internal-network access.
+lockfile을 기준으로 의존성을 설치하고, 존재하는 script만 순서대로 실행합니다.
 
-GitHub Environment secrets reduce long-lived secret storage on the server, but once a production job starts, those secrets are available to that self-hosted runner for the duration of the job. Treat the runner as trusted production infrastructure.
+```text
+lint
+check-types / typecheck / type-check
+test
+build
+```
+
+pnpm 프로젝트는 `packageManager` 버전을 고정해야 합니다.
+
+```json
+{
+  "packageManager": "pnpm@10.17.1"
+}
+```
+
+### Android
+
+기본 task:
+
+```text
+lintDebug
+testDebugUnitTest
+assembleDebug
+```
+
+## Security
+
+변경된 component 전체를 검사합니다.
+
+- Semgrep: SAST
+- OSV-Scanner: dependency vulnerability
+- Trivy: secret / misconfiguration
+
+정기 전체 검사가 필요하면 caller에서 `force_all: true`로 실행합니다.
+
+## Runner 요구사항
+
+self-hosted Linux runner에 다음이 필요합니다.
+
+```text
+Bash
+Git
+jq
+Docker
+```
+
+Android 빌드는 Android SDK도 필요합니다.
+
+## Version
+
+기본 사용:
+
+```text
+@v1
+```
+
+완전한 immutable pin이 필요하면 commit SHA를 사용합니다.
