@@ -29,6 +29,16 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify persistent tool cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${RUNNER_TOOL_CACHE:-}" != "/opt/cache/tool-cache" ]]; then
+            echo "::error::Self-hosted runner must provide RUNNER_TOOL_CACHE=/opt/cache/tool-cache."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TOOL_CACHE"
+
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:

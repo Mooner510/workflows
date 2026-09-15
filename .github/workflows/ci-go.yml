@@ -36,6 +36,16 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify persistent tool cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${RUNNER_TOOL_CACHE:-}" != "/opt/cache/tool-cache" ]]; then
+            echo "::error::Self-hosted runner must provide RUNNER_TOOL_CACHE=/opt/cache/tool-cache."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TOOL_CACHE"
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
