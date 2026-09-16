@@ -48,35 +48,43 @@ jobs:
           set -euo pipefail
           command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
 
-          if [[ "${RUNNER_TOOL_CACHE:-}" == "/opt/cache/tool-cache" ]]; then
-            mkdir -p /opt/cache/tool-cache
-            echo "Using shared /opt/cache runner cache."
+          cache_root="${RUNNER_TOOL_CACHE:-$HOME/.cache/github-actions-tool-cache}"
+          mkdir -p "$cache_root"
 
-            if [[ "${{ inputs.type }}" == "node" ]]; then
-              bun_cache="/opt/cache/tool-cache/bun/install-cache"
-              mkdir -p "$bun_cache"
-              echo "BUN_INSTALL_CACHE_DIR=$bun_cache" >>"$GITHUB_ENV"
-            elif [[ "${{ inputs.type }}" == "android" ]]; then
-              mkdir -p /opt/cache/android-sdk /opt/cache/gradle
-              echo "ANDROID_HOME=/opt/cache/android-sdk" >>"$GITHUB_ENV"
-              echo "ANDROID_SDK_ROOT=/opt/cache/android-sdk" >>"$GITHUB_ENV"
-              echo "GRADLE_USER_HOME=/opt/cache/gradle" >>"$GITHUB_ENV"
-            fi
+          if [[ "$cache_root" == "/opt/cache/tool-cache" ]]; then
+            echo "Using Gharp shared cache: $cache_root"
           else
-            echo "Using standard self-hosted runner paths."
+            echo "Using self-hosted runner cache: $cache_root"
+          fi
 
-            if [[ "${{ inputs.type }}" == "node" ]]; then
-              bun_cache="${BUN_INSTALL_CACHE_DIR:-$RUNNER_TEMP/bun-install-cache}"
-              mkdir -p "$bun_cache"
-              echo "BUN_INSTALL_CACHE_DIR=$bun_cache" >>"$GITHUB_ENV"
-            elif [[ "${{ inputs.type }}" == "android" ]]; then
-              android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$RUNNER_TEMP/android-sdk}}"
+          if [[ "${{ inputs.type }}" == "node" ]]; then
+            mkdir -p \
+              "$cache_root/corepack" \
+              "$cache_root/bun/install-cache" \
+              "$cache_root/pnpm/store" \
+              "$cache_root/yarn/cache" \
+              "$cache_root/npm"
+            {
+              echo "COREPACK_HOME=$cache_root/corepack"
+              echo "BUN_INSTALL_CACHE_DIR=$cache_root/bun/install-cache"
+              echo "PNPM_STORE_DIR=$cache_root/pnpm/store"
+              echo "YARN_CACHE_FOLDER=$cache_root/yarn/cache"
+              echo "npm_config_cache=$cache_root/npm"
+            } >>"$GITHUB_ENV"
+          elif [[ "${{ inputs.type }}" == "android" ]]; then
+            if [[ "$cache_root" == "/opt/cache/tool-cache" ]]; then
+              android_sdk="/opt/cache/android-sdk"
+              gradle_home="/opt/cache/gradle"
+            else
+              android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/.cache/android-sdk}}"
               gradle_home="${GRADLE_USER_HOME:-$HOME/.gradle}"
-              mkdir -p "$android_sdk" "$gradle_home"
-              echo "ANDROID_HOME=$android_sdk" >>"$GITHUB_ENV"
-              echo "ANDROID_SDK_ROOT=$android_sdk" >>"$GITHUB_ENV"
-              echo "GRADLE_USER_HOME=$gradle_home" >>"$GITHUB_ENV"
             fi
+            mkdir -p "$android_sdk" "$gradle_home"
+            {
+              echo "ANDROID_HOME=$android_sdk"
+              echo "ANDROID_SDK_ROOT=$android_sdk"
+              echo "GRADLE_USER_HOME=$gradle_home"
+            } >>"$GITHUB_ENV"
           fi
 
       - name: Set up Go
@@ -389,7 +397,7 @@ jobs:
                 pnpm)
                   command -v corepack >/dev/null || { echo "::error::corepack is required for pnpm."; exit 1; }
                   corepack enable
-                  (cd "$PACKAGE_ROOT" && pnpm install --frozen-lockfile)
+                  (cd "$PACKAGE_ROOT" && pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_DIR")
                   ;;
                 yarn)
                   command -v corepack >/dev/null || { echo "::error::corepack is required for yarn."; exit 1; }
