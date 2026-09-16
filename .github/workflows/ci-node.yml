@@ -33,15 +33,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${RUNNER_TOOL_CACHE:-}" == "/opt/cache/tool-cache" ]]; then
-            bun_cache="/opt/cache/tool-cache/bun/install-cache"
-            echo "Using shared /opt/cache runner cache."
+          cache_root="${RUNNER_TOOL_CACHE:-$HOME/.cache/github-actions-tool-cache}"
+          mkdir -p \
+            "$cache_root/corepack" \
+            "$cache_root/bun/install-cache" \
+            "$cache_root/pnpm/store" \
+            "$cache_root/yarn/cache" \
+            "$cache_root/npm"
+
+          if [[ "$cache_root" == "/opt/cache/tool-cache" ]]; then
+            echo "Using Gharp shared package cache: $cache_root"
           else
-            bun_cache="${BUN_INSTALL_CACHE_DIR:-$RUNNER_TEMP/bun-install-cache}"
-            echo "Using standard self-hosted runner paths."
+            echo "Using self-hosted runner package cache: $cache_root"
           fi
-          mkdir -p "$bun_cache"
-          echo "BUN_INSTALL_CACHE_DIR=$bun_cache" >>"$GITHUB_ENV"
+
+          {
+            echo "COREPACK_HOME=$cache_root/corepack"
+            echo "BUN_INSTALL_CACHE_DIR=$cache_root/bun/install-cache"
+            echo "PNPM_STORE_DIR=$cache_root/pnpm/store"
+            echo "YARN_CACHE_FOLDER=$cache_root/yarn/cache"
+            echo "npm_config_cache=$cache_root/npm"
+          } >>"$GITHUB_ENV"
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -217,7 +229,7 @@ jobs:
                 pnpm)
                   command -v corepack >/dev/null || { echo "::error::corepack is required for pnpm."; exit 1; }
                   corepack enable
-                  (cd "$PACKAGE_ROOT" && pnpm install --frozen-lockfile)
+                  (cd "$PACKAGE_ROOT" && pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_DIR")
                   ;;
                 yarn)
                   command -v corepack >/dev/null || { echo "::error::corepack is required for yarn."; exit 1; }
