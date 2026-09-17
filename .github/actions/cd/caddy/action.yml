@@ -1,0 +1,74 @@
+name: Caddy reverse proxy
+description: Register or update one Caddy reverse-proxy site and reload Caddy safely.
+
+inputs:
+  service-name:
+    description: Stable service identifier used for the generated site filename.
+    required: true
+  domain:
+    description: Public hostname handled by Caddy.
+    required: true
+  upstream:
+    description: Reverse proxy upstream, for example 127.0.0.1:40100.
+    required: true
+  caddyfile:
+    description: Main Caddyfile which imports the sites directory.
+    required: false
+    default: /opt/stacks/shared/caddy/Caddyfile
+  sites-directory:
+    description: Directory imported by the main Caddyfile.
+    required: false
+    default: /opt/stacks/shared/caddy/sites
+
+runs:
+  using: composite
+  steps:
+    - name: Register Caddy site
+      shell: bash
+      env:
+        SERVICE_NAME: ${{ inputs.service-name }}
+        DOMAIN: ${{ inputs.domain }}
+        UPSTREAM: ${{ inputs.upstream }}
+        CADDYFILE: ${{ inputs.caddyfile }}
+        SITES_DIRECTORY: ${{ inputs.sites-directory }}
+      run: |
+        set -euo pipefail
+        command -v caddy >/dev/null || { echo "::error::caddy CLI is required on the deployment runner."; exit 1; }
+        [[ "$SERVICE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid service-name '$SERVICE_NAME'."; exit 1; }
+        [[ "$DOMAIN" =~ ^[A-Za-z0-9*.-]+$ ]] || { echo "::error::Invalid Caddy domain '$DOMAIN'."; exit 1; }
+        [[ "$UPSTREAM" =~ ^[A-Za-z0-9._:-]+$ ]] || { echo "::error::Invalid Caddy upstream '$UPSTREAM'."; exit 1; }
+        [[ -f "$CADDYFILE" ]] || { echo "::error::Main Caddyfile '$CADDYFILE' does not exist."; exit 1; }
+        mkdir -p "$SITES_DIRECTORY"
+
+        site="$SITES_DIRECTORY/$SERVICE_NAME.caddy"
+        backup="$RUNNER_TEMP/$SERVICE_NAME.caddy.backup"
+        had_previous=false
+        if [[ -f "$site" ]]; then
+          cp "$site" "$backup"
+          had_previous=true
+        fi
+
+        tmp="$(mktemp "$SITES_DIRECTORY/.${SERVICE_NAME}.XXXXXX")"
+        {
+          printf '%s {\n' "$DOMAIN"
+          printf '  reverse_proxy %s\n' "$UPSTREAM"
+          printf '}\n'
+        } >"$tmp"
+        mv "$tmp" "$site"
+
+        restore() {
+          if [[ "$had_previous" == "true" ]]; then cp "$backup" "$site"; else rm -f "$site"; fi
+        }
+
+        if ! caddy validate --config "$CADDYFILE" --adapter caddyfile; then
+          restore
+          echo "::error::Caddy validation failed; previous site configuration was restored."
+          exit 1
+        fi
+        if ! caddy reload --config "$CADDYFILE" --adapter caddyfile; then
+          restore
+          caddy reload --config "$CADDYFILE" --adapter caddyfile >/dev/null 2>&1 || true
+          echo "::error::Caddy reload failed; previous site configuration was restored."
+          exit 1
+        fi
+        rm -f "$backup"

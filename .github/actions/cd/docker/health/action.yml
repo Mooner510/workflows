@@ -1,0 +1,47 @@
+name: Service health check
+description: Wait for an HTTP endpoint to become healthy.
+
+inputs:
+  url:
+    description: HTTP or HTTPS health endpoint.
+    required: true
+  attempts:
+    description: Maximum number of attempts.
+    required: false
+    default: '20'
+  interval-seconds:
+    description: Delay between attempts.
+    required: false
+    default: '2'
+  request-timeout-seconds:
+    description: curl timeout for each attempt.
+    required: false
+    default: '5'
+
+runs:
+  using: composite
+  steps:
+    - name: Wait for health endpoint
+      shell: bash
+      env:
+        HEALTH_URL: ${{ inputs.url }}
+        ATTEMPTS: ${{ inputs.attempts }}
+        INTERVAL_SECONDS: ${{ inputs.interval-seconds }}
+        REQUEST_TIMEOUT_SECONDS: ${{ inputs.request-timeout-seconds }}
+      run: |
+        set -euo pipefail
+        command -v curl >/dev/null || { echo "::error::curl is required on the deployment runner."; exit 1; }
+        for value in "$ATTEMPTS" "$INTERVAL_SECONDS" "$REQUEST_TIMEOUT_SECONDS"; do
+          [[ "$value" =~ ^[0-9]+$ ]] || { echo "::error::Health timing values must be integers."; exit 1; }
+        done
+        [[ "$HEALTH_URL" =~ ^https?:// ]] || { echo "::error::Health URL must use http or https."; exit 1; }
+
+        for ((attempt = 1; attempt <= ATTEMPTS; attempt++)); do
+          if curl --fail --silent --show-error --max-time "$REQUEST_TIMEOUT_SECONDS" "$HEALTH_URL" >/dev/null; then
+            echo "Healthy: $HEALTH_URL"
+            exit 0
+          fi
+          if (( attempt < ATTEMPTS )); then sleep "$INTERVAL_SECONDS"; fi
+        done
+        echo "::error::Health check failed after $ATTEMPTS attempts: $HEALTH_URL"
+        exit 1

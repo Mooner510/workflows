@@ -1,0 +1,64 @@
+name: Goose migration
+description: Apply all pending Goose migrations. Already-applied migrations are a no-op.
+
+inputs:
+  working-directory:
+    description: Go service directory relative to the caller repository.
+    required: true
+  migrations-path:
+    description: Migration directory relative to working-directory.
+    required: false
+    default: db/migrations
+  dialect:
+    description: Goose database dialect.
+    required: false
+    default: postgres
+  go-version:
+    description: Go version used to run the pinned Goose module.
+    required: false
+    default: stable
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: false
+
+    - name: Apply Goose migrations
+      shell: bash
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        MIGRATIONS_PATH: ${{ inputs.migrations-path }}
+        DIALECT: ${{ inputs.dialect }}
+      run: |
+        set -euo pipefail
+        [[ -n "${DATABASE_URL:-}" ]] || { echo "::error::DATABASE_URL must be provided to the deployment step."; exit 1; }
+        [[ "$DIALECT" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::Invalid Goose dialect '$DIALECT'."; exit 1; }
+
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
+        [[ -n "$component" ]] || { echo "::error::Go migration working-directory does not exist."; exit 1; }
+        migrations="$(realpath -e "$component/$MIGRATIONS_PATH" 2>/dev/null || true)"
+        [[ -d "$migrations" ]] || { echo "::error::Goose migrations directory '$MIGRATIONS_PATH' does not exist."; exit 1; }
+
+        cursor="$component"
+        module=""
+        while :; do
+          if [[ -f "$cursor/go.mod" ]]; then module="$cursor"; break; fi
+          [[ "$cursor" == "$workspace" ]] && break
+          cursor="$(dirname "$cursor")"
+        done
+        [[ -n "$module" ]] || { echo "::error::No go.mod found for Goose migration component."; exit 1; }
+
+        cd "$module"
+        goose_version="$(go list -m -f '{{.Version}}' github.com/pressly/goose/v3 2>/dev/null || true)"
+        if [[ -z "$goose_version" || "$goose_version" == "<no value>" || "$goose_version" == "(devel)" ]]; then
+          echo "::error::github.com/pressly/goose/v3 must be pinned in the Go module graph."
+          exit 1
+        fi
+
+        echo "==> Goose $goose_version: applying pending migrations"
+        go run "github.com/pressly/goose/v3/cmd/goose@$goose_version" -dir "$migrations" "$DIALECT" "$DATABASE_URL" up

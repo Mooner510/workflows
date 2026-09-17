@@ -1,0 +1,90 @@
+name: Docker build
+description: Build a production Docker image from a repository component.
+
+inputs:
+  working-directory:
+    description: Docker build context relative to the caller repository.
+    required: true
+  dockerfile:
+    description: Dockerfile relative to working-directory.
+    required: false
+    default: Dockerfile
+  image-name:
+    description: Local Docker image repository name without a tag.
+    required: true
+  target:
+    description: Optional Docker build target.
+    required: false
+    default: ''
+  build-args-json:
+    description: JSON array of non-secret KEY=VALUE build arguments.
+    required: false
+    default: '[]'
+
+outputs:
+  image:
+    description: Built image reference tagged with GITHUB_SHA.
+    value: ${{ steps.build.outputs.image }}
+  image-id:
+    description: Docker image ID.
+    value: ${{ steps.build.outputs.image_id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build image
+      id: build
+      shell: bash
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        DOCKERFILE: ${{ inputs.dockerfile }}
+        IMAGE_NAME: ${{ inputs.image-name }}
+        TARGET: ${{ inputs.target }}
+        BUILD_ARGS_JSON: ${{ inputs.build-args-json }}
+      run: |
+        set -euo pipefail
+        command -v docker >/dev/null || { echo "::error::Docker is required on the deployment runner."; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
+        command -v base64 >/dev/null || { echo "::error::base64 is required on the deployment runner."; exit 1; }
+
+        [[ "$IMAGE_NAME" =~ ^[a-z0-9][a-z0-9._/-]*$ ]] || { echo "::error::image-name must be a lowercase local Docker repository name without a tag."; exit 1; }
+        [[ -n "${GITHUB_SHA:-}" ]] || { echo "::error::GITHUB_SHA is required."; exit 1; }
+        if [[ -n "$TARGET" && ! "$TARGET" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+          echo "::error::Invalid Docker target '$TARGET'."
+          exit 1
+        fi
+        jq -e 'type == "array" and all(.[]; type == "string")' <<<"$BUILD_ARGS_JSON" >/dev/null || {
+          echo "::error::build-args-json must be a JSON array of strings."
+          exit 1
+        }
+
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        context="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
+        if [[ -z "$context" ]] || { [[ "$context" != "$workspace" ]] && [[ "$context" != "$workspace/"* ]]; }; then
+          echo "::error::working-directory must resolve inside the caller repository."
+          exit 1
+        fi
+        if [[ -z "$DOCKERFILE" || "$DOCKERFILE" == /* || "$DOCKERFILE" == *'..'* ]]; then
+          echo "::error::dockerfile must be a safe path relative to working-directory."
+          exit 1
+        fi
+        dockerfile="$(realpath -e "$context/$DOCKERFILE" 2>/dev/null || true)"
+        [[ -f "$dockerfile" ]] || { echo "::error::Dockerfile '$DOCKERFILE' does not exist."; exit 1; }
+
+        image="$IMAGE_NAME:$GITHUB_SHA"
+        args=(docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -f "$dockerfile" -t "$image")
+        [[ -z "$TARGET" ]] || args+=(--target "$TARGET")
+        while IFS= read -r encoded; do
+          value="$(printf '%s' "$encoded" | base64 --decode)"
+          [[ "$value" == *=* ]] || { echo "::error::Docker build arguments must use KEY=VALUE form."; exit 1; }
+          args+=(--build-arg "$value")
+        done < <(jq -r '.[] | @base64' <<<"$BUILD_ARGS_JSON")
+        args+=("$context")
+
+        echo "==> Building $image"
+        "${args[@]}"
+        image_id="$(docker image inspect "$image" --format '{{.Id}}')"
+        {
+          echo "image=$image"
+          echo "image_id=$image_id"
+        } >>"$GITHUB_OUTPUT"

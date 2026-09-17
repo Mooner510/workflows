@@ -1,0 +1,99 @@
+name: Prisma migration
+description: Install the pinned Node package root and run prisma migrate deploy.
+
+inputs:
+  working-directory:
+    description: Node service directory relative to the caller repository.
+    required: true
+  schema:
+    description: Prisma schema relative to working-directory.
+    required: false
+    default: prisma/schema.prisma
+  node-version:
+    description: Node.js version.
+    required: false
+    default: '24'
+  package-manager:
+    description: npm, pnpm, yarn, or bun.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare Prisma component
+      id: component
+      shell: bash
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        PACKAGE_MANAGER: ${{ inputs.package-manager }}
+      run: |
+        set -euo pipefail
+        case "$PACKAGE_MANAGER" in npm|pnpm|yarn|bun) ;; *) echo "::error::Invalid Prisma package manager '$PACKAGE_MANAGER'."; exit 1 ;; esac
+        component="$(jq -cn --arg path "$WORKING_DIRECTORY" --arg manager "$PACKAGE_MANAGER" '[{name:"migration", path:$path, package_manager:$manager}]')"
+        echo "json=$component" >>"$GITHUB_OUTPUT"
+
+    - name: Prepare Node cache paths
+      shell: bash
+      run: |
+        set -euo pipefail
+        cache_root="${RUNNER_TOOL_CACHE:-$HOME/.cache/github-actions-tool-cache}"
+        mkdir -p "$cache_root/corepack" "$cache_root/bun/install-cache" "$cache_root/pnpm/store" "$cache_root/yarn/cache" "$cache_root/npm"
+        {
+          echo "COREPACK_HOME=$cache_root/corepack"
+          echo "BUN_INSTALL_CACHE_DIR=$cache_root/bun/install-cache"
+          echo "PNPM_STORE_DIR=$cache_root/pnpm/store"
+          echo "YARN_CACHE_FOLDER=$cache_root/yarn/cache"
+          echo "npm_config_cache=$cache_root/npm"
+        } >>"$GITHUB_ENV"
+
+    - name: Set up Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        package-manager-cache: false
+
+    - name: Install npm dependencies
+      if: inputs.package-manager == 'npm'
+      uses: $/.github/actions/node/npm
+      with:
+        components: ${{ steps.component.outputs.json }}
+
+    - name: Install pnpm dependencies
+      if: inputs.package-manager == 'pnpm'
+      uses: $/.github/actions/node/pnpm
+      with:
+        components: ${{ steps.component.outputs.json }}
+
+    - name: Install Yarn dependencies
+      if: inputs.package-manager == 'yarn'
+      uses: $/.github/actions/node/yarn
+      with:
+        components: ${{ steps.component.outputs.json }}
+
+    - name: Install Bun dependencies
+      if: inputs.package-manager == 'bun'
+      uses: $/.github/actions/node/bun
+      with:
+        components: ${{ steps.component.outputs.json }}
+
+    - name: Apply Prisma migrations
+      shell: bash
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        PRISMA_SCHEMA: ${{ inputs.schema }}
+        PACKAGE_MANAGER: ${{ inputs.package-manager }}
+      run: |
+        set -euo pipefail
+        [[ -n "${DATABASE_URL:-}" ]] || { echo "::error::DATABASE_URL must be provided to the deployment step."; exit 1; }
+        component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
+        [[ -d "$component" ]] || { echo "::error::Prisma working-directory does not exist."; exit 1; }
+        schema="$(realpath -e "$component/$PRISMA_SCHEMA" 2>/dev/null || true)"
+        [[ -f "$schema" ]] || { echo "::error::Prisma schema '$PRISMA_SCHEMA' does not exist."; exit 1; }
+
+        echo "==> Prisma: applying pending migrations"
+        case "$PACKAGE_MANAGER" in
+          npm)  (cd "$component" && npm exec --offline -- prisma migrate deploy --schema "$schema") ;;
+          pnpm) (cd "$component" && pnpm exec prisma migrate deploy --schema "$schema") ;;
+          yarn) (cd "$component" && yarn exec prisma migrate deploy --schema "$schema") ;;
+          bun)  (cd "$component" && bunx prisma migrate deploy --schema "$schema") ;;
+        esac

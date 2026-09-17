@@ -1,0 +1,57 @@
+name: Flyway migration
+description: Apply pending Flyway migrations through the project's Gradle or Maven wrapper.
+
+inputs:
+  working-directory:
+    description: Java/Kotlin service directory relative to the caller repository.
+    required: true
+  migrations-path:
+    description: Flyway migration directory relative to working-directory.
+    required: false
+    default: src/main/resources/db/migration
+  java-version:
+    description: Java version.
+    required: false
+    default: '17'
+  build-tool:
+    description: gradle or maven.
+    required: false
+    default: gradle
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Java
+      uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.java-version }}
+
+    - name: Apply Flyway migrations
+      shell: bash
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        MIGRATIONS_PATH: ${{ inputs.migrations-path }}
+        BUILD_TOOL: ${{ inputs.build-tool }}
+      run: |
+        set -euo pipefail
+        [[ -n "${FLYWAY_URL:-}" ]] || { echo "::error::FLYWAY_URL must be provided to the deployment step."; exit 1; }
+        case "$BUILD_TOOL" in gradle|maven) ;; *) echo "::error::Flyway build-tool must be gradle or maven."; exit 1 ;; esac
+
+        component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
+        [[ -d "$component" ]] || { echo "::error::Flyway working-directory does not exist."; exit 1; }
+        migrations="$(realpath -e "$component/$MIGRATIONS_PATH" 2>/dev/null || true)"
+        [[ -d "$migrations" ]] || { echo "::error::Flyway migrations directory '$MIGRATIONS_PATH' does not exist."; exit 1; }
+        export FLYWAY_LOCATIONS="filesystem:$migrations"
+
+        echo "==> Flyway: applying pending migrations"
+        case "$BUILD_TOOL" in
+          gradle)
+            [[ -f "$component/gradlew" ]] || { echo "::error::Flyway Gradle service must contain gradlew."; exit 1; }
+            (cd "$component" && chmod +x ./gradlew && ./gradlew --no-daemon flywayMigrate)
+            ;;
+          maven)
+            [[ -f "$component/mvnw" ]] || { echo "::error::Flyway Maven service must contain mvnw."; exit 1; }
+            (cd "$component" && chmod +x ./mvnw && ./mvnw -B -ntp flyway:migrate)
+            ;;
+        esac

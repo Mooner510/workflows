@@ -1,0 +1,139 @@
+name: Docker deploy
+description: Replace one local Docker service container using a fixed loopback host port.
+
+inputs:
+  container-name:
+    description: Docker container name.
+    required: true
+  image:
+    description: Docker image reference to run.
+    required: true
+  container-port:
+    description: Internal application port.
+    required: true
+  host-port:
+    description: Fixed loopback host port used by Caddy.
+    required: true
+  env-files-json:
+    description: JSON array of repository-relative or absolute Docker env-file paths.
+    required: false
+    default: '[]'
+  volumes-json:
+    description: JSON array of Docker volume specifications.
+    required: false
+    default: '[]'
+  network:
+    description: Optional Docker network name.
+    required: false
+    default: ''
+  restart-policy:
+    description: Docker restart policy.
+    required: false
+    default: unless-stopped
+  stop-timeout:
+    description: Seconds allowed for graceful stop.
+    required: false
+    default: '15'
+
+outputs:
+  previous-existed:
+    value: ${{ steps.deploy.outputs.previous_existed }}
+  previous-image:
+    value: ${{ steps.deploy.outputs.previous_image }}
+
+runs:
+  using: composite
+  steps:
+    - name: Replace container
+      id: deploy
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ inputs.container-name }}
+        IMAGE: ${{ inputs.image }}
+        CONTAINER_PORT: ${{ inputs.container-port }}
+        HOST_PORT: ${{ inputs.host-port }}
+        ENV_FILES_JSON: ${{ inputs.env-files-json }}
+        VOLUMES_JSON: ${{ inputs.volumes-json }}
+        NETWORK: ${{ inputs.network }}
+        RESTART_POLICY: ${{ inputs.restart-policy }}
+        STOP_TIMEOUT: ${{ inputs.stop-timeout }}
+      run: |
+        set -euo pipefail
+        command -v docker >/dev/null || { echo "::error::Docker is required on the deployment runner."; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
+        command -v base64 >/dev/null || { echo "::error::base64 is required on the deployment runner."; exit 1; }
+
+        [[ "$CONTAINER_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid container-name '$CONTAINER_NAME'."; exit 1; }
+        [[ -n "$IMAGE" && "$IMAGE" != *$'\n'* && "$IMAGE" != *$'\r'* ]] || { echo "::error::Invalid image reference."; exit 1; }
+        for port in "$CONTAINER_PORT" "$HOST_PORT"; do
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || { echo "::error::Ports must be integers from 1 to 65535."; exit 1; }
+        done
+        [[ "$STOP_TIMEOUT" =~ ^[0-9]+$ ]] || { echo "::error::stop-timeout must be an integer."; exit 1; }
+        case "$RESTART_POLICY" in no|always|unless-stopped|on-failure) ;; *) echo "::error::Invalid restart policy '$RESTART_POLICY'."; exit 1 ;; esac
+        if [[ -n "$NETWORK" && ! "$NETWORK" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+          echo "::error::Invalid Docker network '$NETWORK'."
+          exit 1
+        fi
+        jq -e 'type == "array" and all(.[]; type == "string")' <<<"$ENV_FILES_JSON" >/dev/null || { echo "::error::env-files-json must be a string array."; exit 1; }
+        jq -e 'type == "array" and all(.[]; type == "string")' <<<"$VOLUMES_JSON" >/dev/null || { echo "::error::volumes-json must be a string array."; exit 1; }
+
+        declare -a env_args=()
+        while IFS= read -r encoded; do
+          value="$(printf '%s' "$encoded" | base64 --decode)"
+          if [[ "$value" == /* ]]; then
+            env_file="$value"
+          else
+            env_file="$GITHUB_WORKSPACE/$value"
+          fi
+          env_file="$(realpath -e "$env_file" 2>/dev/null || true)"
+          [[ -f "$env_file" ]] || { echo "::error::Docker env file '$value' does not exist."; exit 1; }
+          env_args+=(--env-file "$env_file")
+        done < <(jq -r '.[] | @base64' <<<"$ENV_FILES_JSON")
+
+        declare -a volume_args=()
+        while IFS= read -r encoded; do
+          value="$(printf '%s' "$encoded" | base64 --decode)"
+          [[ -n "$value" && "$value" != *$'\n'* && "$value" != *$'\r'* ]] || { echo "::error::Invalid volume specification."; exit 1; }
+          volume_args+=(-v "$value")
+        done < <(jq -r '.[] | @base64' <<<"$VOLUMES_JSON")
+
+        if [[ -n "$NETWORK" ]] && ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
+          docker network create "$NETWORK" >/dev/null
+        fi
+
+        run_image() {
+          local image="$1"
+          local -a args=(docker run -d --name "$CONTAINER_NAME" --restart "$RESTART_POLICY" -p "127.0.0.1:$HOST_PORT:$CONTAINER_PORT")
+          args+=("${env_args[@]}")
+          args+=("${volume_args[@]}")
+          [[ -z "$NETWORK" ]] || args+=(--network "$NETWORK")
+          args+=(--label "com.mooner510.workflows.service=$CONTAINER_NAME")
+          [[ -z "${GITHUB_SHA:-}" ]] || args+=(--label "org.opencontainers.image.revision=$GITHUB_SHA")
+          args+=("$image")
+          "${args[@]}" >/dev/null
+        }
+
+        previous_existed=false
+        previous_image=""
+        if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+          previous_existed=true
+          previous_image="$(docker inspect "$CONTAINER_NAME" --format '{{.Config.Image}}')"
+          docker stop -t "$STOP_TIMEOUT" "$CONTAINER_NAME" >/dev/null || true
+          docker rm -f "$CONTAINER_NAME" >/dev/null || true
+        fi
+
+        echo "==> Deploying $CONTAINER_NAME from $IMAGE on 127.0.0.1:$HOST_PORT"
+        if ! run_image "$IMAGE"; then
+          echo "::error::Failed to start '$CONTAINER_NAME' from '$IMAGE'."
+          docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+          if [[ "$previous_existed" == "true" && -n "$previous_image" ]]; then
+            echo "Attempting immediate rollback to $previous_image"
+            run_image "$previous_image" || true
+          fi
+          exit 1
+        fi
+
+        {
+          echo "previous_existed=$previous_existed"
+          echo "previous_image=$previous_image"
+        } >>"$GITHUB_OUTPUT"

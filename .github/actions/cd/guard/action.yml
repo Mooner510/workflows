@@ -1,0 +1,63 @@
+name: Production deploy guard
+description: Validate that a deployment is allowed to reach production.
+
+inputs:
+  production-branch:
+    description: Branch whose history is allowed to reach production.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Validate production source
+      shell: bash
+      env:
+        PRODUCTION_BRANCH: ${{ inputs.production-branch }}
+      run: |
+        set -euo pipefail
+        command -v git >/dev/null || { echo "::error::git is required on the deployment runner."; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
+
+        git check-ref-format --branch "$PRODUCTION_BRANCH" >/dev/null 2>&1 || {
+          echo "::error::Invalid production branch '$PRODUCTION_BRANCH'."
+          exit 1
+        }
+
+        case "$GITHUB_EVENT_NAME" in
+          workflow_dispatch)
+            if [[ "$GITHUB_REF" != "refs/heads/$PRODUCTION_BRANCH" ]]; then
+              echo "::error::Manual production deployment must be dispatched from '$PRODUCTION_BRANCH'."
+              exit 1
+            fi
+            ;;
+          release)
+            action="$(jq -r '.action // empty' "$GITHUB_EVENT_PATH")"
+            draft="$(jq -r '.release.draft // true' "$GITHUB_EVENT_PATH")"
+            prerelease="$(jq -r '.release.prerelease // true' "$GITHUB_EVENT_PATH")"
+            tag="$(jq -r '.release.tag_name // empty' "$GITHUB_EVENT_PATH")"
+            if [[ "$action" != "published" || "$draft" != "false" || "$prerelease" != "false" ]]; then
+              echo "::error::Production release deployment requires a published, non-draft, non-prerelease release."
+              exit 1
+            fi
+            [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo "::error::Production release tag must match vMAJOR.MINOR.PATCH."
+              exit 1
+            }
+            ;;
+          *)
+            echo "::error::Production deployment is allowed only from workflow_dispatch or a stable published release."
+            exit 1
+            ;;
+        esac
+
+        production_ref="refs/remotes/origin/$PRODUCTION_BRANCH"
+        git show-ref --verify --quiet "$production_ref" || {
+          echo "::error::Production branch '$PRODUCTION_BRANCH' is unavailable locally. Checkout with fetch-depth: 0."
+          exit 1
+        }
+
+        deployment_sha="$(git rev-parse HEAD)"
+        git merge-base --is-ancestor "$deployment_sha" "$production_ref" || {
+          echo "::error::Checked-out commit '$deployment_sha' is not contained in production branch '$PRODUCTION_BRANCH'."
+          exit 1
+        }
