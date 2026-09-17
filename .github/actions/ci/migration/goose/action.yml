@@ -86,7 +86,7 @@ runs:
 
         goose_binary() {
           local version="$1"
-          local machine asset arch cache_root binary tmp expected
+          local machine asset arch cache_root binary tmp expected staged
 
           machine="$(uname -m)"
           case "$machine" in
@@ -133,7 +133,9 @@ runs:
             return 1
           fi
 
-          install -m 0755 "$tmp/$asset" "$binary"
+          staged="$cache_root/.goose.$$.$RANDOM"
+          install -m 0755 "$tmp/$asset" "$staged"
+          mv -f "$staged" "$binary"
           rm -rf "$tmp"
           printf '%s' "$binary"
         }
