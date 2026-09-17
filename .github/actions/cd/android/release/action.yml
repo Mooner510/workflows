@@ -1,0 +1,131 @@
+name: Android release
+description: Build a signed Android release artifact and optionally upload it to a published GitHub Release.
+
+inputs:
+  production-branch:
+    description: Branch whose history is allowed to reach production.
+    required: true
+  working-directory:
+    description: Android project root relative to the caller repository.
+    required: true
+  java-version:
+    description: Java version used for the Android release build.
+    required: false
+    default: '17'
+  gradle-task:
+    description: Single Gradle release task, usually bundleRelease or assembleRelease.
+    required: false
+    default: bundleRelease
+  artifact-glob:
+    description: Artifact glob relative to working-directory.
+    required: false
+    default: app/build/outputs/bundle/release/*.aab
+  keystore-path:
+    description: Absolute or repository-relative release keystore path.
+    required: true
+  upload-to-release:
+    description: Upload the artifact when triggered by a stable GitHub Release.
+    required: false
+    default: 'true'
+
+outputs:
+  artifact:
+    description: Absolute release artifact path.
+    value: ${{ steps.artifact.outputs.path }}
+  sha256:
+    description: SHA-256 of the release artifact.
+    value: ${{ steps.artifact.outputs.sha256 }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate production release
+      uses: $/.github/actions/cd/guard
+      with:
+        production-branch: ${{ inputs.production-branch }}
+
+    - name: Set up Java
+      uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.java-version }}
+
+    - name: Prepare Android SDK
+      uses: $/.github/actions/java-kotlin/profiles/android
+
+    - name: Prepare Gradle cache
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ "${RUNNER_TOOL_CACHE:-}" == "/opt/cache/tool-cache" ]]; then gradle_home="/opt/cache/gradle"; else gradle_home="${GRADLE_USER_HOME:-$HOME/.gradle}"; fi
+        mkdir -p "$gradle_home"
+        echo "GRADLE_USER_HOME=$gradle_home" >>"$GITHUB_ENV"
+
+    - name: Configure release signing
+      shell: bash
+      env:
+        KEYSTORE_PATH: ${{ inputs.keystore-path }}
+      run: |
+        set -euo pipefail
+        for name in ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+          [[ -n "${!name:-}" ]] || { echo "::error::$name must be provided to the release step."; exit 1; }
+          echo "::add-mask::${!name}"
+        done
+
+        if [[ "$KEYSTORE_PATH" == /* ]]; then keystore="$KEYSTORE_PATH"; else keystore="$GITHUB_WORKSPACE/$KEYSTORE_PATH"; fi
+        keystore="$(realpath -e "$keystore" 2>/dev/null || true)"
+        [[ -f "$keystore" ]] || { echo "::error::Release keystore '$KEYSTORE_PATH' does not exist."; exit 1; }
+
+        {
+          echo "ORG_GRADLE_PROJECT_releaseStoreFile=$keystore"
+          echo "ORG_GRADLE_PROJECT_releaseStorePassword=$ANDROID_KEYSTORE_PASSWORD"
+          echo "ORG_GRADLE_PROJECT_releaseKeyAlias=$ANDROID_KEY_ALIAS"
+          echo "ORG_GRADLE_PROJECT_releaseKeyPassword=$ANDROID_KEY_PASSWORD"
+        } >>"$GITHUB_ENV"
+
+    - name: Build signed Android release
+      shell: bash
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        GRADLE_TASK: ${{ inputs.gradle-task }}
+      run: |
+        set -euo pipefail
+        [[ "$GRADLE_TASK" =~ ^[A-Za-z0-9_:.-]+$ ]] || { echo "::error::Invalid Gradle release task '$GRADLE_TASK'."; exit 1; }
+        component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
+        [[ -d "$component" && -f "$component/gradlew" ]] || { echo "::error::Android working-directory must contain gradlew."; exit 1; }
+        (cd "$component" && chmod +x ./gradlew && ./gradlew --no-daemon "$GRADLE_TASK")
+
+    - name: Resolve release artifact
+      id: artifact
+      shell: bash
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        ARTIFACT_GLOB: ${{ inputs.artifact-glob }}
+      run: |
+        set -euo pipefail
+        command -v sha256sum >/dev/null || { echo "::error::sha256sum is required on the release runner."; exit 1; }
+        component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY")"
+        mapfile -t matches < <(compgen -G "$component/$ARTIFACT_GLOB" || true)
+        if (( ${#matches[@]} != 1 )); then
+          echo "::error::artifact-glob must resolve to exactly one release artifact; found ${#matches[@]}."
+          exit 1
+        fi
+        artifact="$(realpath -e "${matches[0]}")"
+        digest="$(sha256sum "$artifact" | awk '{print $1}')"
+        {
+          echo "path=$artifact"
+          echo "sha256=$digest"
+        } >>"$GITHUB_OUTPUT"
+        echo "Release artifact: $artifact"
+        echo "SHA-256: $digest"
+
+    - name: Upload artifact to GitHub Release
+      if: inputs.upload-to-release == 'true' && github.event_name == 'release'
+      shell: bash
+      env:
+        ARTIFACT: ${{ steps.artifact.outputs.path }}
+      run: |
+        set -euo pipefail
+        command -v gh >/dev/null || { echo "::error::gh CLI is required to upload Android release artifacts."; exit 1; }
+        [[ -n "${GH_TOKEN:-}" ]] || { echo "::error::GH_TOKEN is required to upload Android release artifacts."; exit 1; }
+        gh release upload "$GITHUB_REF_NAME" "$ARTIFACT" --clobber

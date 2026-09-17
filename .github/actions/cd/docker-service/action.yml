@@ -1,0 +1,242 @@
+name: Docker service deployment
+description: Build, migrate, deploy, health-check, and register one API or Web Docker service with Caddy.
+
+inputs:
+  production-branch:
+    description: Branch whose history is allowed to reach production.
+    required: true
+  working-directory:
+    description: Service root relative to the caller repository.
+    required: true
+  service-name:
+    description: Stable Docker container and Caddy site name.
+    required: true
+  image-name:
+    description: Local Docker image repository name without a tag.
+    required: true
+  dockerfile:
+    description: Dockerfile relative to working-directory.
+    required: false
+    default: Dockerfile
+  target:
+    description: Optional Docker build target.
+    required: false
+    default: ''
+  build-args-json:
+    description: JSON array of non-secret Docker KEY=VALUE build arguments.
+    required: false
+    default: '[]'
+  container-port:
+    description: Internal application port.
+    required: true
+  host-port:
+    description: Fixed loopback host port assigned to this service.
+    required: true
+  domain:
+    description: Public hostname registered in Caddy.
+    required: true
+  env-files-json:
+    description: JSON array of repository-relative or absolute Docker env-file paths.
+    required: false
+    default: '[]'
+  volumes-json:
+    description: JSON array of Docker volume specifications.
+    required: false
+    default: '[]'
+  network:
+    description: Optional Docker network name.
+    required: false
+    default: ''
+  restart-policy:
+    description: Docker restart policy.
+    required: false
+    default: unless-stopped
+  health-path:
+    description: HTTP path checked on the loopback host port after deployment.
+    required: false
+    default: /health
+  health-attempts:
+    description: Maximum health-check attempts.
+    required: false
+    default: '20'
+  migration-engine:
+    description: none, goose, prisma, or flyway.
+    required: false
+    default: none
+  migration-working-directory:
+    description: Migration component path; defaults to working-directory.
+    required: false
+    default: ''
+  migration-path:
+    description: Engine-specific migration directory or Prisma schema path. Empty uses the engine convention.
+    required: false
+    default: ''
+  migration-dialect:
+    description: Goose dialect.
+    required: false
+    default: postgres
+  migration-package-manager:
+    description: Prisma package manager (npm, pnpm, yarn, or bun).
+    required: false
+    default: ''
+  migration-build-tool:
+    description: Flyway build tool (gradle or maven).
+    required: false
+    default: gradle
+  go-version:
+    description: Go version used by Goose migration.
+    required: false
+    default: stable
+  node-version:
+    description: Node.js version used by Prisma migration.
+    required: false
+    default: '24'
+  java-version:
+    description: Java version used by Flyway migration.
+    required: false
+    default: '17'
+  caddyfile:
+    description: Main Caddyfile importing generated sites.
+    required: false
+    default: /opt/stacks/shared/caddy/Caddyfile
+  caddy-sites-directory:
+    description: Directory imported by the main Caddyfile.
+    required: false
+    default: /opt/stacks/shared/caddy/sites
+
+outputs:
+  image:
+    description: Built Docker image reference.
+    value: ${{ steps.build.outputs.image }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate production deployment
+      uses: $/.github/actions/cd/guard
+      with:
+        production-branch: ${{ inputs.production-branch }}
+
+    - name: Resolve deployment contract
+      id: contract
+      shell: bash
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        MIGRATION_ENGINE: ${{ inputs.migration-engine }}
+        MIGRATION_WORKING_DIRECTORY: ${{ inputs.migration-working-directory }}
+        MIGRATION_PATH: ${{ inputs.migration-path }}
+        MIGRATION_PACKAGE_MANAGER: ${{ inputs.migration-package-manager }}
+        MIGRATION_BUILD_TOOL: ${{ inputs.migration-build-tool }}
+        HOST_PORT: ${{ inputs.host-port }}
+        HEALTH_PATH: ${{ inputs.health-path }}
+      run: |
+        set -euo pipefail
+        case "$MIGRATION_ENGINE" in none|goose|prisma|flyway) ;; *) echo "::error::migration-engine must be none, goose, prisma, or flyway."; exit 1 ;; esac
+        [[ "$HEALTH_PATH" == /* ]] || { echo "::error::health-path must start with '/'."; exit 1; }
+
+        migration_working_directory="$MIGRATION_WORKING_DIRECTORY"
+        [[ -n "$migration_working_directory" ]] || migration_working_directory="$WORKING_DIRECTORY"
+        migration_path="$MIGRATION_PATH"
+        case "$MIGRATION_ENGINE" in
+          goose)  [[ -n "$migration_path" ]] || migration_path="db/migrations" ;;
+          prisma)
+            [[ -n "$migration_path" ]] || migration_path="prisma/schema.prisma"
+            case "$MIGRATION_PACKAGE_MANAGER" in npm|pnpm|yarn|bun) ;; *) echo "::error::Prisma migration requires migration-package-manager."; exit 1 ;; esac
+            ;;
+          flyway)
+            [[ -n "$migration_path" ]] || migration_path="src/main/resources/db/migration"
+            case "$MIGRATION_BUILD_TOOL" in gradle|maven) ;; *) echo "::error::Flyway migration-build-tool must be gradle or maven."; exit 1 ;; esac
+            ;;
+        esac
+
+        {
+          echo "migration_working_directory=$migration_working_directory"
+          echo "migration_path=$migration_path"
+          echo "health_url=http://127.0.0.1:$HOST_PORT$HEALTH_PATH"
+          echo "caddy_upstream=127.0.0.1:$HOST_PORT"
+        } >>"$GITHUB_OUTPUT"
+
+    - name: Build production image
+      id: build
+      uses: $/.github/actions/cd/docker/build
+      with:
+        working-directory: ${{ inputs.working-directory }}
+        dockerfile: ${{ inputs.dockerfile }}
+        image-name: ${{ inputs.image-name }}
+        target: ${{ inputs.target }}
+        build-args-json: ${{ inputs.build-args-json }}
+
+    - name: Apply Goose migrations
+      if: inputs.migration-engine == 'goose'
+      uses: $/.github/actions/cd/migration/goose
+      with:
+        working-directory: ${{ steps.contract.outputs.migration_working_directory }}
+        migrations-path: ${{ steps.contract.outputs.migration_path }}
+        dialect: ${{ inputs.migration-dialect }}
+        go-version: ${{ inputs.go-version }}
+
+    - name: Apply Prisma migrations
+      if: inputs.migration-engine == 'prisma'
+      uses: $/.github/actions/cd/migration/prisma
+      with:
+        working-directory: ${{ steps.contract.outputs.migration_working_directory }}
+        schema: ${{ steps.contract.outputs.migration_path }}
+        node-version: ${{ inputs.node-version }}
+        package-manager: ${{ inputs.migration-package-manager }}
+
+    - name: Apply Flyway migrations
+      if: inputs.migration-engine == 'flyway'
+      uses: $/.github/actions/cd/migration/flyway
+      with:
+        working-directory: ${{ steps.contract.outputs.migration_working_directory }}
+        migrations-path: ${{ steps.contract.outputs.migration_path }}
+        java-version: ${{ inputs.java-version }}
+        build-tool: ${{ inputs.migration-build-tool }}
+
+    - name: Deploy Docker service
+      id: deploy
+      uses: $/.github/actions/cd/docker/deploy
+      with:
+        container-name: ${{ inputs.service-name }}
+        image: ${{ steps.build.outputs.image }}
+        container-port: ${{ inputs.container-port }}
+        host-port: ${{ inputs.host-port }}
+        env-files-json: ${{ inputs.env-files-json }}
+        volumes-json: ${{ inputs.volumes-json }}
+        network: ${{ inputs.network }}
+        restart-policy: ${{ inputs.restart-policy }}
+
+    - name: Verify new service
+      uses: $/.github/actions/cd/docker/health
+      with:
+        url: ${{ steps.contract.outputs.health_url }}
+        attempts: ${{ inputs.health-attempts }}
+
+    - name: Register Caddy route
+      uses: $/.github/actions/cd/caddy
+      with:
+        service-name: ${{ inputs.service-name }}
+        domain: ${{ inputs.domain }}
+        upstream: ${{ steps.contract.outputs.caddy_upstream }}
+        caddyfile: ${{ inputs.caddyfile }}
+        sites-directory: ${{ inputs.caddy-sites-directory }}
+
+    - name: Roll back previous image after deployment failure
+      if: failure() && steps.deploy.outputs.previous-existed == 'true'
+      uses: $/.github/actions/cd/docker/deploy
+      with:
+        container-name: ${{ inputs.service-name }}
+        image: ${{ steps.deploy.outputs.previous-image }}
+        container-port: ${{ inputs.container-port }}
+        host-port: ${{ inputs.host-port }}
+        env-files-json: ${{ inputs.env-files-json }}
+        volumes-json: ${{ inputs.volumes-json }}
+        network: ${{ inputs.network }}
+        restart-policy: ${{ inputs.restart-policy }}
+
+    - name: Remove failed first deployment
+      if: failure() && steps.deploy.outputs.previous-existed != 'true'
+      shell: bash
+      env:
+        SERVICE_NAME: ${{ inputs.service-name }}
+      run: docker rm -f "$SERVICE_NAME" >/dev/null 2>&1 || true
