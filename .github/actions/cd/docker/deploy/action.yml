@@ -34,6 +34,10 @@ inputs:
     description: Seconds allowed for graceful stop.
     required: false
     default: '15'
+  restore-previous-on-failure:
+    description: Restore the replaced image when the requested image cannot start.
+    required: false
+    default: 'true'
 
 outputs:
   previous-existed:
@@ -59,6 +63,7 @@ runs:
         NETWORK: ${{ inputs.network }}
         RESTART_POLICY: ${{ inputs.restart-policy }}
         STOP_TIMEOUT: ${{ inputs.stop-timeout }}
+        RESTORE_PREVIOUS_ON_FAILURE: ${{ inputs.restore-previous-on-failure }}
       run: |
         set -euo pipefail
         command -v docker >/dev/null || { echo "::error::Docker is required on the deployment runner."; exit 1; }
@@ -72,6 +77,7 @@ runs:
         done
         [[ "$STOP_TIMEOUT" =~ ^[0-9]+$ ]] || { echo "::error::stop-timeout must be an integer."; exit 1; }
         case "$RESTART_POLICY" in no|always|unless-stopped|on-failure) ;; *) echo "::error::Invalid restart policy '$RESTART_POLICY'."; exit 1 ;; esac
+        case "$RESTORE_PREVIOUS_ON_FAILURE" in true|false) ;; *) echo "::error::restore-previous-on-failure must be true or false."; exit 1 ;; esac
         if [[ -n "$NETWORK" && ! "$NETWORK" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
           echo "::error::Invalid Docker network '$NETWORK'."
           exit 1
@@ -126,7 +132,7 @@ runs:
         if ! run_image "$IMAGE"; then
           echo "::error::Failed to start '$CONTAINER_NAME' from '$IMAGE'."
           docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-          if [[ "$previous_existed" == "true" && -n "$previous_image_id" ]]; then
+          if [[ "$RESTORE_PREVIOUS_ON_FAILURE" == "true" && "$previous_existed" == "true" && -n "$previous_image_id" ]]; then
             echo "Attempting immediate rollback to $previous_image_id"
             run_image "$previous_image_id" || true
           fi
