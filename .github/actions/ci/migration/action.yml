@@ -1,5 +1,5 @@
 name: Migration CI
-description: Dispatch offline migration validation to the configured migration engine.
+description: Dispatch migration validation to the configured engine after language CI.
 
 inputs:
   components:
