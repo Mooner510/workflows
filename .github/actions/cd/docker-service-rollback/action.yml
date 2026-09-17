@@ -208,8 +208,22 @@ runs:
         restore-previous-on-failure: 'false'
 
     - name: Verify restored original deployment
+      id: restore_health
       if: failure() && steps.restore.outcome == 'success'
       uses: $/.github/actions/cd/docker/health
       with:
         url: ${{ steps.contract.outputs.health_url }}
         attempts: ${{ inputs.health-attempts }}
+
+    - name: Restore original deployment state
+      if: failure() && steps.restore_health.outcome == 'success'
+      uses: $/.github/actions/cd/state
+      with:
+        operation: record
+        project: ${{ inputs.project }}
+        service: ${{ inputs.service-name }}
+        revision: ${{ steps.current.outputs.revision }}
+        image: ${{ steps.current.outputs.image }}
+        image-id: ${{ steps.current.outputs['image-id'] }}
+        event: rollback-restore
+        root: ${{ inputs.state-root }}
