@@ -163,6 +163,13 @@ jobs:
               echo "::error::Component '$name' maven_goals must be a string when set."
               exit 1
             fi
+
+            migration_engine="$(jq -r '.migration_engine // "none"' <<<"$component")"
+            case "$migration_engine" in none|goose|prisma|flyway) ;; *) echo "::error::Unsupported migration_engine '$migration_engine' for '$name'."; exit 1 ;; esac
+            case "$type:$migration_engine" in
+              go:none|go:goose|node:none|node:prisma|java-kotlin:none|java-kotlin:flyway|android:none) ;;
+              *) echo "::error::Component '$name' has invalid type/migration_engine combination '$type/$migration_engine'."; exit 1 ;;
+            esac
           done
 
           force_all=false
@@ -411,3 +418,8 @@ jobs:
           version: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].version }}
           build-tool: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].build_tool }}
           profile: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].profile }}
+
+      - name: Migration CI
+        uses: $/.github/actions/ci/migration
+        with:
+          components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
