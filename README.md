@@ -12,22 +12,23 @@
 └─ security.yml
 
 .github/actions/
-├─ go/
-│  └─ action.yml
-├─ java-kotlin/
-│  ├─ action.yml
-│  ├─ build-tools/
-│  │  ├─ gradle/action.yml
-│  │  └─ maven/action.yml
-│  └─ profiles/
-│     ├─ android/action.yml
-│     └─ spring-boot/action.yml
-├─ node/
-│  ├─ action.yml
-│  ├─ npm/action.yml
-│  ├─ pnpm/action.yml
-│  ├─ yarn/action.yml
-│  └─ bun/action.yml
+├─ ci/
+│  ├─ go/
+│  │  └─ action.yml
+│  ├─ java-kotlin/
+│  │  ├─ action.yml
+│  │  ├─ build-tools/
+│  │  │  ├─ gradle/action.yml
+│  │  │  └─ maven/action.yml
+│  │  └─ profiles/
+│  │     ├─ android/action.yml
+│  │     └─ spring-boot/action.yml
+│  └─ node/
+│     ├─ action.yml
+│     ├─ npm/action.yml
+│     ├─ pnpm/action.yml
+│     ├─ yarn/action.yml
+│     └─ bun/action.yml
 └─ cd/
    ├─ guard/action.yml
    ├─ docker-service/action.yml
