@@ -51,7 +51,7 @@ runs:
         java-version: ${{ inputs.java-version }}
 
     - name: Prepare Android SDK
-      uses: $/.github/actions/java-kotlin/profiles/android
+      uses: $/.github/actions/ci/java-kotlin/profiles/android
 
     - name: Prepare Gradle cache
       shell: bash
