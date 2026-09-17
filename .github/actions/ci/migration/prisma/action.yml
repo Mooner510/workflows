@@ -1,0 +1,81 @@
+name: Prisma migration CI
+description: Validate Prisma schema and migration source structure without applying migrations.
+
+inputs:
+  components:
+    description: JSON array of affected Node components using Prisma.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Validate Prisma migrations
+      shell: bash
+      env:
+        COMPONENTS_JSON: ${{ inputs.components }}
+      run: |
+        set -euo pipefail
+
+        command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+        jq -e 'type == "array" and length > 0' <<<"$components" >/dev/null || {
+          echo "::error::components must be a non-empty JSON array."
+          exit 1
+        }
+
+        run_prisma() {
+          local manager="$1"
+          local component="$2"
+          shift 2
+          case "$manager" in
+            npm)  (cd "$component" && npm exec --offline -- prisma "$@") ;;
+            pnpm) (cd "$component" && pnpm exec prisma "$@") ;;
+            yarn) (cd "$component" && yarn exec prisma "$@") ;;
+            bun)  (cd "$component" && bunx --bun prisma "$@") ;;
+            *) echo "::error::Unsupported Prisma package manager '$manager'."; return 1 ;;
+          esac
+        }
+
+        while IFS= read -r component_json; do
+          name="$(jq -r '.name // empty' <<<"$component_json")"
+          path="$(jq -r '.path // empty' <<<"$component_json")"
+          manager="$(jq -r '.package_manager // empty' <<<"$component_json")"
+          schema_path="$(jq -r '.migration_schema // "prisma/schema.prisma"' <<<"$component_json")"
+          migrations_path="$(jq -r '.migration_path // "prisma/migrations"' <<<"$component_json")"
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+
+          if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
+            echo "::error::Prisma component '$name' must resolve inside the repository."
+            exit 1
+          fi
+          case "$manager" in npm|pnpm|yarn|bun) ;; *) echo "::error::Prisma component '$name' has invalid package manager '$manager'."; exit 1 ;; esac
+
+          schema="$(realpath -e "$component/$schema_path" 2>/dev/null || true)"
+          migrations="$(realpath -e "$component/$migrations_path" 2>/dev/null || true)"
+          [[ -f "$schema" ]] || { echo "::error::Prisma schema '$schema_path' does not exist for '$name'."; exit 1; }
+          [[ -d "$migrations" ]] || { echo "::error::Prisma migrations directory '$migrations_path' does not exist for '$name'."; exit 1; }
+
+          if ! (cd "$component" && node -e 'require.resolve("prisma/package.json")' >/dev/null 2>&1); then
+            echo "::error::Prisma CLI must be installed as a local project dependency for '$name'."
+            exit 1
+          fi
+
+          run_prisma "$manager" "$component" validate --schema "$schema"
+
+          mapfile -t migration_dirs < <(find "$migrations" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+          (( ${#migration_dirs[@]} > 0 )) || { echo "::error::No Prisma migration directories found for '$name'."; exit 1; }
+
+          for migration_dir in "${migration_dirs[@]}"; do
+            if [[ ! "$migration_dir" =~ ^[0-9]+_[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+              echo "::error::Invalid Prisma migration directory '$migration_dir' for '$name'."
+              exit 1
+            fi
+            [[ -s "$migrations/$migration_dir/migration.sql" ]] || {
+              echo "::error::Prisma migration '$migration_dir' must contain a non-empty migration.sql."
+              exit 1
+            }
+          done
+
+          echo "==> Prisma migration CI: $name (${#migration_dirs[@]} migrations)"
+        done < <(jq -c '.[]' <<<"$components")
