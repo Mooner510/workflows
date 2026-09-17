@@ -52,7 +52,9 @@ jobs:
             "name": "api",
             "type": "go",
             "path": "services/api",
-            "go_version": "1.27.1"
+            "go_version": "1.27.1",
+            "migration_engine": "goose",
+            "migration_path": "db/migrations"
           }
         ]
 ```
@@ -65,6 +67,14 @@ Node        -> locked install / lint / type / test / build
 Java/Kotlin -> Gradle or Maven + optional Android/Spring Boot profile
 ```
 
+Migration source validation은 language CI 뒤에 자동 실행됩니다.
+
+```text
+Go API          -> Goose
+Node API        -> Prisma Migrate
+Java/Kotlin API -> Flyway
+```
+
 CI에서는 production image를 `docker build`하지 않습니다.
 
 Security:
@@ -74,14 +84,6 @@ Semgrep CE
 OSV-Scanner
 Gitleaks current + history
 Trivy misconfiguration
-```
-
-Migration source action은 다음 engine 기준으로 구성합니다.
-
-```text
-Go API          -> Goose
-Node API        -> Prisma Migrate
-Java/Kotlin API -> Flyway
 ```
 
 ## CD
@@ -112,6 +114,7 @@ Example:
   uses: Mooner510/workflows/.github/actions/cd/docker-service@v1
   env:
     DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
   with:
     production-branch: main
     project: my-project
@@ -123,7 +126,12 @@ Example:
     domain: api.example.com
     migration-engine: goose
     migration-path: db/migrations
+    env-names-json: '["DATABASE_URL","SESSION_SECRET"]'
 ```
+
+`env-names-json`에는 **환경변수 이름만** 전달합니다. 실제 값은 caller step의 `env:`에서 GitHub Environment Secret/Variable로 주입되고 Docker에는 `docker run -e NAME`으로 전달됩니다. 값 자체를 action input, state/history 또는 host env file에 기록하지 않습니다.
+
+정적 non-secret 설정은 필요하면 `env-files-json`으로 host의 `deploy.env`를 함께 전달할 수 있습니다.
 
 Project workflow에는 가능한 한 다음만 남깁니다.
 
@@ -133,7 +141,7 @@ concurrency
 environment: production
 permissions
 checkout
-secrets
+secrets / environment variables
 central action inputs
 ```
 
