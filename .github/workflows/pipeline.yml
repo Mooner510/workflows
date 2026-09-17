@@ -165,10 +165,27 @@ jobs:
             fi
 
             migration_engine="$(jq -r '.migration_engine // "none"' <<<"$component")"
-            case "$migration_engine" in none|goose|prisma|flyway) ;; *) echo "::error::Unsupported migration_engine '$migration_engine' for '$name'."; exit 1 ;; esac
-            case "$type:$migration_engine" in
-              go:none|go:goose|node:none|node:prisma|java-kotlin:none|java-kotlin:flyway|android:none) ;;
-              *) echo "::error::Component '$name' has invalid type/migration_engine combination '$type/$migration_engine'."; exit 1 ;;
+            case "$migration_engine" in
+              none)
+                ;;
+              goose)
+                migration_path="$(jq -r '.migration_path // "db/migrations"' <<<"$component")"
+                validate_relative_path "$migration_path" "Component '$name' migration_path"
+                if ! jq -e '(.goose_version == null) or ((.goose_version | type) == "string" and length > 0)' <<<"$component" >/dev/null; then
+                  echo "::error::Component '$name' goose_version must be a non-empty string when set."
+                  exit 1
+                fi
+                ;;
+              prisma)
+                [[ "$type" == "node" ]] || { echo "::error::Prisma migration requires a Node component ('$name')."; exit 1; }
+                ;;
+              flyway)
+                [[ "$type" == "java-kotlin" ]] || { echo "::error::Flyway migration requires a Java/Kotlin component ('$name')."; exit 1; }
+                ;;
+              *)
+                echo "::error::Unsupported migration_engine '$migration_engine' for '$name'."
+                exit 1
+                ;;
             esac
           done
 
