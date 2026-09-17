@@ -67,8 +67,3 @@ runs:
       with:
         components: ${{ inputs.components }}
         profile: ${{ inputs.profile }}
-
-    - name: Migration CI
-      uses: $/.github/actions/ci/migration
-      with:
-        components: ${{ inputs.components }}
