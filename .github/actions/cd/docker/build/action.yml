@@ -20,6 +20,10 @@ inputs:
     description: JSON array of non-secret KEY=VALUE build arguments.
     required: false
     default: '[]'
+  secret-env-names-json:
+    description: JSON array of caller environment variable names exposed to Docker BuildKit as secret ids with the same names.
+    required: false
+    default: '[]'
 
 outputs:
   image:
@@ -41,6 +45,7 @@ runs:
         IMAGE_NAME: ${{ inputs.image-name }}
         TARGET: ${{ inputs.target }}
         BUILD_ARGS_JSON: ${{ inputs.build-args-json }}
+        SECRET_ENV_NAMES_JSON: ${{ inputs.secret-env-names-json }}
       run: |
         set -euo pipefail
         command -v docker >/dev/null || { echo "::error::Docker is required on the deployment runner."; exit 1; }
@@ -55,6 +60,10 @@ runs:
         fi
         jq -e 'type == "array" and all(.[]; type == "string")' <<<"$BUILD_ARGS_JSON" >/dev/null || {
           echo "::error::build-args-json must be a JSON array of strings."
+          exit 1
+        }
+        jq -e 'type == "array" and all(.[]; type == "string")' <<<"$SECRET_ENV_NAMES_JSON" >/dev/null || {
+          echo "::error::secret-env-names-json must be a JSON array of strings."
           exit 1
         }
 
@@ -79,10 +88,15 @@ runs:
           [[ "$value" == *=* ]] || { echo "::error::Docker build arguments must use KEY=VALUE form."; exit 1; }
           args+=(--build-arg "$value")
         done < <(jq -r '.[] | @base64' <<<"$BUILD_ARGS_JSON")
+        while IFS= read -r name; do
+          [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "::error::Invalid build secret environment variable name '$name'."; exit 1; }
+          [[ -v "$name" ]] || { echo "::error::Build secret environment variable '$name' is not set in the caller step."; exit 1; }
+          args+=(--secret "id=$name,env=$name")
+        done < <(jq -r '.[]' <<<"$SECRET_ENV_NAMES_JSON")
         args+=("$context")
 
         echo "==> Building $image"
-        "${args[@]}"
+        DOCKER_BUILDKIT=1 "${args[@]}"
         image_id="$(docker image inspect "$image" --format '{{.Id}}')"
         {
           echo "image=$image"
