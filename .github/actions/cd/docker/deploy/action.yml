@@ -18,6 +18,10 @@ inputs:
     description: JSON array of repository-relative or absolute Docker env-file paths.
     required: false
     default: '[]'
+  env-names-json:
+    description: JSON array of environment variable names inherited from the caller and forwarded with docker -e NAME.
+    required: false
+    default: '[]'
   volumes-json:
     description: JSON array of Docker volume specifications.
     required: false
@@ -59,6 +63,7 @@ runs:
         CONTAINER_PORT: ${{ inputs.container-port }}
         HOST_PORT: ${{ inputs.host-port }}
         ENV_FILES_JSON: ${{ inputs.env-files-json }}
+        ENV_NAMES_JSON: ${{ inputs.env-names-json }}
         VOLUMES_JSON: ${{ inputs.volumes-json }}
         NETWORK: ${{ inputs.network }}
         RESTART_POLICY: ${{ inputs.restart-policy }}
@@ -67,8 +72,8 @@ runs:
       run: |
         set -euo pipefail
         command -v docker >/dev/null || { echo "::error::Docker is required on the deployment runner."; exit 1; }
-        command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
-        command -v base64 >/dev/null || { echo "::error::base64 is required on the deployment runner."; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+        command -v base64 >/dev/null || { echo "::error::base64 is required on the self-hosted runner."; exit 1; }
 
         [[ "$CONTAINER_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid container-name '$CONTAINER_NAME'."; exit 1; }
         [[ -n "$IMAGE" && "$IMAGE" != *$'\n'* && "$IMAGE" != *$'\r'* ]] || { echo "::error::Invalid image reference."; exit 1; }
@@ -83,6 +88,7 @@ runs:
           exit 1
         fi
         jq -e 'type == "array" and all(.[]; type == "string")' <<<"$ENV_FILES_JSON" >/dev/null || { echo "::error::env-files-json must be a string array."; exit 1; }
+        jq -e 'type == "array" and all(.[]; type == "string")' <<<"$ENV_NAMES_JSON" >/dev/null || { echo "::error::env-names-json must be a string array."; exit 1; }
         jq -e 'type == "array" and all(.[]; type == "string")' <<<"$VOLUMES_JSON" >/dev/null || { echo "::error::volumes-json must be a string array."; exit 1; }
 
         declare -a env_args=()
@@ -93,6 +99,12 @@ runs:
           [[ -f "$env_file" ]] || { echo "::error::Docker env file '$value' does not exist."; exit 1; }
           env_args+=(--env-file "$env_file")
         done < <(jq -r '.[] | @base64' <<<"$ENV_FILES_JSON")
+
+        while IFS= read -r name; do
+          [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "::error::Invalid environment variable name '$name'."; exit 1; }
+          [[ -v "$name" ]] || { echo "::error::Environment variable '$name' is not set in the caller step."; exit 1; }
+          env_args+=(-e "$name")
+        done < <(jq -r '.[]' <<<"$ENV_NAMES_JSON")
 
         declare -a volume_args=()
         while IFS= read -r encoded; do
