@@ -67,13 +67,58 @@ Node        -> locked install / lint / type / test / build
 Java/Kotlin -> Gradle or Maven + optional Android/Spring Boot profile
 ```
 
-Migration source validation은 language CI 뒤에 자동 실행됩니다.
+Migration CI는 언어 CI와 분리되어 상위 pipeline에서 한 번만 실행합니다.
+
+### Goose SQL migration CI
+
+Goose CI는 애플리케이션 언어와 무관합니다. ORM이나 Goose Go library가 없어도 SQL migration 디렉터리만 있으면 사용할 수 있습니다.
+
+```json
+{
+  "name": "api",
+  "type": "node",
+  "path": "services/api",
+  "migration_engine": "goose",
+  "migration_path": "db/migrations"
+}
+```
+
+동작:
 
 ```text
-Go API          -> Goose
-Node API        -> Prisma Migrate
-Java/Kotlin API -> Flyway
+migration_path 확인
+→ Goose SQL source validate
+→ component 전용 임시 PostgreSQL container 시작
+→ 모든 pending migration 실제 적용
+→ PostgreSQL container 제거
 ```
+
+Go migration source(`*.go`)는 지원하지 않습니다. 공용 CI에서는 portable Goose SQL migration(`*.sql`)만 허용합니다.
+
+Goose 버전 우선순위:
+
+```text
+1. component의 goose_version
+2. component에서 repository root 방향으로 가장 가까운 go.mod의 github.com/pressly/goose/v3 버전
+3. 중앙 기본 버전 v3.28.0
+```
+
+예시:
+
+```json
+{
+  "name": "api",
+  "type": "java-kotlin",
+  "path": "services/api",
+  "migration_engine": "goose",
+  "migration_path": "db/migrations",
+  "goose_version": "v3.28.0"
+}
+```
+
+Goose CLI는 언어 runtime에 의존하지 않도록 공식 Linux binary를 사용하고 release checksum을 검증한 뒤 runner tool cache에 저장합니다.
+
+Prisma는 Node component, Flyway는 Java/Kotlin component에서 사용합니다.
 
 CI에서는 production image를 `docker build`하지 않습니다.
 
