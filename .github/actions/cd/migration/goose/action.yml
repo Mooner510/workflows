@@ -139,30 +139,30 @@ runs:
 
           mkdir -p "$cache_root"
           tmp="$(mktemp -d)"
-          trap 'rm -rf "$tmp"' RETURN
 
           if ! curl -fsSL "https://github.com/pressly/goose/releases/download/$version/checksums.txt" -o "$tmp/checksums.txt" || \
              ! curl -fsSL "https://github.com/pressly/goose/releases/download/$version/$asset" -o "$tmp/$asset"; then
+            rm -rf "$tmp"
             echo "::error::Failed to download Goose $version." >&2
             return 1
           fi
 
           expected="$(awk -v asset="$asset" '$2 == asset { print $1; exit }' "$tmp/checksums.txt")"
           if [[ -z "$expected" ]]; then
+            rm -rf "$tmp"
             echo "::error::No checksum found for Goose asset '$asset' in $version." >&2
             return 1
           fi
           if ! printf '%s  %s\n' "$expected" "$tmp/$asset" | sha256sum -c - >/dev/null; then
+            rm -rf "$tmp"
             echo "::error::Checksum verification failed for Goose $version/$asset." >&2
             return 1
           fi
 
           staged="$cache_root/.goose.$$.$RANDOM"
           install -m 0755 "$tmp/$asset" "$staged"
-          if ! mv -n "$staged" "$binary" 2>/dev/null; then
-            rm -f "$staged"
-          fi
-          [[ -x "$binary" ]] || { echo "::error::Failed to populate Goose tool cache." >&2; return 1; }
+          mv -f "$staged" "$binary"
+          rm -rf "$tmp"
           printf '%s' "$binary"
         }
 
