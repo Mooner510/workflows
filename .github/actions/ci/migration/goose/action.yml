@@ -1,5 +1,5 @@
 name: Goose migration CI
-description: Validate Goose migration source structure without touching a database.
+description: Validate Goose migration sources without connecting to a database.
 
 inputs:
   components:
@@ -16,7 +16,9 @@ runs:
       run: |
         set -euo pipefail
 
+        command -v go >/dev/null || { echo "::error::Go must be set up before Goose migration CI."; exit 1; }
         command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+
         workspace="$(realpath "$GITHUB_WORKSPACE")"
         components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
         jq -e 'type == "array" and length > 0' <<<"$components" >/dev/null || {
@@ -30,61 +32,34 @@ runs:
           migrations_path="$(jq -r '.migration_path // "db/migrations"' <<<"$component_json")"
           component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
 
+          [[ "$(jq -r '.type // empty' <<<"$component_json")" == "go" ]] || {
+            echo "::error::Goose migration CI requires a Go component ('$name')."
+            exit 1
+          }
           if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
             echo "::error::Goose component '$name' must resolve inside the repository."
             exit 1
           fi
 
           migrations="$(realpath -e "$component/$migrations_path" 2>/dev/null || true)"
-          [[ -d "$migrations" ]] || { echo "::error::Goose migration directory '$migrations_path' does not exist for '$name'."; exit 1; }
+          [[ -d "$migrations" ]] || { echo "::error::Goose migrations directory '$migrations_path' does not exist for '$name'."; exit 1; }
 
           cursor="$component"
           module=""
           while :; do
-            if [[ -f "$cursor/go.mod" ]]; then
-              module="$cursor"
-              break
-            fi
+            if [[ -f "$cursor/go.mod" ]]; then module="$cursor"; break; fi
             [[ "$cursor" == "$workspace" ]] && break
             cursor="$(dirname "$cursor")"
           done
           [[ -n "$module" ]] || { echo "::error::No go.mod found for Goose component '$name'."; exit 1; }
 
-          goose_version="$(cd "$module" && go list -m -f '{{.Version}}' github.com/pressly/goose/v3 2>/dev/null || true)"
+          cd "$module"
+          goose_version="$(go list -m -f '{{.Version}}' github.com/pressly/goose/v3 2>/dev/null || true)"
           if [[ -z "$goose_version" || "$goose_version" == "<no value>" || "$goose_version" == "(devel)" ]]; then
             echo "::error::github.com/pressly/goose/v3 must be pinned in the Go module graph for '$name'."
             exit 1
           fi
 
-          mapfile -t files < <(find "$migrations" -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sort)
-          (( ${#files[@]} > 0 )) || { echo "::error::No Goose SQL migrations found for '$name'."; exit 1; }
-
-          declare -A versions=()
-          for file in "${files[@]}"; do
-            if [[ ! "$file" =~ ^([0-9]+)_[A-Za-z0-9][A-Za-z0-9._-]*\.sql$ ]]; then
-              echo "::error::Invalid Goose migration filename '$file' for '$name'. Expected <version>_<name>.sql."
-              exit 1
-            fi
-
-            version="${BASH_REMATCH[1]}"
-            if [[ -n "${versions[$version]+x}" ]]; then
-              echo "::error::Duplicate Goose migration version '$version' for '$name'."
-              exit 1
-            fi
-            versions[$version]=1
-
-            full="$migrations/$file"
-            up_count="$(grep -Eic '^--[[:space:]]+\+goose[[:space:]]+up([[:space:]]|$)' "$full" || true)"
-            down_count="$(grep -Eic '^--[[:space:]]+\+goose[[:space:]]+down([[:space:]]|$)' "$full" || true)"
-            [[ "$up_count" -eq 1 ]] || { echo "::error::Goose migration '$file' must contain exactly one '-- +goose Up' annotation."; exit 1; }
-            [[ "$down_count" -le 1 ]] || { echo "::error::Goose migration '$file' may contain at most one '-- +goose Down' annotation."; exit 1; }
-
-            if [[ "$down_count" -eq 1 ]]; then
-              up_line="$(grep -Ein '^--[[:space:]]+\+goose[[:space:]]+up([[:space:]]|$)' "$full" | head -n1 | cut -d: -f1)"
-              down_line="$(grep -Ein '^--[[:space:]]+\+goose[[:space:]]+down([[:space:]]|$)' "$full" | head -n1 | cut -d: -f1)"
-              (( down_line > up_line )) || { echo "::error::Goose Down annotation must follow Up in '$file'."; exit 1; }
-            fi
-          done
-
-          echo "==> Goose migration CI: $name (${#files[@]} migrations, goose $goose_version)"
+          echo "==> Goose $goose_version: validating $name"
+          go run "github.com/pressly/goose/v3/cmd/goose@$goose_version" -dir "$migrations" validate
         done < <(jq -c '.[]' <<<"$components")

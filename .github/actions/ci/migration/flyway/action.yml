@@ -1,0 +1,87 @@
+name: Flyway migration CI
+description: Validate Flyway migration source conventions and plugin availability without connecting to a database.
+
+inputs:
+  components:
+    description: JSON array of affected Java/Kotlin components using Flyway.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Validate Flyway migrations
+      shell: bash
+      env:
+        COMPONENTS_JSON: ${{ inputs.components }}
+      run: |
+        set -euo pipefail
+
+        command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+        jq -e 'type == "array" and length > 0' <<<"$components" >/dev/null || {
+          echo "::error::components must be a non-empty JSON array."
+          exit 1
+        }
+
+        while IFS= read -r component_json; do
+          name="$(jq -r '.name // empty' <<<"$component_json")"
+          path="$(jq -r '.path // empty' <<<"$component_json")"
+          build_tool="$(jq -r '.build_tool // empty' <<<"$component_json")"
+          migrations_path="$(jq -r '.migration_path // "src/main/resources/db/migration"' <<<"$component_json")"
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+
+          [[ "$(jq -r '.type // empty' <<<"$component_json")" == "java-kotlin" ]] || {
+            echo "::error::Flyway migration CI requires a Java/Kotlin component ('$name')."
+            exit 1
+          }
+          case "$build_tool" in gradle|maven) ;; *) echo "::error::Flyway component '$name' must use Gradle or Maven."; exit 1 ;; esac
+          if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
+            echo "::error::Flyway component '$name' must resolve inside the repository."
+            exit 1
+          fi
+
+          migrations="$(realpath -e "$component/$migrations_path" 2>/dev/null || true)"
+          [[ -d "$migrations" ]] || { echo "::error::Flyway migrations directory '$migrations_path' does not exist for '$name'."; exit 1; }
+
+          mapfile -t files < <(find "$migrations" -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sort)
+          (( ${#files[@]} > 0 )) || { echo "::error::No Flyway SQL migrations found for '$name'."; exit 1; }
+
+          declare -A versions=()
+          for file in "${files[@]}"; do
+            if [[ "$file" =~ ^V([^_]+)__[A-Za-z0-9][A-Za-z0-9_.-]*\.sql$ ]]; then
+              version="${BASH_REMATCH[1]}"
+              [[ -z "${versions[$version]+x}" ]] || { echo "::error::Duplicate Flyway version '$version' for '$name'."; exit 1; }
+              versions[$version]=1
+            elif [[ "$file" =~ ^R__[A-Za-z0-9][A-Za-z0-9_.-]*\.sql$ ]]; then
+              :
+            elif [[ "$file" =~ ^B([^_]+)__[A-Za-z0-9][A-Za-z0-9_.-]*\.sql$ ]]; then
+              :
+            elif [[ "$file" =~ ^U([^_]+)__[A-Za-z0-9][A-Za-z0-9_.-]*\.sql$ ]]; then
+              :
+            else
+              echo "::error::Invalid default Flyway migration filename '$file' for '$name'."
+              exit 1
+            fi
+            [[ -s "$migrations/$file" ]] || { echo "::error::Flyway migration '$file' is empty."; exit 1; }
+          done
+
+          case "$build_tool" in
+            gradle)
+              [[ -f "$component/gradlew" ]] || { echo "::error::Flyway Gradle component '$name' must contain gradlew."; exit 1; }
+              chmod +x "$component/gradlew"
+              tasks="$(cd "$component" && ./gradlew --no-daemon -q tasks --all)"
+              grep -qE '(^|[[:space:]])flywayValidate([[:space:]]|$)' <<<"$tasks" || {
+                echo "::error::Flyway Gradle plugin/task flywayValidate is not available for '$name'."
+                exit 1
+              }
+              ;;
+            maven)
+              [[ -f "$component/mvnw" ]] || { echo "::error::Flyway Maven component '$name' must contain mvnw."; exit 1; }
+              chmod +x "$component/mvnw"
+              (cd "$component" && ./mvnw -B -ntp help:describe -Dplugin=org.flywaydb:flyway-maven-plugin -Dgoal=validate -Ddetail=false >/dev/null)
+              ;;
+          esac
+
+          echo "==> Flyway migration CI: $name (${#files[@]} SQL migrations)"
+        done < <(jq -c '.[]' <<<"$components")

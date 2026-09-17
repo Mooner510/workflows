@@ -1,85 +1,59 @@
 name: Migration CI
-description: Dispatch migration source validation by migration engine.
+description: Dispatch offline migration validation to the configured migration engine.
 
 inputs:
   components:
-    description: JSON array of affected, normalized components.
+    description: JSON array of affected components in one CI group.
     required: true
 
 runs:
   using: composite
   steps:
-    - name: Resolve migration CI targets
-      id: targets
+    - name: Partition migration components
+      id: migration
       shell: bash
       env:
         COMPONENTS_JSON: ${{ inputs.components }}
       run: |
         set -euo pipefail
-
         command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+
         components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
         jq -e 'type == "array" and length > 0' <<<"$components" >/dev/null || {
           echo "::error::components must be a non-empty JSON array."
           exit 1
         }
 
-        goose='[]'
-        prisma='[]'
-        flyway='[]'
+        invalid="$(jq -r '.[] | (.migration_engine // "none") | select(. != "none" and . != "goose" and . != "prisma" and . != "flyway")' <<<"$components" | head -n1)"
+        [[ -z "$invalid" ]] || { echo "::error::Unsupported migration engine '$invalid'."; exit 1; }
 
-        while IFS= read -r component; do
-          name="$(jq -r '.name // empty' <<<"$component")"
-          type="$(jq -r '.type // empty' <<<"$component")"
-          profile="$(jq -r '.profile // "none"' <<<"$component")"
-          engine="$(jq -r '.migration_engine // "none"' <<<"$component")"
-
-          case "$engine" in
-            none|'')
-              ;;
-            goose)
-              [[ "$type" == "go" ]] || { echo "::error::Migration engine 'goose' requires a Go component ('$name')."; exit 1; }
-              goose="$(jq -c --argjson item "$component" '. + [$item]' <<<"$goose")"
-              ;;
-            prisma)
-              [[ "$type" == "node" ]] || { echo "::error::Migration engine 'prisma' requires a Node component ('$name')."; exit 1; }
-              prisma="$(jq -c --argjson item "$component" '. + [$item]' <<<"$prisma")"
-              ;;
-            flyway)
-              [[ "$type" == "java-kotlin" ]] || { echo "::error::Migration engine 'flyway' requires a Java/Kotlin component ('$name')."; exit 1; }
-              [[ "$profile" != "android" ]] || { echo "::error::Android component '$name' cannot use Flyway migration CI."; exit 1; }
-              flyway="$(jq -c --argjson item "$component" '. + [$item]' <<<"$flyway")"
-              ;;
-            *)
-              echo "::error::Unsupported migration_engine '$engine' for component '$name'."
-              exit 1
-              ;;
-          esac
-        done < <(jq -c '.[]' <<<"$components")
+        goose="$(jq -c '[.[] | select((.migration_engine // "none") == "goose")]' <<<"$components")"
+        prisma="$(jq -c '[.[] | select((.migration_engine // "none") == "prisma")]' <<<"$components")"
+        flyway="$(jq -c '[.[] | select((.migration_engine // "none") == "flyway")]' <<<"$components")"
 
         {
           echo "goose=$goose"
           echo "prisma=$prisma"
           echo "flyway=$flyway"
-          [[ "$(jq 'length' <<<"$goose")" -gt 0 ]] && echo "has_goose=true" || echo "has_goose=false"
-          [[ "$(jq 'length' <<<"$prisma")" -gt 0 ]] && echo "has_prisma=true" || echo "has_prisma=false"
-          [[ "$(jq 'length' <<<"$flyway")" -gt 0 ]] && echo "has_flyway=true" || echo "has_flyway=false"
+          echo "has_goose=$([[ $(jq 'length' <<<"$goose") -gt 0 ]] && echo true || echo false)"
+          echo "has_prisma=$([[ $(jq 'length' <<<"$prisma") -gt 0 ]] && echo true || echo false)"
+          echo "has_flyway=$([[ $(jq 'length' <<<"$flyway") -gt 0 ]] && echo true || echo false)"
         } >>"$GITHUB_OUTPUT"
 
     - name: Goose migration CI
-      if: steps.targets.outputs.has_goose == 'true'
+      if: steps.migration.outputs.has_goose == 'true'
       uses: $/.github/actions/ci/migration/goose
       with:
-        components: ${{ steps.targets.outputs.goose }}
+        components: ${{ steps.migration.outputs.goose }}
 
     - name: Prisma migration CI
-      if: steps.targets.outputs.has_prisma == 'true'
+      if: steps.migration.outputs.has_prisma == 'true'
       uses: $/.github/actions/ci/migration/prisma
       with:
-        components: ${{ steps.targets.outputs.prisma }}
+        components: ${{ steps.migration.outputs.prisma }}
 
     - name: Flyway migration CI
-      if: steps.targets.outputs.has_flyway == 'true'
+      if: steps.migration.outputs.has_flyway == 'true'
       uses: $/.github/actions/ci/migration/flyway
       with:
-        components: ${{ steps.targets.outputs.flyway }}
+        components: ${{ steps.migration.outputs.flyway }}
