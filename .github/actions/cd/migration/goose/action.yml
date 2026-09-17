@@ -1,9 +1,9 @@
 name: Goose migration
-description: Apply all pending Goose migrations. Already-applied migrations are a no-op.
+description: Apply pending portable Goose SQL migrations independently of the application language.
 
 inputs:
   working-directory:
-    description: Go service directory relative to the caller repository.
+    description: Migration-owning component directory relative to the caller repository.
     required: true
   migrations-path:
     description: Migration directory relative to working-directory.
@@ -13,52 +13,164 @@ inputs:
     description: Goose database dialect.
     required: false
     default: postgres
+  goose-version:
+    description: Optional explicit Goose v3 version. Falls back to the nearest go.mod pin, then default-version.
+    required: false
+    default: ''
+  default-version:
+    description: Goose version used when no explicit version or nearest go.mod pin exists.
+    required: false
+    default: v3.28.0
   go-version:
-    description: Go version used to run the pinned Goose module.
+    description: Deprecated compatibility input. Goose CD no longer requires a Go runtime.
     required: false
     default: stable
 
 runs:
   using: composite
   steps:
-    - name: Set up Go
-      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-      with:
-        go-version: ${{ inputs.go-version }}
-        cache: false
-
     - name: Apply Goose migrations
       shell: bash
       env:
         WORKING_DIRECTORY: ${{ inputs.working-directory }}
         MIGRATIONS_PATH: ${{ inputs.migrations-path }}
         DIALECT: ${{ inputs.dialect }}
+        EXPLICIT_GOOSE_VERSION: ${{ inputs.goose-version }}
+        DEFAULT_GOOSE_VERSION: ${{ inputs.default-version }}
       run: |
         set -euo pipefail
+
         [[ -n "${DATABASE_URL:-}" ]] || { echo "::error::DATABASE_URL must be provided to the deployment step."; exit 1; }
         [[ "$DIALECT" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::Invalid Goose dialect '$DIALECT'."; exit 1; }
+        command -v curl >/dev/null || { echo "::error::curl is required on the deployment runner."; exit 1; }
+        command -v sha256sum >/dev/null || { echo "::error::sha256sum is required on the deployment runner."; exit 1; }
 
         workspace="$(realpath "$GITHUB_WORKSPACE")"
         component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
-        [[ -n "$component" ]] || { echo "::error::Go migration working-directory does not exist."; exit 1; }
-        migrations="$(realpath -e "$component/$MIGRATIONS_PATH" 2>/dev/null || true)"
-        [[ -d "$migrations" ]] || { echo "::error::Goose migrations directory '$MIGRATIONS_PATH' does not exist."; exit 1; }
-
-        cursor="$component"
-        module=""
-        while :; do
-          if [[ -f "$cursor/go.mod" ]]; then module="$cursor"; break; fi
-          [[ "$cursor" == "$workspace" ]] && break
-          cursor="$(dirname "$cursor")"
-        done
-        [[ -n "$module" ]] || { echo "::error::No go.mod found for Goose migration component."; exit 1; }
-
-        cd "$module"
-        goose_version="$(go list -m -f '{{.Version}}' github.com/pressly/goose/v3 2>/dev/null || true)"
-        if [[ -z "$goose_version" || "$goose_version" == "<no value>" || "$goose_version" == "(devel)" ]]; then
-          echo "::error::github.com/pressly/goose/v3 must be pinned in the Go module graph."
+        if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
+          echo "::error::Goose migration working-directory must resolve inside the repository."
           exit 1
         fi
 
+        migrations="$(realpath -e "$component/$MIGRATIONS_PATH" 2>/dev/null || true)"
+        if [[ -z "$migrations" ]] || [[ ! -d "$migrations" ]] || { [[ "$migrations" != "$component" ]] && [[ "$migrations" != "$component/"* ]]; }; then
+          echo "::error::Goose migrations directory '$MIGRATIONS_PATH' must resolve inside the component."
+          exit 1
+        fi
+
+        if find "$migrations" -type f -name '*.go' -print -quit | grep -q .; then
+          echo "::error::Shared Goose CD supports portable SQL migrations only; Go migration files are not supported."
+          exit 1
+        fi
+        if ! find "$migrations" -type f -name '*.sql' -print -quit | grep -q .; then
+          echo "::error::No SQL migration files found in '$MIGRATIONS_PATH'."
+          exit 1
+        fi
+
+        normalize_version() {
+          local version="$1"
+          [[ "$version" == v* ]] || version="v$version"
+          if [[ ! "$version" =~ ^v3\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid Goose v3 version '$1'." >&2
+            return 1
+          fi
+          printf '%s' "$version"
+        }
+
+        resolve_goose_version() {
+          local cursor module_file detected
+
+          if [[ -n "$EXPLICIT_GOOSE_VERSION" ]]; then
+            normalize_version "$EXPLICIT_GOOSE_VERSION"
+            return
+          fi
+
+          module_file=""
+          cursor="$component"
+          while :; do
+            if [[ -f "$cursor/go.mod" ]]; then
+              module_file="$cursor/go.mod"
+              break
+            fi
+            [[ "$cursor" == "$workspace" ]] && break
+            cursor="$(dirname "$cursor")"
+          done
+
+          if [[ -n "$module_file" ]]; then
+            detected="$(awk '
+              $1 == "require" && $2 == "github.com/pressly/goose/v3" { print $3; exit }
+              $1 == "github.com/pressly/goose/v3" { print $2; exit }
+            ' "$module_file")"
+            if [[ -n "$detected" ]]; then
+              normalize_version "$detected"
+              return
+            fi
+          fi
+
+          normalize_version "$DEFAULT_GOOSE_VERSION"
+        }
+
+        goose_binary() {
+          local version="$1"
+          local machine asset arch cache_root binary tmp expected staged
+
+          machine="$(uname -m)"
+          case "$machine" in
+            x86_64|amd64)
+              asset="goose_linux_x86_64"
+              arch="x86_64"
+              ;;
+            aarch64|arm64)
+              asset="goose_linux_arm64"
+              arch="arm64"
+              ;;
+            *)
+              echo "::error::Unsupported runner architecture '$machine' for Goose." >&2
+              return 1
+              ;;
+          esac
+
+          cache_root="${RUNNER_TOOL_CACHE:-$HOME/.cache/github-actions-tool-cache}/goose/$version/$arch"
+          binary="$cache_root/goose"
+          if [[ -x "$binary" ]]; then
+            printf '%s' "$binary"
+            return
+          fi
+
+          mkdir -p "$cache_root"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' RETURN
+
+          if ! curl -fsSL "https://github.com/pressly/goose/releases/download/$version/checksums.txt" -o "$tmp/checksums.txt" || \
+             ! curl -fsSL "https://github.com/pressly/goose/releases/download/$version/$asset" -o "$tmp/$asset"; then
+            echo "::error::Failed to download Goose $version." >&2
+            return 1
+          fi
+
+          expected="$(awk -v asset="$asset" '$2 == asset { print $1; exit }' "$tmp/checksums.txt")"
+          if [[ -z "$expected" ]]; then
+            echo "::error::No checksum found for Goose asset '$asset' in $version." >&2
+            return 1
+          fi
+          if ! printf '%s  %s\n' "$expected" "$tmp/$asset" | sha256sum -c - >/dev/null; then
+            echo "::error::Checksum verification failed for Goose $version/$asset." >&2
+            return 1
+          fi
+
+          staged="$cache_root/.goose.$$.$RANDOM"
+          install -m 0755 "$tmp/$asset" "$staged"
+          if ! mv -n "$staged" "$binary" 2>/dev/null; then
+            rm -f "$staged"
+          fi
+          [[ -x "$binary" ]] || { echo "::error::Failed to populate Goose tool cache." >&2; return 1; }
+          printf '%s' "$binary"
+        }
+
+        goose_version="$(resolve_goose_version)" || exit 1
+        goose="$(goose_binary "$goose_version")" || exit 1
+
+        echo "==> Goose $goose_version: validating production migration sources"
+        "$goose" -dir "$migrations" validate
+
         echo "==> Goose $goose_version: applying pending migrations"
-        go run "github.com/pressly/goose/v3/cmd/goose@$goose_version" -dir "$migrations" "$DIALECT" "$DATABASE_URL" up
+        "$goose" -dir "$migrations" "$DIALECT" "$DATABASE_URL" up
