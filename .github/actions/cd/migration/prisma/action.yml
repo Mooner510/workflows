@@ -54,25 +54,25 @@ runs:
 
     - name: Install npm dependencies
       if: inputs.package-manager == 'npm'
-      uses: $/.github/actions/node/npm
+      uses: $/.github/actions/ci/node/npm
       with:
         components: ${{ steps.component.outputs.json }}
 
     - name: Install pnpm dependencies
       if: inputs.package-manager == 'pnpm'
-      uses: $/.github/actions/node/pnpm
+      uses: $/.github/actions/ci/node/pnpm
       with:
         components: ${{ steps.component.outputs.json }}
 
     - name: Install Yarn dependencies
       if: inputs.package-manager == 'yarn'
-      uses: $/.github/actions/node/yarn
+      uses: $/.github/actions/ci/node/yarn
       with:
         components: ${{ steps.component.outputs.json }}
 
     - name: Install Bun dependencies
       if: inputs.package-manager == 'bun'
-      uses: $/.github/actions/node/bun
+      uses: $/.github/actions/ci/node/bun
       with:
         components: ${{ steps.component.outputs.json }}
 
