@@ -117,10 +117,10 @@ outputs:
     value: ${{ steps.build.outputs.image }}
   image-id:
     description: Built Docker image ID.
-    value: ${{ steps.build.outputs.image-id }}
+    value: ${{ steps.build.outputs['image-id'] }}
   state-directory:
     description: Persistent deployment state directory.
-    value: ${{ steps.previous.outputs.state-directory }}
+    value: ${{ steps.previous.outputs['state-directory'] }}
 
 runs:
   using: composite
@@ -151,7 +151,7 @@ runs:
         [[ -n "$migration_working_directory" ]] || migration_working_directory="$WORKING_DIRECTORY"
         migration_path="$MIGRATION_PATH"
         case "$MIGRATION_ENGINE" in
-          goose)  [[ -n "$migration_path" ]] || migration_path="db/migrations" ;;
+          goose) [[ -n "$migration_path" ]] || migration_path="db/migrations" ;;
           prisma)
             [[ -n "$migration_path" ]] || migration_path="prisma/schema.prisma"
             case "$MIGRATION_PACKAGE_MANAGER" in npm|pnpm|yarn|bun) ;; *) echo "::error::Prisma migration requires migration-package-manager."; exit 1 ;; esac
@@ -220,13 +220,53 @@ runs:
       uses: $/.github/actions/cd/docker/deploy
       with:
         container-name: ${{ inputs.service-name }}
-        image: ${{ steps.build.outputs.image-id }}
+        image: ${{ steps.build.outputs['image-id'] }}
         container-port: ${{ inputs.container-port }}
         host-port: ${{ inputs.host-port }}
         env-files-json: ${{ inputs.env-files-json }}
         volumes-json: ${{ inputs.volumes-json }}
         network: ${{ inputs.network }}
         restart-policy: ${{ inputs.restart-policy }}
+
+    - name: Resolve rollback source
+      id: rollback_source
+      if: always() && steps.deploy.outcome == 'success'
+      shell: bash
+      env:
+        STATE_EXISTS: ${{ steps.previous.outputs.exists }}
+        STATE_REVISION: ${{ steps.previous.outputs.revision }}
+        STATE_IMAGE: ${{ steps.previous.outputs.image }}
+        STATE_IMAGE_ID: ${{ steps.previous.outputs['image-id'] }}
+        LIVE_PREVIOUS_EXISTS: ${{ steps.deploy.outputs['previous-existed'] }}
+        LIVE_PREVIOUS_IMAGE: ${{ steps.deploy.outputs['previous-image'] }}
+        LIVE_PREVIOUS_IMAGE_ID: ${{ steps.deploy.outputs['previous-image-id'] }}
+      run: |
+        set -euo pipefail
+        if [[ "$STATE_EXISTS" == "true" ]]; then
+          {
+            echo "exists=true"
+            echo "persistent=true"
+            echo "revision=$STATE_REVISION"
+            echo "image=$STATE_IMAGE"
+            echo "image_id=$STATE_IMAGE_ID"
+          } >>"$GITHUB_OUTPUT"
+        elif [[ "$LIVE_PREVIOUS_EXISTS" == "true" && -n "$LIVE_PREVIOUS_IMAGE_ID" ]]; then
+          {
+            echo "exists=true"
+            echo "persistent=false"
+            echo "revision="
+            echo "image=$LIVE_PREVIOUS_IMAGE"
+            echo "image_id=$LIVE_PREVIOUS_IMAGE_ID"
+          } >>"$GITHUB_OUTPUT"
+        else
+          {
+            echo "exists=false"
+            echo "persistent=false"
+            echo "revision="
+            echo "image="
+            echo "image_id="
+          } >>"$GITHUB_OUTPUT"
+        fi
 
     - name: Verify new service
       uses: $/.github/actions/cd/docker/health
@@ -251,17 +291,17 @@ runs:
         service: ${{ inputs.service-name }}
         revision: ${{ github.sha }}
         image: ${{ steps.build.outputs.image }}
-        image-id: ${{ steps.build.outputs.image-id }}
+        image-id: ${{ steps.build.outputs['image-id'] }}
         event: deploy
         root: ${{ inputs.state-root }}
 
     - name: Roll back previous known-good image after deployment failure
       id: rollback
-      if: failure() && steps.previous.outputs.exists == 'true'
+      if: failure() && steps.deploy.outcome == 'success' && steps.rollback_source.outputs.exists == 'true'
       uses: $/.github/actions/cd/docker/deploy
       with:
         container-name: ${{ inputs.service-name }}
-        image: ${{ steps.previous.outputs.image-id }}
+        image: ${{ steps.rollback_source.outputs.image_id }}
         container-port: ${{ inputs.container-port }}
         host-port: ${{ inputs.host-port }}
         env-files-json: ${{ inputs.env-files-json }}
@@ -270,27 +310,28 @@ runs:
         restart-policy: ${{ inputs.restart-policy }}
 
     - name: Verify rollback
-      if: failure() && steps.previous.outputs.exists == 'true' && steps.rollback.outcome == 'success'
+      id: rollback_health
+      if: failure() && steps.rollback.outcome == 'success'
       uses: $/.github/actions/cd/docker/health
       with:
         url: ${{ steps.contract.outputs.health_url }}
         attempts: ${{ inputs.health-attempts }}
 
     - name: Record successful rollback
-      if: failure() && steps.previous.outputs.exists == 'true' && steps.rollback.outcome == 'success'
+      if: failure() && steps.rollback_health.outcome == 'success' && steps.rollback_source.outputs.persistent == 'true'
       uses: $/.github/actions/cd/state
       with:
         operation: record
         project: ${{ inputs.project }}
         service: ${{ inputs.service-name }}
-        revision: ${{ steps.previous.outputs.revision }}
-        image: ${{ steps.previous.outputs.image }}
-        image-id: ${{ steps.previous.outputs.image-id }}
+        revision: ${{ steps.rollback_source.outputs.revision }}
+        image: ${{ steps.rollback_source.outputs.image }}
+        image-id: ${{ steps.rollback_source.outputs.image_id }}
         event: rollback
         root: ${{ inputs.state-root }}
 
     - name: Remove failed first deployment
-      if: failure() && steps.previous.outputs.exists != 'true'
+      if: failure() && steps.deploy.outcome == 'success' && steps.rollback_source.outputs.exists != 'true'
       shell: bash
       env:
         SERVICE_NAME: ${{ inputs.service-name }}
