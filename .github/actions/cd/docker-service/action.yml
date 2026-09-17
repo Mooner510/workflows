@@ -1,15 +1,18 @@
 name: Docker service deployment
-description: Build, migrate, deploy, health-check, and register one API or Web Docker service with Caddy.
+description: Build, migrate, deploy, health-check, persist state, and register one API or Web Docker service with Caddy.
 
 inputs:
   production-branch:
     description: Branch whose history is allowed to reach production.
     required: true
+  project:
+    description: Stable project identifier used for persistent deployment state.
+    required: true
   working-directory:
     description: Service root relative to the caller repository.
     required: true
   service-name:
-    description: Stable Docker container and Caddy site name.
+    description: Stable Docker container, state, and Caddy site name.
     required: true
   image-name:
     description: Local Docker image repository name without a tag.
@@ -95,6 +98,10 @@ inputs:
     description: Java version used by Flyway migration.
     required: false
     default: '17'
+  state-root:
+    description: Persistent deployment state root.
+    required: false
+    default: /var/lib/stacks
   caddyfile:
     description: Main Caddyfile importing generated sites.
     required: false
@@ -108,6 +115,12 @@ outputs:
   image:
     description: Built Docker image reference.
     value: ${{ steps.build.outputs.image }}
+  image-id:
+    description: Built Docker image ID.
+    value: ${{ steps.build.outputs.image-id }}
+  state-directory:
+    description: Persistent deployment state directory.
+    value: ${{ steps.previous.outputs.state-directory }}
 
 runs:
   using: composite
@@ -156,6 +169,15 @@ runs:
           echo "caddy_upstream=127.0.0.1:$HOST_PORT"
         } >>"$GITHUB_OUTPUT"
 
+    - name: Read previous known-good deployment
+      id: previous
+      uses: $/.github/actions/cd/state
+      with:
+        operation: read
+        project: ${{ inputs.project }}
+        service: ${{ inputs.service-name }}
+        root: ${{ inputs.state-root }}
+
     - name: Build production image
       id: build
       uses: $/.github/actions/cd/docker/build
@@ -198,7 +220,7 @@ runs:
       uses: $/.github/actions/cd/docker/deploy
       with:
         container-name: ${{ inputs.service-name }}
-        image: ${{ steps.build.outputs.image }}
+        image: ${{ steps.build.outputs.image-id }}
         container-port: ${{ inputs.container-port }}
         host-port: ${{ inputs.host-port }}
         env-files-json: ${{ inputs.env-files-json }}
@@ -221,12 +243,25 @@ runs:
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
 
-    - name: Roll back previous image after deployment failure
-      if: failure() && steps.deploy.outputs.previous-existed == 'true'
+    - name: Record successful deployment
+      uses: $/.github/actions/cd/state
+      with:
+        operation: record
+        project: ${{ inputs.project }}
+        service: ${{ inputs.service-name }}
+        revision: ${{ github.sha }}
+        image: ${{ steps.build.outputs.image }}
+        image-id: ${{ steps.build.outputs.image-id }}
+        event: deploy
+        root: ${{ inputs.state-root }}
+
+    - name: Roll back previous known-good image after deployment failure
+      id: rollback
+      if: failure() && steps.previous.outputs.exists == 'true'
       uses: $/.github/actions/cd/docker/deploy
       with:
         container-name: ${{ inputs.service-name }}
-        image: ${{ steps.deploy.outputs.previous-image }}
+        image: ${{ steps.previous.outputs.image-id }}
         container-port: ${{ inputs.container-port }}
         host-port: ${{ inputs.host-port }}
         env-files-json: ${{ inputs.env-files-json }}
@@ -234,8 +269,28 @@ runs:
         network: ${{ inputs.network }}
         restart-policy: ${{ inputs.restart-policy }}
 
+    - name: Verify rollback
+      if: failure() && steps.previous.outputs.exists == 'true' && steps.rollback.outcome == 'success'
+      uses: $/.github/actions/cd/docker/health
+      with:
+        url: ${{ steps.contract.outputs.health_url }}
+        attempts: ${{ inputs.health-attempts }}
+
+    - name: Record successful rollback
+      if: failure() && steps.previous.outputs.exists == 'true' && steps.rollback.outcome == 'success'
+      uses: $/.github/actions/cd/state
+      with:
+        operation: record
+        project: ${{ inputs.project }}
+        service: ${{ inputs.service-name }}
+        revision: ${{ steps.previous.outputs.revision }}
+        image: ${{ steps.previous.outputs.image }}
+        image-id: ${{ steps.previous.outputs.image-id }}
+        event: rollback
+        root: ${{ inputs.state-root }}
+
     - name: Remove failed first deployment
-      if: failure() && steps.deploy.outputs.previous-existed != 'true'
+      if: failure() && steps.previous.outputs.exists != 'true'
       shell: bash
       env:
         SERVICE_NAME: ${{ inputs.service-name }}
