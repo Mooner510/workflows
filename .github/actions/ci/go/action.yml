@@ -120,3 +120,8 @@ runs:
           go build "$scope"
           checked_scopes[$scope_key]=1
         done < <(jq -c '.[]' <<<"$components")
+
+    - name: Migration CI
+      uses: $/.github/actions/ci/migration
+      with:
+        components: ${{ inputs.components }}
