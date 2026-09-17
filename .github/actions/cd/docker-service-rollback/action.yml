@@ -1,0 +1,215 @@
+name: Docker service rollback
+description: Roll back one Docker service to the previous known-good deployment recorded in shared state/history.
+
+inputs:
+  production-branch:
+    description: Branch whose history is allowed to reach production.
+    required: true
+  project:
+    description: Stable project identifier used for persistent deployment state.
+    required: true
+  service-name:
+    description: Stable Docker container, state, and Caddy site name.
+    required: true
+  container-port:
+    description: Internal application port.
+    required: true
+  host-port:
+    description: Fixed loopback host port assigned to this service.
+    required: true
+  domain:
+    description: Public hostname registered in Caddy.
+    required: true
+  env-files-json:
+    description: JSON array of repository-relative or absolute Docker env-file paths.
+    required: false
+    default: '[]'
+  env-names-json:
+    description: JSON array of caller environment variable names forwarded into the Docker container.
+    required: false
+    default: '[]'
+  volumes-json:
+    description: JSON array of Docker volume specifications.
+    required: false
+    default: '[]'
+  network:
+    description: Optional Docker network name.
+    required: false
+    default: ''
+  restart-policy:
+    description: Docker restart policy.
+    required: false
+    default: unless-stopped
+  init:
+    description: Run Docker's built-in init process inside the container.
+    required: false
+    default: 'false'
+  security-opts-json:
+    description: JSON array of Docker --security-opt values.
+    required: false
+    default: '[]'
+  cap-drop-json:
+    description: JSON array of Linux capabilities to drop.
+    required: false
+    default: '[]'
+  stop-timeout:
+    description: Seconds allowed for graceful stop.
+    required: false
+    default: '15'
+  health-path:
+    description: HTTP path checked on the loopback host port after rollback.
+    required: false
+    default: /health
+  health-attempts:
+    description: Maximum health-check attempts.
+    required: false
+    default: '20'
+  state-root:
+    description: Persistent deployment state root.
+    required: false
+    default: /var/lib/stacks
+  caddyfile:
+    description: Main Caddyfile importing generated sites.
+    required: false
+    default: /opt/stacks/shared/caddy/Caddyfile
+  caddy-sites-directory:
+    description: Directory imported by the main Caddyfile.
+    required: false
+    default: /opt/stacks/shared/caddy/sites
+
+outputs:
+  revision:
+    description: Revision restored by the rollback.
+    value: ${{ steps.target.outputs.revision }}
+  image:
+    description: Image reference restored by the rollback.
+    value: ${{ steps.target.outputs.image }}
+  image-id:
+    description: Image ID restored by the rollback.
+    value: ${{ steps.target.outputs['image-id'] }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate production rollback
+      uses: $/.github/actions/cd/guard
+      with:
+        production-branch: ${{ inputs.production-branch }}
+
+    - name: Resolve rollback contract
+      id: contract
+      shell: bash
+      env:
+        HOST_PORT: ${{ inputs.host-port }}
+        HEALTH_PATH: ${{ inputs.health-path }}
+      run: |
+        set -euo pipefail
+        [[ "$HEALTH_PATH" == /* ]] || { echo "::error::health-path must start with '/'."; exit 1; }
+        echo "health_url=http://127.0.0.1:$HOST_PORT$HEALTH_PATH" >>"$GITHUB_OUTPUT"
+        echo "caddy_upstream=127.0.0.1:$HOST_PORT" >>"$GITHUB_OUTPUT"
+
+    - name: Read current known-good deployment
+      id: current
+      uses: $/.github/actions/cd/state
+      with:
+        operation: read
+        project: ${{ inputs.project }}
+        service: ${{ inputs.service-name }}
+        root: ${{ inputs.state-root }}
+
+    - name: Read previous known-good deployment
+      id: target
+      uses: $/.github/actions/cd/state
+      with:
+        operation: previous
+        project: ${{ inputs.project }}
+        service: ${{ inputs.service-name }}
+        root: ${{ inputs.state-root }}
+
+    - name: Validate rollback target
+      shell: bash
+      env:
+        CURRENT_EXISTS: ${{ steps.current.outputs.exists }}
+        TARGET_EXISTS: ${{ steps.target.outputs.exists }}
+        TARGET_IMAGE_ID: ${{ steps.target.outputs['image-id'] }}
+      run: |
+        set -euo pipefail
+        [[ "$CURRENT_EXISTS" == "true" ]] || { echo "::error::No current deployment state exists for this service."; exit 1; }
+        [[ "$TARGET_EXISTS" == "true" && -n "$TARGET_IMAGE_ID" ]] || { echo "::error::No previous known-good deployment is available to roll back to."; exit 1; }
+        docker image inspect "$TARGET_IMAGE_ID" >/dev/null 2>&1 || { echo "::error::Previous known-good image $TARGET_IMAGE_ID is not available on this Docker host."; exit 1; }
+
+    - name: Deploy previous known-good image
+      id: rollback
+      uses: $/.github/actions/cd/docker/deploy
+      with:
+        container-name: ${{ inputs.service-name }}
+        image: ${{ steps.target.outputs['image-id'] }}
+        container-port: ${{ inputs.container-port }}
+        host-port: ${{ inputs.host-port }}
+        env-files-json: ${{ inputs.env-files-json }}
+        env-names-json: ${{ inputs.env-names-json }}
+        volumes-json: ${{ inputs.volumes-json }}
+        network: ${{ inputs.network }}
+        restart-policy: ${{ inputs.restart-policy }}
+        init: ${{ inputs.init }}
+        security-opts-json: ${{ inputs.security-opts-json }}
+        cap-drop-json: ${{ inputs.cap-drop-json }}
+        stop-timeout: ${{ inputs.stop-timeout }}
+        restore-previous-on-failure: 'true'
+
+    - name: Verify rolled back service
+      id: rollback_health
+      uses: $/.github/actions/cd/docker/health
+      with:
+        url: ${{ steps.contract.outputs.health_url }}
+        attempts: ${{ inputs.health-attempts }}
+
+    - name: Register Caddy route
+      id: caddy
+      uses: $/.github/actions/cd/caddy
+      with:
+        service-name: ${{ inputs.service-name }}
+        domain: ${{ inputs.domain }}
+        upstream: ${{ steps.contract.outputs.caddy_upstream }}
+        caddyfile: ${{ inputs.caddyfile }}
+        sites-directory: ${{ inputs.caddy-sites-directory }}
+
+    - name: Record successful manual rollback
+      id: record
+      uses: $/.github/actions/cd/state
+      with:
+        operation: record
+        project: ${{ inputs.project }}
+        service: ${{ inputs.service-name }}
+        revision: ${{ steps.target.outputs.revision }}
+        image: ${{ steps.target.outputs.image }}
+        image-id: ${{ steps.target.outputs['image-id'] }}
+        event: rollback
+        root: ${{ inputs.state-root }}
+
+    - name: Restore original deployment after rollback failure
+      id: restore
+      if: failure() && steps.rollback.outcome == 'success' && steps.current.outputs.exists == 'true'
+      uses: $/.github/actions/cd/docker/deploy
+      with:
+        container-name: ${{ inputs.service-name }}
+        image: ${{ steps.current.outputs['image-id'] }}
+        container-port: ${{ inputs.container-port }}
+        host-port: ${{ inputs.host-port }}
+        env-files-json: ${{ inputs.env-files-json }}
+        env-names-json: ${{ inputs.env-names-json }}
+        volumes-json: ${{ inputs.volumes-json }}
+        network: ${{ inputs.network }}
+        restart-policy: ${{ inputs.restart-policy }}
+        init: ${{ inputs.init }}
+        security-opts-json: ${{ inputs.security-opts-json }}
+        cap-drop-json: ${{ inputs.cap-drop-json }}
+        stop-timeout: ${{ inputs.stop-timeout }}
+        restore-previous-on-failure: 'false'
+
+    - name: Verify restored original deployment
+      if: failure() && steps.restore.outcome == 'success'
+      uses: $/.github/actions/cd/docker/health
+      with:
+        url: ${{ steps.contract.outputs.health_url }}
+        attempts: ${{ inputs.health-attempts }}
