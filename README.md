@@ -7,12 +7,12 @@
 ```text
 .github/workflows/
 ├─ pipeline.yml
-├─ security.yml
-├─ ci-go.yml
-├─ ci-node.yml
-└─ ci-android.yml
+└─ security.yml
 
 .github/actions/
+├─ ci-go/action.yml
+├─ ci-node/action.yml
+├─ ci-android/action.yml
 └─ deploy/action.yml
 ```
 
@@ -80,17 +80,18 @@ Repository root가 실제 작업 경로지만 일부 경로 변경에만 반응�
 
 `watch_path: false`는 `path` 자체를 변경 감지에서 제외합니다. 이 경우 `watch`가 최소 하나 필요합니다.
 
-변경된 component만 대상으로 다음을 실행합니다.
+`detect`는 변경된 component를 언어와 runtime version별로 묶어 **하나의 동적 CI matrix**를 만듭니다. 실제로 필요한 matrix entry만 생성되고 각 entry는 해당 Composite Action을 실행합니다.
 
 ```text
 detect
   ├─ security
-  ├─ Go CI
-  ├─ Node CI
-  └─ Android CI
+  └─ CI matrix
+      ├─ Go <version>       -> actions/ci-go
+      ├─ Node <version>     -> actions/ci-node
+      └─ Android Java <ver> -> actions/ci-android
 ```
 
-같은 Go module, Node lockfile root, 언어 버전은 가능한 한 setup/install/verify를 공유합니다.
+예를 들어 Go component만 변경되면 Node/Android job은 별도로 생성하지 않습니다. 같은 언어와 runtime version을 사용하는 component는 하나의 matrix entry에서 setup/install/verify를 공유합니다.
 
 ### Component
 
