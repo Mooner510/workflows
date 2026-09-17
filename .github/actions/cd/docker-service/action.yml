@@ -308,6 +308,7 @@ runs:
         volumes-json: ${{ inputs.volumes-json }}
         network: ${{ inputs.network }}
         restart-policy: ${{ inputs.restart-policy }}
+        restore-previous-on-failure: 'false'
 
     - name: Verify rollback
       id: rollback_health
