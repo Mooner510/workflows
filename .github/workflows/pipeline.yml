@@ -256,7 +256,7 @@ jobs:
       git_log_opts: ${{ needs.detect.outputs.git_log_opts }}
 
   go:
-    name: ${{ matrix.group.label }}
+    name: Go CI
     needs: detect
     if: needs.detect.outputs.go_groups != '[]'
     strategy:
@@ -272,7 +272,7 @@ jobs:
       CI_PRIVATE_REPO_TOKEN: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
 
   node:
-    name: ${{ matrix.group.label }}
+    name: Node CI
     needs: detect
     if: needs.detect.outputs.node_groups != '[]'
     strategy:
@@ -285,7 +285,7 @@ jobs:
       node_version: ${{ matrix.group.version }}
 
   android:
-    name: ${{ matrix.group.label }}
+    name: Android CI
     needs: detect
     if: needs.detect.outputs.android_groups != '[]'
     strategy:
