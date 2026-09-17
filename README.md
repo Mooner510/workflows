@@ -23,12 +23,17 @@
 │  │  └─ profiles/
 │  │     ├─ android/action.yml
 │  │     └─ spring-boot/action.yml
-│  └─ node/
+│  ├─ node/
+│  │  ├─ action.yml
+│  │  ├─ npm/action.yml
+│  │  ├─ pnpm/action.yml
+│  │  ├─ yarn/action.yml
+│  │  └─ bun/action.yml
+│  └─ migration/
 │     ├─ action.yml
-│     ├─ npm/action.yml
-│     ├─ pnpm/action.yml
-│     ├─ yarn/action.yml
-│     └─ bun/action.yml
+│     ├─ goose/action.yml
+│     ├─ prisma/action.yml
+│     └─ flyway/action.yml
 └─ cd/
    ├─ guard/action.yml
    ├─ docker-service/action.yml
@@ -67,7 +72,9 @@ jobs:
           {
             "name": "api",
             "type": "go",
-            "path": "services/api"
+            "path": "services/api",
+            "migration_engine": "goose",
+            "migration_path": "db/migrations"
           },
           {
             "name": "web",
@@ -79,7 +86,8 @@ jobs:
             "type": "java-kotlin",
             "path": "services/backend",
             "build_tool": "gradle",
-            "profile": "spring-boot"
+            "profile": "spring-boot",
+            "migration_engine": "flyway"
           },
           {
             "name": "android",
@@ -108,8 +116,11 @@ Detect changes
 ├─ Security
 └─ Dynamic CI matrix
    ├─ Go <version>
+   │  └─ Migration CI (optional)
    ├─ Node <version> / <package manager>
+   │  └─ Migration CI (optional)
    └─ Java <version> / <build tool> / <profile>
+      └─ Migration CI (optional)
 ```
 
 변경된 component만 선택하고 실제 필요한 group만 matrix entry로 생성합니다.
@@ -189,15 +200,52 @@ verify
 
 필요하면 component의 `gradle_tasks` 또는 `maven_goals`로 덮어쓸 수 있습니다.
 
+### Migration CI
+
+Migration CI는 `migration_engine`을 지정한 component에서 언어 CI 뒤에 자동 실행됩니다.
+
+```text
+Go          -> goose
+Node        -> prisma
+Java/Kotlin -> flyway
+```
+
+지원 값:
+
+```text
+none | goose | prisma | flyway
+```
+
+`migration_engine`을 생략하면 migration CI를 수행하지 않습니다.
+
+Migration CI는 production DB에 연결하거나 migration을 적용하지 않습니다.
+
+- Goose: pinned `github.com/pressly/goose/v3`의 `goose validate` 실행
+- Prisma: local Prisma CLI의 `prisma validate` + migration directory/SQL 구조 검증
+- Flyway: 기본 migration naming/중복/빈 파일 검증 + Gradle/Maven Flyway plugin availability 검증
+
+기본 경로:
+
+```text
+Goose  -> db/migrations
+Prisma -> prisma/migrations
+Flyway -> src/main/resources/db/migration
+```
+
+필요하면 `migration_path`로 덮어쓸 수 있습니다. Prisma schema는 `migration_schema`로 지정하며 기본값은 `prisma/schema.prisma`입니다.
+
+실제 DB schema history와 pending migration 적용 여부는 CI가 아니라 CD의 migration 단계가 담당합니다.
+
 ## CI에서 Docker image를 build하지 않음
 
-CI는 source/dependency/lint/type/test/build 검증까지만 담당합니다.
+CI는 source/dependency/lint/type/test/build/migration-source 검증까지만 담당합니다.
 
 ```text
 CI
 → source validation
 → language build
 → tests
+→ migration source validation
 ```
 
 `docker build`는 production CD의 첫 단계에서만 실행합니다. Security workflow의 Semgrep/OSV/Gitleaks/Trivy scanner container 실행은 Docker image build가 아니므로 그대로 유지합니다.
