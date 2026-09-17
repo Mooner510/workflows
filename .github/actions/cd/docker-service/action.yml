@@ -62,6 +62,22 @@ inputs:
     description: Docker restart policy.
     required: false
     default: unless-stopped
+  init:
+    description: Run Docker's built-in init process inside the container.
+    required: false
+    default: 'false'
+  security-opts-json:
+    description: JSON array of Docker --security-opt values.
+    required: false
+    default: '[]'
+  cap-drop-json:
+    description: JSON array of Linux capabilities to drop.
+    required: false
+    default: '[]'
+  stop-timeout:
+    description: Seconds allowed for graceful container stop.
+    required: false
+    default: '15'
   health-path:
     description: HTTP path checked on the loopback host port after deployment.
     required: false
@@ -83,9 +99,17 @@ inputs:
     required: false
     default: ''
   migration-dialect:
-    description: Goose dialect.
+    description: Goose database dialect.
     required: false
     default: postgres
+  goose-version:
+    description: Optional explicit Goose v3 version. Empty uses nearest go.mod pin, then goose-default-version.
+    required: false
+    default: ''
+  goose-default-version:
+    description: Goose fallback version when no explicit version or go.mod pin exists.
+    required: false
+    default: v3.28.0
   migration-package-manager:
     description: Prisma package manager (npm, pnpm, yarn, or bun).
     required: false
@@ -95,7 +119,7 @@ inputs:
     required: false
     default: gradle
   go-version:
-    description: Go version used by Goose migration.
+    description: Deprecated compatibility input. Goose migration no longer requires a Go runtime.
     required: false
     default: stable
   node-version:
@@ -204,7 +228,8 @@ runs:
         working-directory: ${{ steps.contract.outputs.migration_working_directory }}
         migrations-path: ${{ steps.contract.outputs.migration_path }}
         dialect: ${{ inputs.migration-dialect }}
-        go-version: ${{ inputs.go-version }}
+        goose-version: ${{ inputs.goose-version }}
+        default-version: ${{ inputs.goose-default-version }}
 
     - name: Apply Prisma migrations
       if: inputs.migration-engine == 'prisma'
@@ -237,6 +262,10 @@ runs:
         volumes-json: ${{ inputs.volumes-json }}
         network: ${{ inputs.network }}
         restart-policy: ${{ inputs.restart-policy }}
+        init: ${{ inputs.init }}
+        security-opts-json: ${{ inputs.security-opts-json }}
+        cap-drop-json: ${{ inputs.cap-drop-json }}
+        stop-timeout: ${{ inputs.stop-timeout }}
 
     - name: Resolve rollback source
       id: rollback_source
@@ -319,6 +348,10 @@ runs:
         volumes-json: ${{ inputs.volumes-json }}
         network: ${{ inputs.network }}
         restart-policy: ${{ inputs.restart-policy }}
+        init: ${{ inputs.init }}
+        security-opts-json: ${{ inputs.security-opts-json }}
+        cap-drop-json: ${{ inputs.cap-drop-json }}
+        stop-timeout: ${{ inputs.stop-timeout }}
         restore-previous-on-failure: 'false'
 
     - name: Verify rollback
