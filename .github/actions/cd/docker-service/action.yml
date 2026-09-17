@@ -42,6 +42,10 @@ inputs:
     description: JSON array of repository-relative or absolute Docker env-file paths.
     required: false
     default: '[]'
+  env-names-json:
+    description: JSON array of caller environment variable names forwarded into the Docker container without persisting their values.
+    required: false
+    default: '[]'
   volumes-json:
     description: JSON array of Docker volume specifications.
     required: false
@@ -224,6 +228,7 @@ runs:
         container-port: ${{ inputs.container-port }}
         host-port: ${{ inputs.host-port }}
         env-files-json: ${{ inputs.env-files-json }}
+        env-names-json: ${{ inputs.env-names-json }}
         volumes-json: ${{ inputs.volumes-json }}
         network: ${{ inputs.network }}
         restart-policy: ${{ inputs.restart-policy }}
@@ -305,6 +310,7 @@ runs:
         container-port: ${{ inputs.container-port }}
         host-port: ${{ inputs.host-port }}
         env-files-json: ${{ inputs.env-files-json }}
+        env-names-json: ${{ inputs.env-names-json }}
         volumes-json: ${{ inputs.volumes-json }}
         network: ${{ inputs.network }}
         restart-policy: ${{ inputs.restart-policy }}
