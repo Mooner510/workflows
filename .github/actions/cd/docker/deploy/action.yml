@@ -34,6 +34,18 @@ inputs:
     description: Docker restart policy.
     required: false
     default: unless-stopped
+  init:
+    description: Run Docker's built-in init process inside the container.
+    required: false
+    default: 'false'
+  security-opts-json:
+    description: JSON array of Docker --security-opt values.
+    required: false
+    default: '[]'
+  cap-drop-json:
+    description: JSON array of Linux capabilities to drop.
+    required: false
+    default: '[]'
   stop-timeout:
     description: Seconds allowed for graceful stop.
     required: false
@@ -67,6 +79,9 @@ runs:
         VOLUMES_JSON: ${{ inputs.volumes-json }}
         NETWORK: ${{ inputs.network }}
         RESTART_POLICY: ${{ inputs.restart-policy }}
+        INIT: ${{ inputs.init }}
+        SECURITY_OPTS_JSON: ${{ inputs.security-opts-json }}
+        CAP_DROP_JSON: ${{ inputs.cap-drop-json }}
         STOP_TIMEOUT: ${{ inputs.stop-timeout }}
         RESTORE_PREVIOUS_ON_FAILURE: ${{ inputs.restore-previous-on-failure }}
       run: |
@@ -82,6 +97,7 @@ runs:
         done
         [[ "$STOP_TIMEOUT" =~ ^[0-9]+$ ]] || { echo "::error::stop-timeout must be an integer."; exit 1; }
         case "$RESTART_POLICY" in no|always|unless-stopped|on-failure) ;; *) echo "::error::Invalid restart policy '$RESTART_POLICY'."; exit 1 ;; esac
+        case "$INIT" in true|false) ;; *) echo "::error::init must be true or false."; exit 1 ;; esac
         case "$RESTORE_PREVIOUS_ON_FAILURE" in true|false) ;; *) echo "::error::restore-previous-on-failure must be true or false."; exit 1 ;; esac
         if [[ -n "$NETWORK" && ! "$NETWORK" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
           echo "::error::Invalid Docker network '$NETWORK'."
@@ -90,6 +106,8 @@ runs:
         jq -e 'type == "array" and all(.[]; type == "string")' <<<"$ENV_FILES_JSON" >/dev/null || { echo "::error::env-files-json must be a string array."; exit 1; }
         jq -e 'type == "array" and all(.[]; type == "string")' <<<"$ENV_NAMES_JSON" >/dev/null || { echo "::error::env-names-json must be a string array."; exit 1; }
         jq -e 'type == "array" and all(.[]; type == "string")' <<<"$VOLUMES_JSON" >/dev/null || { echo "::error::volumes-json must be a string array."; exit 1; }
+        jq -e 'type == "array" and all(.[]; type == "string")' <<<"$SECURITY_OPTS_JSON" >/dev/null || { echo "::error::security-opts-json must be a string array."; exit 1; }
+        jq -e 'type == "array" and all(.[]; type == "string")' <<<"$CAP_DROP_JSON" >/dev/null || { echo "::error::cap-drop-json must be a string array."; exit 1; }
 
         declare -a env_args=()
         while IFS= read -r encoded; do
@@ -113,6 +131,18 @@ runs:
           volume_args+=(-v "$value")
         done < <(jq -r '.[] | @base64' <<<"$VOLUMES_JSON")
 
+        declare -a hardening_args=()
+        [[ "$INIT" != "true" ]] || hardening_args+=(--init)
+        while IFS= read -r encoded; do
+          value="$(printf '%s' "$encoded" | base64 --decode)"
+          [[ -n "$value" && "$value" != *$'\n'* && "$value" != *$'\r'* ]] || { echo "::error::Invalid Docker security option."; exit 1; }
+          hardening_args+=(--security-opt "$value")
+        done < <(jq -r '.[] | @base64' <<<"$SECURITY_OPTS_JSON")
+        while IFS= read -r capability; do
+          [[ "$capability" =~ ^[A-Za-z0-9_+-]+$ ]] || { echo "::error::Invalid capability '$capability'."; exit 1; }
+          hardening_args+=(--cap-drop "$capability")
+        done < <(jq -r '.[]' <<<"$CAP_DROP_JSON")
+
         if [[ -n "$NETWORK" ]] && ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
           docker network create "$NETWORK" >/dev/null
         fi
@@ -122,6 +152,7 @@ runs:
           local -a args=(docker run -d --name "$CONTAINER_NAME" --restart "$RESTART_POLICY" -p "127.0.0.1:$HOST_PORT:$CONTAINER_PORT")
           args+=("${env_args[@]}")
           args+=("${volume_args[@]}")
+          args+=("${hardening_args[@]}")
           [[ -z "$NETWORK" ]] || args+=(--network "$NETWORK")
           args+=(--label "com.mooner510.workflows.service=$CONTAINER_NAME")
           [[ -z "${GITHUB_SHA:-}" ]] || args+=(--label "org.opencontainers.image.revision=$GITHUB_SHA")
