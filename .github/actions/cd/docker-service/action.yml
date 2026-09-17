@@ -29,6 +29,10 @@ inputs:
     description: JSON array of non-secret Docker KEY=VALUE build arguments.
     required: false
     default: '[]'
+  build-secret-env-names-json:
+    description: JSON array of caller environment variable names exposed to Docker BuildKit as build secrets.
+    required: false
+    default: '[]'
   container-port:
     description: Internal application port.
     required: true
@@ -191,6 +195,7 @@ runs:
         image-name: ${{ inputs.image-name }}
         target: ${{ inputs.target }}
         build-args-json: ${{ inputs.build-args-json }}
+        secret-env-names-json: ${{ inputs.build-secret-env-names-json }}
 
     - name: Apply Goose migrations
       if: inputs.migration-engine == 'goose'
