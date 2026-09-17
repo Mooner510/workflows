@@ -1,0 +1,151 @@
+name: Node CI
+description: Set up Node.js, delegate package installation, and run common package scripts.
+
+inputs:
+  components:
+    description: JSON array of affected Node components.
+    required: true
+  version:
+    description: Node.js version to install.
+    required: true
+  package-manager:
+    description: Package manager shared by this CI group (npm, pnpm, yarn, or bun).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Validate Node CI group
+      shell: bash
+      env:
+        COMPONENTS_JSON: ${{ inputs.components }}
+        PACKAGE_MANAGER: ${{ inputs.package-manager }}
+      run: |
+        set -euo pipefail
+        command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+        jq -e 'type == "array" and length > 0' <<<"$COMPONENTS_JSON" >/dev/null || {
+          echo "::error::components must be a non-empty JSON array."
+          exit 1
+        }
+        case "$PACKAGE_MANAGER" in
+          npm|pnpm|yarn|bun) ;;
+          *) echo "::error::Unsupported Node package manager '$PACKAGE_MANAGER'."; exit 1 ;;
+        esac
+
+    - name: Prepare Node cache paths
+      shell: bash
+      run: |
+        set -euo pipefail
+        cache_root="${RUNNER_TOOL_CACHE:-$HOME/.cache/github-actions-tool-cache}"
+        mkdir -p \
+          "$cache_root/corepack" \
+          "$cache_root/bun/install-cache" \
+          "$cache_root/pnpm/store" \
+          "$cache_root/yarn/cache" \
+          "$cache_root/npm"
+        {
+          echo "COREPACK_HOME=$cache_root/corepack"
+          echo "BUN_INSTALL_CACHE_DIR=$cache_root/bun/install-cache"
+          echo "PNPM_STORE_DIR=$cache_root/pnpm/store"
+          echo "YARN_CACHE_FOLDER=$cache_root/yarn/cache"
+          echo "npm_config_cache=$cache_root/npm"
+        } >>"$GITHUB_ENV"
+
+    - name: Set up Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: ${{ inputs.version }}
+        package-manager-cache: false
+
+    - name: Install npm dependencies
+      if: inputs.package-manager == 'npm'
+      uses: $/.github/actions/node/npm
+      with:
+        components: ${{ inputs.components }}
+
+    - name: Install pnpm dependencies
+      if: inputs.package-manager == 'pnpm'
+      uses: $/.github/actions/node/pnpm
+      with:
+        components: ${{ inputs.components }}
+
+    - name: Install Yarn dependencies
+      if: inputs.package-manager == 'yarn'
+      uses: $/.github/actions/node/yarn
+      with:
+        components: ${{ inputs.components }}
+
+    - name: Install Bun dependencies
+      if: inputs.package-manager == 'bun'
+      uses: $/.github/actions/node/bun
+      with:
+        components: ${{ inputs.components }}
+
+    - name: Run common Node checks
+      shell: bash
+      env:
+        CI: 'true'
+        COMPONENTS_JSON: ${{ inputs.components }}
+        PACKAGE_MANAGER: ${{ inputs.package-manager }}
+      run: |
+        set -euo pipefail
+
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+        declare -A checked=()
+
+        has_script() {
+          local component="$1"
+          local script="$2"
+          (cd "$component" && node -e 'const p=require("./package.json"); process.exit(p.scripts && p.scripts[process.argv[1]] ? 0 : 1)' "$script")
+        }
+
+        run_script() {
+          local component="$1"
+          local script="$2"
+          case "$PACKAGE_MANAGER" in
+            npm)  (cd "$component" && npm run "$script") ;;
+            pnpm) (cd "$component" && pnpm run "$script") ;;
+            yarn) (cd "$component" && yarn run "$script") ;;
+            bun)  (cd "$component" && bun run "$script") ;;
+          esac
+        }
+
+        while IFS= read -r component_json; do
+          name="$(jq -r '.name // empty' <<<"$component_json")"
+          path="$(jq -r '.path // empty' <<<"$component_json")"
+          manager="$(jq -r '.package_manager // empty' <<<"$component_json")"
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+
+          if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
+            echo "::error::Node component '$name' must resolve inside the repository."
+            exit 1
+          fi
+          [[ -f "$component/package.json" ]] || { echo "::error::Node component '$name' must contain package.json."; exit 1; }
+          [[ "$manager" == "$PACKAGE_MANAGER" ]] || { echo "::error::Node component '$name' is normalized for '$manager', not '$PACKAGE_MANAGER'."; exit 1; }
+
+          if [[ -n "${checked[$component]+x}" ]]; then
+            continue
+          fi
+
+          echo "==> Node component: $name ($PACKAGE_MANAGER)"
+          if has_script "$component" lint; then
+            run_script "$component" lint
+          fi
+
+          for script in check-types typecheck type-check check; do
+            if has_script "$component" "$script"; then
+              run_script "$component" "$script"
+              break
+            fi
+          done
+
+          if has_script "$component" test; then
+            run_script "$component" test
+          fi
+          if has_script "$component" build; then
+            run_script "$component" build
+          fi
+
+          checked[$component]=1
+        done < <(jq -c '.[]' <<<"$components")

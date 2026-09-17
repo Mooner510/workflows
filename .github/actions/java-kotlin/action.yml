@@ -1,0 +1,69 @@
+name: Java Kotlin CI
+description: Set up the JVM, prepare an optional platform profile, and delegate to Gradle or Maven.
+
+inputs:
+  components:
+    description: JSON array of affected Java/Kotlin components.
+    required: true
+  version:
+    description: Java version to install.
+    required: true
+  build-tool:
+    description: Build tool shared by this CI group (gradle or maven).
+    required: true
+  profile:
+    description: Optional profile shared by this CI group (none, android, or spring-boot).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Validate Java/Kotlin CI group
+      shell: bash
+      env:
+        COMPONENTS_JSON: ${{ inputs.components }}
+        BUILD_TOOL: ${{ inputs.build-tool }}
+        PROFILE: ${{ inputs.profile }}
+      run: |
+        set -euo pipefail
+        jq -e 'type == "array" and length > 0' <<<"$COMPONENTS_JSON" >/dev/null || {
+          echo "::error::components must be a non-empty JSON array."
+          exit 1
+        }
+        case "$BUILD_TOOL" in gradle|maven) ;; *) echo "::error::Unsupported build tool '$BUILD_TOOL'."; exit 1 ;; esac
+        case "$PROFILE" in none|android|spring-boot) ;; *) echo "::error::Unsupported Java/Kotlin profile '$PROFILE'."; exit 1 ;; esac
+        if [[ "$PROFILE" == "android" && "$BUILD_TOOL" != "gradle" ]]; then
+          echo "::error::Android profile requires Gradle."
+          exit 1
+        fi
+
+    - name: Set up Java
+      uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.version }}
+
+    - name: Prepare Android profile
+      if: inputs.profile == 'android'
+      uses: $/.github/actions/java-kotlin/profiles/android
+
+    - name: Validate Spring Boot profile
+      if: inputs.profile == 'spring-boot'
+      uses: $/.github/actions/java-kotlin/profiles/spring-boot
+      with:
+        components: ${{ inputs.components }}
+        build-tool: ${{ inputs.build-tool }}
+
+    - name: Run Gradle CI
+      if: inputs.build-tool == 'gradle'
+      uses: $/.github/actions/java-kotlin/build-tools/gradle
+      with:
+        components: ${{ inputs.components }}
+        profile: ${{ inputs.profile }}
+
+    - name: Run Maven CI
+      if: inputs.build-tool == 'maven'
+      uses: $/.github/actions/java-kotlin/build-tools/maven
+      with:
+        components: ${{ inputs.components }}
+        profile: ${{ inputs.profile }}

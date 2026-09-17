@@ -1,0 +1,60 @@
+name: Gradle CI
+description: Run Gradle wrapper checks for affected Java/Kotlin components.
+
+inputs:
+  components:
+    description: JSON array of affected Java/Kotlin components normalized to Gradle.
+    required: true
+  profile:
+    description: Java/Kotlin profile (none, android, or spring-boot).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare Gradle cache
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ "${RUNNER_TOOL_CACHE:-}" == "/opt/cache/tool-cache" ]]; then
+          gradle_home="/opt/cache/gradle"
+        else
+          gradle_home="${GRADLE_USER_HOME:-$HOME/.gradle}"
+        fi
+        mkdir -p "$gradle_home"
+        echo "GRADLE_USER_HOME=$gradle_home" >>"$GITHUB_ENV"
+
+    - name: Run Gradle checks
+      shell: bash
+      env:
+        CI: 'true'
+        COMPONENTS_JSON: ${{ inputs.components }}
+        PROFILE: ${{ inputs.profile }}
+      run: |
+        set -euo pipefail
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+        declare -A checked=()
+
+        while IFS= read -r component_json; do
+          name="$(jq -r '.name' <<<"$component_json")"
+          path="$(jq -r '.path' <<<"$component_json")"
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+          [[ -n "$component" ]] || { echo "::error::Gradle component '$name' does not exist."; exit 1; }
+          [[ -f "$component/gradlew" ]] || { echo "::error::Gradle component '$name' must contain gradlew at its component root."; exit 1; }
+
+          default_tasks="build"
+          [[ "$PROFILE" == "android" ]] && default_tasks="lintDebug testDebugUnitTest assembleDebug"
+          tasks_string="$(jq -r --arg fallback "$default_tasks" '.gradle_tasks // $fallback' <<<"$component_json")"
+          read -r -a tasks <<<"$tasks_string"
+          (( ${#tasks[@]} > 0 )) || { echo "::error::Gradle component '$name' has no tasks."; exit 1; }
+          for task in "${tasks[@]}"; do
+            [[ "$task" =~ ^[A-Za-z0-9_:.-]+$ ]] || { echo "::error::Invalid Gradle task '$task' for '$name'."; exit 1; }
+          done
+
+          key="$component|$tasks_string"
+          [[ -z "${checked[$key]+x}" ]] || continue
+          echo "==> Gradle component: $name ($tasks_string)"
+          (cd "$component" && chmod +x ./gradlew && ./gradlew --no-daemon "${tasks[@]}")
+          checked[$key]=1
+        done < <(jq -c '.[]' <<<"$components")

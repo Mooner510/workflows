@@ -1,0 +1,63 @@
+name: Yarn install
+description: Install affected Yarn package roots with Corepack and immutable lockfiles.
+
+inputs:
+  components:
+    description: JSON array of affected Node components normalized to Yarn.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Yarn package roots
+      shell: bash
+      env:
+        CI: 'true'
+        COMPONENTS_JSON: ${{ inputs.components }}
+      run: |
+        set -euo pipefail
+        command -v corepack >/dev/null || { echo "::error::corepack is required for Yarn."; exit 1; }
+        corepack enable
+
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+        declare -A installed=()
+
+        resolve_root() {
+          local component="$1"
+          local cursor="$component"
+          while :; do
+            if [[ -f "$cursor/yarn.lock" ]]; then
+              printf '%s' "$cursor"
+              return
+            fi
+            [[ "$cursor" == "$workspace" ]] && break
+            cursor="$(dirname "$cursor")"
+          done
+          return 1
+        }
+
+        while IFS= read -r component_json; do
+          path="$(jq -r '.path' <<<"$component_json")"
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path")"
+          root="$(resolve_root "$component" || true)"
+          [[ -n "$root" ]] || { echo "::error::No yarn.lock found from '$path' up to repository root."; exit 1; }
+          [[ -f "$root/package.json" ]] || { echo "::error::Yarn root '$root' must contain package.json."; exit 1; }
+
+          package_manager="$(node -p 'require(process.argv[1]).packageManager || ""' "$root/package.json")"
+          [[ "$package_manager" =~ ^yarn@[0-9]+\.[0-9]+\.[0-9]+([+-].*)?$ ]] || {
+            echo "::error::Yarn roots must pin packageManager, for example \"yarn@4.9.2\"."
+            exit 1
+          }
+
+          if [[ -z "${installed[$root]+x}" ]]; then
+            echo "==> yarn install: $(realpath --relative-to="$workspace" "$root")"
+            yarn_major="$(cd "$root" && yarn --version | cut -d. -f1)"
+            if [[ "$yarn_major" == "1" ]]; then
+              (cd "$root" && yarn install --frozen-lockfile)
+            else
+              (cd "$root" && yarn install --immutable)
+            fi
+            installed[$root]=1
+          fi
+        done < <(jq -c '.[]' <<<"$components")

@@ -1,0 +1,58 @@
+name: pnpm install
+description: Install affected pnpm package roots with Corepack and a frozen lockfile.
+
+inputs:
+  components:
+    description: JSON array of affected Node components normalized to pnpm.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install pnpm package roots
+      shell: bash
+      env:
+        CI: 'true'
+        COMPONENTS_JSON: ${{ inputs.components }}
+      run: |
+        set -euo pipefail
+        command -v corepack >/dev/null || { echo "::error::corepack is required for pnpm."; exit 1; }
+        corepack enable
+
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+        declare -A installed=()
+
+        resolve_root() {
+          local component="$1"
+          local cursor="$component"
+          while :; do
+            if [[ -f "$cursor/pnpm-lock.yaml" ]]; then
+              printf '%s' "$cursor"
+              return
+            fi
+            [[ "$cursor" == "$workspace" ]] && break
+            cursor="$(dirname "$cursor")"
+          done
+          return 1
+        }
+
+        while IFS= read -r component_json; do
+          path="$(jq -r '.path' <<<"$component_json")"
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path")"
+          root="$(resolve_root "$component" || true)"
+          [[ -n "$root" ]] || { echo "::error::No pnpm-lock.yaml found from '$path' up to repository root."; exit 1; }
+          [[ -f "$root/package.json" ]] || { echo "::error::pnpm root '$root' must contain package.json."; exit 1; }
+
+          package_manager="$(node -p 'require(process.argv[1]).packageManager || ""' "$root/package.json")"
+          [[ "$package_manager" =~ ^pnpm@[0-9]+\.[0-9]+\.[0-9]+([+-].*)?$ ]] || {
+            echo "::error::pnpm roots must pin packageManager, for example \"pnpm@10.17.1\"."
+            exit 1
+          }
+
+          if [[ -z "${installed[$root]+x}" ]]; then
+            echo "==> pnpm install: $(realpath --relative-to="$workspace" "$root")"
+            (cd "$root" && pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_DIR")
+            installed[$root]=1
+          fi
+        done < <(jq -c '.[]' <<<"$components")

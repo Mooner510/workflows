@@ -1,0 +1,44 @@
+name: Maven CI
+description: Run Maven wrapper checks for affected Java/Kotlin components.
+
+inputs:
+  components:
+    description: JSON array of affected Java/Kotlin components normalized to Maven.
+    required: true
+  profile:
+    description: Java/Kotlin profile (none or spring-boot).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Run Maven checks
+      shell: bash
+      env:
+        CI: 'true'
+        COMPONENTS_JSON: ${{ inputs.components }}
+      run: |
+        set -euo pipefail
+        components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+        declare -A checked=()
+
+        while IFS= read -r component_json; do
+          name="$(jq -r '.name' <<<"$component_json")"
+          path="$(jq -r '.path' <<<"$component_json")"
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+          [[ -n "$component" ]] || { echo "::error::Maven component '$name' does not exist."; exit 1; }
+          [[ -f "$component/mvnw" ]] || { echo "::error::Maven component '$name' must contain mvnw at its component root."; exit 1; }
+
+          goals_string="$(jq -r '.maven_goals // "verify"' <<<"$component_json")"
+          read -r -a goals <<<"$goals_string"
+          (( ${#goals[@]} > 0 )) || { echo "::error::Maven component '$name' has no goals."; exit 1; }
+          for goal in "${goals[@]}"; do
+            [[ "$goal" =~ ^[A-Za-z0-9_:.-]+$ ]] || { echo "::error::Invalid Maven goal '$goal' for '$name'."; exit 1; }
+          done
+
+          key="$component|$goals_string"
+          [[ -z "${checked[$key]+x}" ]] || continue
+          echo "==> Maven component: $name ($goals_string)"
+          (cd "$component" && chmod +x ./mvnw && ./mvnw -B -ntp "${goals[@]}")
+          checked[$key]=1
+        done < <(jq -c '.[]' <<<"$components")

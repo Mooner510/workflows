@@ -1,0 +1,47 @@
+name: npm install
+description: Install affected npm package roots with npm ci.
+
+inputs:
+  components:
+    description: JSON array of affected Node components normalized to npm.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install npm package roots
+      shell: bash
+      env:
+        CI: 'true'
+        COMPONENTS_JSON: ${{ inputs.components }}
+      run: |
+        set -euo pipefail
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+        declare -A installed=()
+
+        resolve_root() {
+          local component="$1"
+          local cursor="$component"
+          while :; do
+            if [[ -f "$cursor/package-lock.json" ]]; then
+              printf '%s' "$cursor"
+              return
+            fi
+            [[ "$cursor" == "$workspace" ]] && break
+            cursor="$(dirname "$cursor")"
+          done
+          return 1
+        }
+
+        while IFS= read -r component_json; do
+          path="$(jq -r '.path' <<<"$component_json")"
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path")"
+          root="$(resolve_root "$component" || true)"
+          [[ -n "$root" ]] || { echo "::error::No package-lock.json found from '$path' up to repository root."; exit 1; }
+          if [[ -z "${installed[$root]+x}" ]]; then
+            echo "==> npm ci: $(realpath --relative-to="$workspace" "$root")"
+            (cd "$root" && npm ci)
+            installed[$root]=1
+          fi
+        done < <(jq -c '.[]' <<<"$components")

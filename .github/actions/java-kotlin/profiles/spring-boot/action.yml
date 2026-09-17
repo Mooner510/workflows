@@ -1,0 +1,42 @@
+name: Spring Boot profile
+description: Validate that Java/Kotlin components selected as Spring Boot actually declare Spring Boot.
+
+inputs:
+  components:
+    description: JSON array of Spring Boot components.
+    required: true
+  build-tool:
+    description: gradle or maven.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Validate Spring Boot components
+      shell: bash
+      env:
+        COMPONENTS_JSON: ${{ inputs.components }}
+        BUILD_TOOL: ${{ inputs.build-tool }}
+      run: |
+        set -euo pipefail
+        while IFS= read -r component_json; do
+          name="$(jq -r '.name' <<<"$component_json")"
+          path="$(jq -r '.path' <<<"$component_json")"
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+          [[ -n "$component" ]] || { echo "::error::Spring Boot component '$name' does not exist."; exit 1; }
+
+          case "$BUILD_TOOL" in
+            gradle)
+              if ! grep -Eq 'org\.springframework\.boot' "$component/build.gradle" "$component/build.gradle.kts" 2>/dev/null; then
+                echo "::error::Spring Boot Gradle component '$name' does not declare org.springframework.boot in its root build file."
+                exit 1
+              fi
+              ;;
+            maven)
+              if [[ ! -f "$component/pom.xml" ]] || ! grep -Eq 'spring-boot' "$component/pom.xml"; then
+                echo "::error::Spring Boot Maven component '$name' does not declare Spring Boot in pom.xml."
+                exit 1
+              fi
+              ;;
+          esac
+        done < <(jq -c '.[]' <<<"$COMPONENTS_JSON")

@@ -1,0 +1,99 @@
+name: Bun install
+description: Set up the pinned Bun version and install affected Bun package roots.
+
+inputs:
+  components:
+    description: JSON array of affected Node components normalized to Bun.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve Bun version
+      id: bun
+      shell: bash
+      env:
+        COMPONENTS_JSON: ${{ inputs.components }}
+      run: |
+        set -euo pipefail
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+        expected=""
+
+        resolve_root() {
+          local component="$1"
+          local cursor="$component"
+          while :; do
+            if [[ -f "$cursor/bun.lock" || -f "$cursor/bun.lockb" ]]; then
+              printf '%s' "$cursor"
+              return
+            fi
+            [[ "$cursor" == "$workspace" ]] && break
+            cursor="$(dirname "$cursor")"
+          done
+          return 1
+        }
+
+        while IFS= read -r component_json; do
+          path="$(jq -r '.path' <<<"$component_json")"
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path")"
+          root="$(resolve_root "$component" || true)"
+          [[ -n "$root" ]] || { echo "::error::No bun.lock/bun.lockb found from '$path' up to repository root."; exit 1; }
+          [[ -f "$root/package.json" ]] || { echo "::error::Bun root '$root' must contain package.json."; exit 1; }
+          package_manager="$(node -p 'require(process.argv[1]).packageManager || ""' "$root/package.json")"
+          [[ "$package_manager" =~ ^bun@[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::Bun roots must pin packageManager, for example \"bun@1.4.2\"."
+            exit 1
+          }
+          version="${package_manager#bun@}"
+          if [[ -z "$expected" ]]; then
+            expected="$version"
+          elif [[ "$expected" != "$version" ]]; then
+            echo "::error::All Bun roots in one Node CI group must use the same Bun version. Found '$expected' and '$version'."
+            exit 1
+          fi
+        done < <(jq -c '.[]' <<<"$components")
+
+        [[ -n "$expected" ]] || { echo "::error::Unable to resolve Bun version."; exit 1; }
+        echo "version=$expected" >>"$GITHUB_OUTPUT"
+
+    - name: Set up Bun
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version: ${{ steps.bun.outputs.version }}
+
+    - name: Install Bun package roots
+      shell: bash
+      env:
+        CI: 'true'
+        COMPONENTS_JSON: ${{ inputs.components }}
+      run: |
+        set -euo pipefail
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+        declare -A installed=()
+
+        resolve_root() {
+          local component="$1"
+          local cursor="$component"
+          while :; do
+            if [[ -f "$cursor/bun.lock" || -f "$cursor/bun.lockb" ]]; then
+              printf '%s' "$cursor"
+              return
+            fi
+            [[ "$cursor" == "$workspace" ]] && break
+            cursor="$(dirname "$cursor")"
+          done
+          return 1
+        }
+
+        while IFS= read -r component_json; do
+          path="$(jq -r '.path' <<<"$component_json")"
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path")"
+          root="$(resolve_root "$component")"
+          if [[ -z "${installed[$root]+x}" ]]; then
+            echo "==> bun install: $(realpath --relative-to="$workspace" "$root")"
+            (cd "$root" && bun install --frozen-lockfile)
+            installed[$root]=1
+          fi
+        done < <(jq -c '.[]' <<<"$components")

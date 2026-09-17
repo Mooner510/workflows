@@ -1,0 +1,44 @@
+name: Android profile
+description: Prepare Android SDK tooling for Java/Kotlin CI or release jobs.
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare Android SDK paths
+      id: cache
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ "${RUNNER_TOOL_CACHE:-}" == "/opt/cache/tool-cache" ]]; then
+          android_sdk="/opt/cache/android-sdk"
+        else
+          android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$RUNNER_TEMP/android-sdk}}"
+        fi
+        mkdir -p "$android_sdk"
+        echo "ANDROID_HOME=$android_sdk" >>"$GITHUB_ENV"
+        echo "ANDROID_SDK_ROOT=$android_sdk" >>"$GITHUB_ENV"
+
+        sdkmanager="$android_sdk/cmdline-tools/20.0/bin/sdkmanager"
+        if [[ -x "$sdkmanager" ]] && [[ -f "$android_sdk/licenses/android-sdk-license" ]]; then
+          echo "android_sdk_ready=true" >>"$GITHUB_OUTPUT"
+        else
+          echo "android_sdk_ready=false" >>"$GITHUB_OUTPUT"
+        fi
+
+    - name: Bootstrap Android SDK
+      if: steps.cache.outputs.android_sdk_ready != 'true'
+      uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      with:
+        packages: ''
+
+    - name: Configure Android SDK paths
+      shell: bash
+      run: |
+        set -euo pipefail
+        sdkmanager_dir="$ANDROID_SDK_ROOT/cmdline-tools/20.0/bin"
+        [[ -x "$sdkmanager_dir/sdkmanager" ]] || {
+          echo "::error::Android sdkmanager is missing after setup."
+          exit 1
+        }
+        echo "$sdkmanager_dir" >>"$GITHUB_PATH"
+        echo "$ANDROID_SDK_ROOT/platform-tools" >>"$GITHUB_PATH"
