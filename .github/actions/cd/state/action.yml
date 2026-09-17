@@ -1,0 +1,143 @@
+name: Deployment state
+description: Read or record persistent deployment state for one project service.
+
+inputs:
+  operation:
+    description: read or record.
+    required: true
+  project:
+    description: Stable project identifier.
+    required: true
+  service:
+    description: Stable service identifier.
+    required: true
+  revision:
+    description: Git revision for record operations.
+    required: false
+    default: ''
+  image:
+    description: Docker image reference for record operations.
+    required: false
+    default: ''
+  image-id:
+    description: Docker image ID/digest for record operations.
+    required: false
+    default: ''
+  event:
+    description: History event name, usually deploy or rollback.
+    required: false
+    default: deploy
+  root:
+    description: Persistent stacks state root.
+    required: false
+    default: /var/lib/stacks
+
+outputs:
+  exists:
+    description: Whether a current deployment state exists.
+    value: ${{ steps.state.outputs.exists }}
+  revision:
+    description: Current recorded revision.
+    value: ${{ steps.state.outputs.revision }}
+  image:
+    description: Current recorded image reference.
+    value: ${{ steps.state.outputs.image }}
+  image-id:
+    description: Current recorded image ID/digest.
+    value: ${{ steps.state.outputs.image_id }}
+  state-directory:
+    description: Persistent state directory.
+    value: ${{ steps.state.outputs.state_directory }}
+
+runs:
+  using: composite
+  steps:
+    - name: Manage deployment state
+      id: state
+      shell: bash
+      env:
+        OPERATION: ${{ inputs.operation }}
+        PROJECT: ${{ inputs.project }}
+        SERVICE: ${{ inputs.service }}
+        REVISION: ${{ inputs.revision }}
+        IMAGE: ${{ inputs.image }}
+        IMAGE_ID: ${{ inputs.image-id }}
+        EVENT: ${{ inputs.event }}
+        STATE_ROOT: ${{ inputs.root }}
+      run: |
+        set -euo pipefail
+
+        command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
+        case "$OPERATION" in read|record) ;; *) echo "::error::operation must be read or record."; exit 1 ;; esac
+        [[ "$PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid project '$PROJECT'."; exit 1; }
+        [[ "$SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid service '$SERVICE'."; exit 1; }
+        [[ "$EVENT" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid event '$EVENT'."; exit 1; }
+        [[ "$STATE_ROOT" == /* ]] || { echo "::error::root must be an absolute path."; exit 1; }
+
+        state_dir="$STATE_ROOT/projects/$PROJECT/$SERVICE/deploy"
+        current="$state_dir/current.json"
+        history="$state_dir/history.jsonl"
+        mkdir -p "$state_dir"
+
+        read_current() {
+          if [[ ! -f "$current" ]]; then
+            {
+              echo "exists=false"
+              echo "revision="
+              echo "image="
+              echo "image_id="
+              echo "state_directory=$state_dir"
+            } >>"$GITHUB_OUTPUT"
+            return 0
+          fi
+
+          jq -e 'type == "object" and (.revision | type == "string") and (.image | type == "string") and (.imageId | type == "string") and (.deployedAt | type == "string")' "$current" >/dev/null || {
+            echo "::error::Deployment state '$current' is invalid."
+            exit 1
+          }
+          {
+            echo "exists=true"
+            echo "revision=$(jq -r '.revision' "$current")"
+            echo "image=$(jq -r '.image' "$current")"
+            echo "image_id=$(jq -r '.imageId' "$current")"
+            echo "state_directory=$state_dir"
+          } >>"$GITHUB_OUTPUT"
+        }
+
+        if [[ "$OPERATION" == "read" ]]; then
+          read_current
+          exit 0
+        fi
+
+        [[ -n "$REVISION" && "$REVISION" != *$'\n'* && "$REVISION" != *$'\r'* ]] || { echo "::error::revision is required for record."; exit 1; }
+        [[ -n "$IMAGE" && "$IMAGE" != *$'\n'* && "$IMAGE" != *$'\r'* ]] || { echo "::error::image is required for record."; exit 1; }
+        [[ -n "$IMAGE_ID" && "$IMAGE_ID" != *$'\n'* && "$IMAGE_ID" != *$'\r'* ]] || { echo "::error::image-id is required for record."; exit 1; }
+
+        now="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+        record="$(jq -cn \
+          --arg project "$PROJECT" \
+          --arg service "$SERVICE" \
+          --arg revision "$REVISION" \
+          --arg image "$IMAGE" \
+          --arg imageId "$IMAGE_ID" \
+          --arg deployedAt "$now" \
+          --arg event "$EVENT" \
+          '{project:$project,service:$service,revision:$revision,image:$image,imageId:$imageId,deployedAt:$deployedAt,event:$event}')"
+
+        tmp="$(mktemp "$state_dir/.current.XXXXXX")"
+        trap 'rm -f "$tmp"' EXIT
+        printf '%s\n' "$record" >"$tmp"
+        chmod 0644 "$tmp"
+        mv -f "$tmp" "$current"
+        trap - EXIT
+
+        printf '%s\n' "$record" >>"$history"
+        chmod 0644 "$history"
+
+        {
+          echo "exists=true"
+          echo "revision=$REVISION"
+          echo "image=$IMAGE"
+          echo "image_id=$IMAGE_ID"
+          echo "state_directory=$state_dir"
+        } >>"$GITHUB_OUTPUT"

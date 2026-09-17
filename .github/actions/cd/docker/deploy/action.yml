@@ -34,12 +34,18 @@ inputs:
     description: Seconds allowed for graceful stop.
     required: false
     default: '15'
+  restore-previous-on-failure:
+    description: Restore the replaced image when the requested image cannot start.
+    required: false
+    default: 'true'
 
 outputs:
   previous-existed:
     value: ${{ steps.deploy.outputs.previous_existed }}
   previous-image:
     value: ${{ steps.deploy.outputs.previous_image }}
+  previous-image-id:
+    value: ${{ steps.deploy.outputs.previous_image_id }}
 
 runs:
   using: composite
@@ -57,6 +63,7 @@ runs:
         NETWORK: ${{ inputs.network }}
         RESTART_POLICY: ${{ inputs.restart-policy }}
         STOP_TIMEOUT: ${{ inputs.stop-timeout }}
+        RESTORE_PREVIOUS_ON_FAILURE: ${{ inputs.restore-previous-on-failure }}
       run: |
         set -euo pipefail
         command -v docker >/dev/null || { echo "::error::Docker is required on the deployment runner."; exit 1; }
@@ -70,6 +77,7 @@ runs:
         done
         [[ "$STOP_TIMEOUT" =~ ^[0-9]+$ ]] || { echo "::error::stop-timeout must be an integer."; exit 1; }
         case "$RESTART_POLICY" in no|always|unless-stopped|on-failure) ;; *) echo "::error::Invalid restart policy '$RESTART_POLICY'."; exit 1 ;; esac
+        case "$RESTORE_PREVIOUS_ON_FAILURE" in true|false) ;; *) echo "::error::restore-previous-on-failure must be true or false."; exit 1 ;; esac
         if [[ -n "$NETWORK" && ! "$NETWORK" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
           echo "::error::Invalid Docker network '$NETWORK'."
           exit 1
@@ -80,11 +88,7 @@ runs:
         declare -a env_args=()
         while IFS= read -r encoded; do
           value="$(printf '%s' "$encoded" | base64 --decode)"
-          if [[ "$value" == /* ]]; then
-            env_file="$value"
-          else
-            env_file="$GITHUB_WORKSPACE/$value"
-          fi
+          if [[ "$value" == /* ]]; then env_file="$value"; else env_file="$GITHUB_WORKSPACE/$value"; fi
           env_file="$(realpath -e "$env_file" 2>/dev/null || true)"
           [[ -f "$env_file" ]] || { echo "::error::Docker env file '$value' does not exist."; exit 1; }
           env_args+=(--env-file "$env_file")
@@ -115,9 +119,11 @@ runs:
 
         previous_existed=false
         previous_image=""
+        previous_image_id=""
         if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
           previous_existed=true
           previous_image="$(docker inspect "$CONTAINER_NAME" --format '{{.Config.Image}}')"
+          previous_image_id="$(docker inspect "$CONTAINER_NAME" --format '{{.Image}}')"
           docker stop -t "$STOP_TIMEOUT" "$CONTAINER_NAME" >/dev/null || true
           docker rm -f "$CONTAINER_NAME" >/dev/null || true
         fi
@@ -126,9 +132,9 @@ runs:
         if ! run_image "$IMAGE"; then
           echo "::error::Failed to start '$CONTAINER_NAME' from '$IMAGE'."
           docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-          if [[ "$previous_existed" == "true" && -n "$previous_image" ]]; then
-            echo "Attempting immediate rollback to $previous_image"
-            run_image "$previous_image" || true
+          if [[ "$RESTORE_PREVIOUS_ON_FAILURE" == "true" && "$previous_existed" == "true" && -n "$previous_image_id" ]]; then
+            echo "Attempting immediate rollback to $previous_image_id"
+            run_image "$previous_image_id" || true
           fi
           exit 1
         fi
@@ -136,4 +142,5 @@ runs:
         {
           echo "previous_existed=$previous_existed"
           echo "previous_image=$previous_image"
+          echo "previous_image_id=$previous_image_id"
         } >>"$GITHUB_OUTPUT"
