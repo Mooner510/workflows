@@ -1,8 +1,10 @@
 # workflows
 
-공용 self-hosted GitHub Actions 구성입니다.
+공용 self-hosted GitHub Actions CI/CD 구현입니다.
 
-공용으로 유지하는 것은 다음뿐입니다.
+기본 브랜치는 `master`입니다. `v1`은 검증된 최신 v1 구현을 가리키는 movable stable branch이며, `master` 변경은 실제 검증이 끝난 뒤에만 `v1`으로 승격합니다.
+
+## 구조
 
 ```text
 .github/workflows/
@@ -10,35 +12,51 @@
 └─ security.yml
 
 .github/actions/
-├─ ci-go/action.yml
-├─ ci-node/action.yml
-├─ ci-android/action.yml
-└─ deploy/action.yml
+├─ go/
+│  └─ action.yml
+├─ java-kotlin/
+│  ├─ action.yml
+│  ├─ build-tools/
+│  │  ├─ gradle/action.yml
+│  │  └─ maven/action.yml
+│  └─ profiles/
+│     ├─ android/action.yml
+│     └─ spring-boot/action.yml
+├─ node/
+│  ├─ action.yml
+│  ├─ npm/action.yml
+│  ├─ pnpm/action.yml
+│  ├─ yarn/action.yml
+│  └─ bun/action.yml
+└─ cd/
+   ├─ guard/action.yml
+   ├─ docker-service/action.yml
+   ├─ docker/
+   │  ├─ build/action.yml
+   │  ├─ deploy/action.yml
+   │  └─ health/action.yml
+   ├─ migration/
+   │  ├─ goose/action.yml
+   │  ├─ prisma/action.yml
+   │  └─ flyway/action.yml
+   ├─ caddy/action.yml
+   └─ android/
+      └─ release/action.yml
 ```
 
-모든 중앙 Job은 다음 runner를 사용합니다.
+모든 Job은 기본적으로 다음 runner를 사용합니다.
 
 ```yaml
 runs-on: [self-hosted, linux]
 ```
 
-`v1`은 검증된 v1 계열 최신 버전을 가리키는 **movable stable branch**입니다. Caller는 기본적으로 `@v1`을 사용하고, 중앙 변경은 검증 완료 후에만 `v1` ref를 앞으로 이동합니다.
+Gharp ephemeral runner와 일반 organization/repository scoped self-hosted runner를 모두 사용할 수 있습니다.
 
-## CI
+# CI
 
-프로젝트의 `.github/workflows/ci.yml`에서 `pipeline.yml`을 호출합니다.
+프로젝트는 `.github/workflows/ci.yml`에서 중앙 `pipeline.yml`만 호출합니다.
 
 ```yaml
-name: CI
-
-on:
-  pull_request:
-  push:
-    branches: [main]
-
-permissions:
-  contents: read
-
 jobs:
   pipeline:
     uses: Mooner510/workflows/.github/workflows/pipeline.yml@v1
@@ -48,8 +66,7 @@ jobs:
           {
             "name": "api",
             "type": "go",
-            "path": "services/api",
-            "watch": ["shared/proto"]
+            "path": "services/api"
           },
           {
             "name": "web",
@@ -57,61 +74,46 @@ jobs:
             "path": "apps/web"
           },
           {
+            "name": "backend",
+            "type": "java-kotlin",
+            "path": "services/backend",
+            "build_tool": "gradle",
+            "profile": "spring-boot"
+          },
+          {
             "name": "android",
-            "type": "android",
-            "path": "apps/android"
+            "type": "java-kotlin",
+            "path": "apps/android",
+            "build_tool": "gradle",
+            "profile": "android"
           }
         ]
 ```
 
-기본적으로 `path`는 자동 감시되고 `watch`는 추가 영향 경로입니다.
-
-Repository root가 실제 작업 경로지만 일부 경로 변경에만 반응해야 하면:
+`android` component type은 기존 caller 호환을 위해 계속 지원되며 내부적으로 다음과 동일하게 정규화됩니다.
 
 ```json
 {
-  "name": "go",
-  "type": "go",
-  "path": ".",
-  "watch_path": false,
-  "watch": ["go.mod", "go.sum", "cmd", "internal", "pkg"]
+  "type": "java-kotlin",
+  "build_tool": "gradle",
+  "profile": "android"
 }
 ```
 
-`watch_path: false`는 `path` 자체를 변경 감지에서 제외합니다. 이 경우 `watch`가 최소 하나 필요합니다.
-
-`detect`는 변경된 component를 언어와 runtime version별로 묶어 **하나의 동적 CI matrix**를 만듭니다. 실제로 필요한 matrix entry만 생성되고 각 entry는 해당 Composite Action을 실행합니다.
+## CI 흐름
 
 ```text
-detect
-  ├─ security
-  └─ CI matrix
-      ├─ Go <version>       -> actions/ci-go
-      ├─ Node <version>     -> actions/ci-node
-      └─ Android Java <ver> -> actions/ci-android
+Detect changes
+├─ Security
+└─ Dynamic CI matrix
+   ├─ Go <version>
+   ├─ Node <version> / <package manager>
+   └─ Java <version> / <build tool> / <profile>
 ```
 
-예를 들어 Go component만 변경되면 Node/Android job은 별도로 생성하지 않습니다. 같은 언어와 runtime version을 사용하는 component는 하나의 matrix entry에서 setup/install/verify를 공유합니다.
+변경된 component만 선택하고 실제 필요한 group만 matrix entry로 생성합니다.
 
-### Component
-
-| 필드 | 설명 |
-| --- | --- |
-| `name` | component 이름 |
-| `type` | `go`, `node`, `android` |
-| `path` | component 작업 경로 |
-| `watch` | 추가 영향 경로 |
-| `watch_path` | 기본 `true`; `false`면 `path`를 변경 감지에서 제외 |
-| `go_version` | 기본 `stable` |
-| `node_version` | 기본 `24` |
-| `java_version` | 기본 `17` |
-| `gradle_tasks` | 기본 `lintDebug testDebugUnitTest assembleDebug` |
-
-rename/move는 이전 경로와 새 경로를 모두 변경으로 처리합니다.
-
-## 기본 검증
-
-Go:
+### Go
 
 ```text
 gofmt
@@ -122,18 +124,13 @@ go test
 go build
 ```
 
-Private GitHub Go module이 있으면 caller가 범위와 read-only token만 전달합니다.
+Private Go module은 기존과 같이 `go_private_patterns`와 `CI_PRIVATE_REPO_TOKEN`을 사용합니다.
 
-```yaml
-with:
-  go_private_patterns: 'github.com/example/*'
-secrets:
-  CI_PRIVATE_REPO_TOKEN: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
-```
+### Node
 
-토큰은 runner의 임시 Git config에만 기록되고 job 종료 시 삭제됩니다.
+Node CI는 framework를 구분하지 않습니다. Next.js, NestJS, Vite, React, Vue, Nuxt 등의 차이는 `package.json` scripts가 담당합니다.
 
-Node.js:
+공통 실행 순서:
 
 ```text
 locked install
@@ -143,71 +140,151 @@ test
 build
 ```
 
-npm, pnpm, Yarn, Bun lockfile을 자동 감지합니다. Bun은 별도 component type이 아니라 `node` component에서 처리합니다. 존재하는 script만 실행하며 type/check 계열은 첫 번째로 발견된 하나만 실행합니다. pnpm/Yarn/Bun은 root `package.json`의 `packageManager` 버전을 고정합니다.
-
-Android:
+lockfile을 기준으로 package manager를 판별하고 실제 설치 구현은 분리되어 있습니다.
 
 ```text
-lintDebug
-testDebugUnitTest
-assembleDebug
+node
+├─ npm  -> npm ci
+├─ pnpm -> pnpm install --frozen-lockfile
+├─ yarn -> yarn install --frozen-lockfile / --immutable
+└─ bun  -> bun install --frozen-lockfile
 ```
 
-Android SDK command-line tools와 라이선스는 CI가 자동으로 준비합니다. Gharp의 공유 cache가 제공되면 `/opt/cache/android-sdk`와 `/opt/cache/gradle`을 재사용하고, 일반 self-hosted runner에서는 기존 Android/Gradle 경로 또는 runner 기본 경로를 사용합니다.
+pnpm, Yarn, Bun은 root `package.json`의 `packageManager` 버전을 고정해야 합니다.
 
-## Persistent cache
+### Java/Kotlin
 
-`/opt/cache`는 **Gharp ephemeral runner용 선택적 최적화**입니다. 일반 GitHub self-hosted repository/organization runner는 `/opt/cache` 없이도 동일한 workflow를 실행할 수 있습니다.
-
-Gharp에서 persistent cache를 사용할 경우 다음 경로를 사용합니다.
+Java/Kotlin CI는 build tool과 profile을 서로 독립된 축으로 취급합니다.
 
 ```text
-/opt/cache/
-├─ android-sdk/   # Android SDK, platforms/build-tools
-├─ gradle/        # GRADLE_USER_HOME
-└─ tool-cache/    # Java / Go / Node runner tool cache
+java-kotlin
+├─ build-tools
+│  ├─ gradle
+│  └─ maven
+└─ profiles
+   ├─ android
+   └─ spring-boot
 ```
 
-Gharp가 각 ephemeral runner container를 생성할 때 host cache를 전달합니다.
+일반 Java/Kotlin component는 `profile: none`을 사용합니다.
+
+Gradle 기본 task:
 
 ```text
--v /opt/cache:/opt/cache
-RUNNER_TOOL_CACHE=/opt/cache/tool-cache
-AGENT_TOOLSDIRECTORY=/opt/cache/tool-cache
+build
 ```
 
-`RUNNER_TOOL_CACHE=/opt/cache/tool-cache`가 제공되면 workflow가 Gharp persistent cache를 사용합니다. 다른 값이거나 해당 변수가 없는 일반 self-hosted runner에서는 runner가 제공하는 tool cache와 기본 writable 경로를 그대로 사용하며 실패시키지 않습니다.
+Android profile 기본 task:
 
-Bun cache도 Gharp에서는 `/opt/cache/tool-cache/bun/install-cache`를 사용하고, 일반 self-hosted runner에서는 기존 `BUN_INSTALL_CACHE_DIR` 또는 `RUNNER_TEMP` 아래 경로를 사용합니다.
+```text
+lintDebug testDebugUnitTest assembleDebug
+```
 
-이 경로는 runner workspace가 아니며 checkout/build 결과를 저장하는 용도로 사용하지 않습니다. 프로젝트별 source/build output은 기존 runner workspace를 사용하고, cache에는 secret/signing material을 저장하지 않습니다.
+Maven 기본 goal:
 
-## Security
+```text
+verify
+```
 
-공용 Security는 다음 네 도구만 사용합니다.
+필요하면 component의 `gradle_tasks` 또는 `maven_goals`로 덮어쓸 수 있습니다.
+
+## CI에서 Docker image를 build하지 않음
+
+CI는 source/dependency/lint/type/test/build 검증까지만 담당합니다.
+
+```text
+CI
+→ source validation
+→ language build
+→ tests
+```
+
+`docker build`는 production CD의 첫 단계에서만 실행합니다. Security workflow의 Semgrep/OSV/Gitleaks/Trivy scanner container 실행은 Docker image build가 아니므로 그대로 유지합니다.
+
+# Security
+
+공용 Security:
 
 - Semgrep CE: SAST
 - OSV-Scanner: dependency vulnerability
-- Gitleaks: 현재 파일 + Git history secret scan
+- Gitleaks: current tree + Git history secret scan
 - Trivy: Dockerfile/IaC misconfiguration
+- third-party GitHub Action full SHA pin 검증
 
-Node dependency root 탐색은 npm, pnpm, Yarn, Bun lockfile을 모두 지원합니다.
+Go, Node, Java/Kotlin, legacy Android component를 모두 처리합니다.
 
-모두 self-hosted runner에서 실행하며 scanner image는 digest로 고정합니다.
+# CD
 
-## CD
+CD 구현도 중앙화합니다. 단, caller의 GitHub Environment와 secrets 경계를 유지하기 위해 프로젝트에는 매우 얇은 `deploy.yml`을 둡니다.
 
-CD도 공통 부분은 중앙화하지만 **전체 deploy workflow는 프로젝트에 둡니다.**
+프로젝트 workflow가 소유하는 것:
 
-Project별 Release/image build, GHCR naming, migration, Android release, service rollout, Environment Secret 이름은 서로 다릅니다. 또한 reusable workflow 호출 job에는 caller의 `environment:`를 붙일 수 없으므로, project `deploy.yml`이 `environment: production`을 소유합니다.
+```text
+trigger
+environment: production
+runner
+permissions
+secrets
+checkout
+```
 
-필요한 secret만 Deploy step에 명시적으로 주입하고 공용 deploy action을 호출합니다.
+실제 배포 구현은 중앙 Composite Action이 소유합니다.
+
+## API / Web Docker service
+
+API와 Web은 언어와 무관하게 동일한 Docker service CD를 사용합니다.
+
+```text
+Guard
+↓
+Docker build
+↓
+Migration (API only, optional)
+↓
+Docker replace
+↓
+HTTP health check
+↓
+Caddy reverse proxy registration
+```
+
+공통 action:
+
+```text
+.github/actions/cd/docker-service
+```
+
+Web은 `migration-engine: none`을 사용합니다.
+
+API migration engine:
+
+```text
+goose
+prisma
+flyway
+```
+
+기본 기술 정책:
+
+```text
+Go          -> Goose
+Node        -> Prisma
+Java/Kotlin -> Flyway
+```
+
+Migration은 Git diff로 실행 여부를 결정하지 않습니다. API deploy마다 migrator를 항상 실행하고, 이미 적용된 migration은 Goose/Prisma/Flyway의 DB migration history에 의해 no-op 처리됩니다.
+
+이 규칙은 재배포, 이전 실패 후 재시도, 여러 release 건너뛰기에서도 migration 누락을 방지합니다.
+
+### Docker service 예시
 
 ```yaml
 jobs:
   deploy:
     environment: production
     runs-on: [self-hosted, linux]
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -215,50 +292,161 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Deploy
-        uses: Mooner510/workflows/.github/actions/deploy@v1
+      - name: Deploy API
+        uses: Mooner510/workflows/.github/actions/cd/docker-service@v1
         env:
-          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         with:
-          working-directory: .
           production-branch: main
-          script: infra/deploy/release.sh
-          arguments-json: '["v1.2.0", "<commit>", "<image-digest>"]'
+          working-directory: services/api
+          service-name: my-api
+          image-name: my-api
+          container-port: '8080'
+          host-port: '40100'
+          domain: api.example.com
+          migration-engine: goose
+          migration-path: db/migrations
+          env-files-json: '["/opt/stacks/projects/my-project/api/deploy.env", "/opt/stacks/projects/my-project/api/secret/deploy.env"]'
 ```
 
-`arguments-json`은 version, commit, digest 같은 비밀이 아닌 script 인자를 JSON string array로 전달합니다. Secret은 `env:`로 주입합니다.
+Docker service는 host에 `127.0.0.1:<host-port>:<container-port>`로만 bind하고 Caddy가 public ingress를 담당합니다.
 
-공용 deploy action은 다음만 담당합니다.
+Caddy 기본 경로:
 
-- `workflow_dispatch` 또는 stable published Release인지 검증
-- manual deploy가 production branch에서 시작됐는지 검증
-- 실제 checkout된 commit이 production branch history에 포함되는지 검증
-- deploy script 경로와 인자 형식 검증
-- project-owned deploy script 실행
+```text
+/opt/stacks/shared/caddy/Caddyfile
+/opt/stacks/shared/caddy/sites/*.caddy
+```
 
-GHCR build/publish, migration, service rollout 같은 project-specific CD 로직은 각 project에 둡니다.
+main Caddyfile은 sites directory를 import하도록 서버에서 한 번 구성해야 합니다.
 
-Application/runtime secret은 GitHub Environment Secrets를 사용합니다. DB CLI credential과 Android signing material만 서버 장기 보관 예외입니다.
+기본 rollout은 A/B가 아닌 simple replace입니다. 새 image build와 migration은 기존 container를 건드리기 전에 끝납니다. 새 container가 시작되지 않거나 health/Caddy 단계가 실패하면 가능한 경우 이전 image로 복귀합니다.
 
-## Runner
+Migration은 backward-compatible schema change를 기본 전제로 합니다. DB migration 자체를 자동 rollback하지는 않습니다.
 
-필수:
+## Migration engine contracts
+
+### Goose
+
+- `DATABASE_URL` 필요
+- `github.com/pressly/goose/v3`가 Go module graph에 version pin되어 있어야 함
+- 기본 migration path: `db/migrations`
+
+### Prisma
+
+- `DATABASE_URL` 필요
+- npm/pnpm/Yarn/Bun 지원
+- lockfile install 후 local Prisma CLI 실행
+- 기본 schema: `prisma/schema.prisma`
+
+### Flyway
+
+- `FLYWAY_URL` 필요
+- Gradle/Maven wrapper 지원
+- 기본 migration path: `src/main/resources/db/migration`
+- `FLYWAY_USER`, `FLYWAY_PASSWORD` 등 Flyway 환경변수는 caller Environment Secret에서 전달
+
+# Android CD
+
+Android는 Docker CD와 완전히 분리합니다.
+
+```text
+Guard
+↓
+Java / Android SDK
+↓
+App Signing
+↓
+Gradle release build
+↓
+SHA-256
+↓
+GitHub Release upload (optional)
+```
+
+공통 action:
+
+```text
+.github/actions/cd/android/release
+```
+
+필요한 signing 환경변수:
+
+```text
+ANDROID_KEYSTORE_PASSWORD
+ANDROID_KEY_ALIAS
+ANDROID_KEY_PASSWORD
+```
+
+Gradle에는 다음 project property로 전달합니다.
+
+```text
+releaseStoreFile
+releaseStorePassword
+releaseKeyAlias
+releaseKeyPassword
+```
+
+각 Android project의 signingConfig는 이 property contract를 사용해야 합니다.
+
+GitHub Release upload를 사용할 경우 caller는 `contents: write`와 `GH_TOKEN`을 release step에 제공해야 합니다.
+
+# Runner / 권한
+
+현재 운영 모델은 한 대의 self-hosted 서버에서 CI와 CD를 모두 수행할 수 있도록 설계합니다.
+
+```text
+1 physical server
+└─ Gharp or organization scoped self-hosted runner
+   ├─ CI
+   └─ CD
+```
+
+CI에서는 production secret을 주입하지 않고 Docker image도 build하지 않습니다.
+
+CD step에서만 production Environment Secret, host Docker, Caddy, `/opt/stacks` 배포 파일을 사용합니다.
+
+필수 runner 도구:
 
 ```text
 Bash
 Git
 jq
+curl
 Docker
 ```
 
-일반 GitHub self-hosted repository/organization runner와 Gharp ephemeral runner를 모두 지원합니다. Gharp에서 persistent cache를 사용할 때만 `/opt/cache:/opt/cache` bind mount와 `/opt/cache/tool-cache` tool-directory 설정을 추가합니다. Persistent self-hosted runner에서는 신뢰하지 않는 fork/public PR 코드를 실행하지 않습니다.
+CD 사용 시 추가:
 
-## Version
+```text
+Caddy CLI
+```
 
-기본 호출은 movable major ref를 사용합니다.
+Android GitHub Release upload 사용 시:
+
+```text
+gh
+```
+
+## Persistent cache
+
+Gharp에서는 선택적으로 다음 경로를 재사용합니다.
+
+```text
+/opt/cache/
+├─ android-sdk/
+├─ gradle/
+└─ tool-cache/
+```
+
+일반 self-hosted runner에서는 `/opt/cache` 없이 runner 기본 경로를 사용합니다.
+
+# Version
+
+검증된 caller는 기본적으로 다음 movable stable ref를 사용합니다.
 
 ```text
 @v1
 ```
 
-`v1`은 검증된 v1 계열 변경에 대해서만 앞으로 이동합니다. 실행을 특정 구현에 완전히 고정해야 하는 caller만 full commit SHA를 사용합니다.
+`master`에 직접 반영된 변경은 canary/실제 CI/CD 검증이 끝나기 전에는 `v1`을 이동하지 않습니다.
