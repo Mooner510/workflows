@@ -1,5 +1,5 @@
 name: Goose migration CI
-description: Validate Goose SQL migrations independently of the application language and apply them when a test database is provided.
+description: Validate and apply Goose SQL migrations against an isolated PostgreSQL instance, independent of the application language.
 
 inputs:
   components:
@@ -9,21 +9,27 @@ inputs:
     description: Goose version used when a component does not explicitly select one and its nearest go.mod does not pin Goose.
     required: false
     default: v3.28.0
+  postgres-image:
+    description: PostgreSQL image used for disposable migration validation.
+    required: false
+    default: postgres:17-alpine
 
 runs:
   using: composite
   steps:
-    - name: Validate Goose migrations
+    - name: Validate Goose SQL migrations
       shell: bash
       env:
         COMPONENTS_JSON: ${{ inputs.components }}
         DEFAULT_GOOSE_VERSION: ${{ inputs.default-version }}
+        POSTGRES_IMAGE: ${{ inputs.postgres-image }}
       run: |
         set -euo pipefail
 
         command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
         command -v curl >/dev/null || { echo "::error::curl is required on the self-hosted runner."; exit 1; }
         command -v sha256sum >/dev/null || { echo "::error::sha256sum is required on the self-hosted runner."; exit 1; }
+        command -v docker >/dev/null || { echo "::error::docker is required for Goose migration CI."; exit 1; }
 
         workspace="$(realpath "$GITHUB_WORKSPACE")"
         components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
@@ -45,7 +51,7 @@ runs:
         resolve_goose_version() {
           local component_json="$1"
           local component="$2"
-          local explicit nearest_module detected cursor
+          local explicit module_file detected cursor
 
           explicit="$(jq -r '.goose_version // empty' <<<"$component_json")"
           if [[ -n "$explicit" ]]; then
@@ -53,22 +59,22 @@ runs:
             return
           fi
 
-          nearest_module=""
+          module_file=""
           cursor="$component"
           while :; do
             if [[ -f "$cursor/go.mod" ]]; then
-              nearest_module="$cursor/go.mod"
+              module_file="$cursor/go.mod"
               break
             fi
             [[ "$cursor" == "$workspace" ]] && break
             cursor="$(dirname "$cursor")"
           done
 
-          if [[ -n "$nearest_module" ]]; then
+          if [[ -n "$module_file" ]]; then
             detected="$(awk '
               $1 == "require" && $2 == "github.com/pressly/goose/v3" { print $3; exit }
               $1 == "github.com/pressly/goose/v3" { print $2; exit }
-            ' "$nearest_module")"
+            ' "$module_file")"
             if [[ -n "$detected" ]]; then
               normalize_version "$detected"
               return
@@ -80,7 +86,7 @@ runs:
 
         goose_binary() {
           local version="$1"
-          local machine asset arch cache_root binary checksums tmp expected
+          local machine asset arch cache_root binary tmp expected
 
           machine="$(uname -m)"
           case "$machine" in
@@ -107,19 +113,67 @@ runs:
 
           mkdir -p "$cache_root"
           tmp="$(mktemp -d)"
-          trap 'rm -rf "$tmp"' RETURN
 
-          curl -fsSL "https://github.com/pressly/goose/releases/download/$version/checksums.txt" -o "$tmp/checksums.txt"
-          curl -fsSL "https://github.com/pressly/goose/releases/download/$version/$asset" -o "$tmp/$asset"
+          if ! curl -fsSL "https://github.com/pressly/goose/releases/download/$version/checksums.txt" -o "$tmp/checksums.txt" || \
+             ! curl -fsSL "https://github.com/pressly/goose/releases/download/$version/$asset" -o "$tmp/$asset"; then
+            rm -rf "$tmp"
+            echo "::error::Failed to download Goose $version." >&2
+            return 1
+          fi
 
           expected="$(awk -v asset="$asset" '$2 == asset { print $1; exit }' "$tmp/checksums.txt")"
-          [[ -n "$expected" ]] || {
+          if [[ -z "$expected" ]]; then
+            rm -rf "$tmp"
             echo "::error::No checksum found for Goose asset '$asset' in $version." >&2
             return 1
-          }
-          printf '%s  %s\n' "$expected" "$tmp/$asset" | sha256sum -c - >/dev/null
+          fi
+          if ! printf '%s  %s\n' "$expected" "$tmp/$asset" | sha256sum -c - >/dev/null; then
+            rm -rf "$tmp"
+            echo "::error::Checksum verification failed for Goose $version/$asset." >&2
+            return 1
+          fi
+
           install -m 0755 "$tmp/$asset" "$binary"
+          rm -rf "$tmp"
           printf '%s' "$binary"
+        }
+
+        cleanup_container() {
+          local container="$1"
+          docker rm -f "$container" >/dev/null 2>&1 || true
+        }
+
+        start_postgres() {
+          local container="$1"
+          local port=""
+
+          docker run -d --rm \
+            --name "$container" \
+            -e POSTGRES_USER=goose \
+            -e POSTGRES_PASSWORD=goose \
+            -e POSTGRES_DB=goose \
+            -p 127.0.0.1::5432 \
+            "$POSTGRES_IMAGE" >/dev/null
+
+          for _ in {1..60}; do
+            if docker exec "$container" pg_isready -U goose -d goose >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          if ! docker exec "$container" pg_isready -U goose -d goose >/dev/null 2>&1; then
+            docker logs "$container" >&2 || true
+            echo "::error::PostgreSQL did not become ready for Goose migration CI." >&2
+            return 1
+          fi
+
+          port="$(docker port "$container" 5432/tcp | awk -F: 'NR == 1 { print $NF }')"
+          if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to resolve the temporary PostgreSQL port." >&2
+            return 1
+          fi
+          printf '%s' "$port"
         }
 
         while IFS= read -r component_json; do
@@ -139,16 +193,30 @@ runs:
             exit 1
           fi
 
+          if find "$migrations" -type f -name '*.go' -print -quit | grep -q .; then
+            echo "::error::Goose CI supports portable SQL migrations only; Go migration files are not supported for '$name'."
+            exit 1
+          fi
+          if ! find "$migrations" -type f -name '*.sql' -print -quit | grep -q .; then
+            echo "::error::No SQL migration files found in '$migrations_path' for '$name'."
+            exit 1
+          fi
+
           goose_version="$(resolve_goose_version "$component_json" "$component")" || exit 1
           goose="$(goose_binary "$goose_version")" || exit 1
 
           echo "==> Goose $goose_version: validating $name"
           "$goose" -dir "$migrations" validate
 
-          if [[ -n "${DATABASE_URL:-}" ]]; then
-            echo "==> Goose $goose_version: applying $name to the migration test database"
-            "$goose" -dir "$migrations" postgres "$DATABASE_URL" up
-          else
-            echo "==> DATABASE_URL is not set; database apply check is skipped for $name."
-          fi
+          safe_name="$(tr -cs 'A-Za-z0-9_.-' '-' <<<"$name" | sed 's/^-*//; s/-*$//' | cut -c1-40)"
+          container="goose-ci-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${safe_name}-${RANDOM}"
+          trap 'cleanup_container "$container"' EXIT
+
+          echo "==> Goose $goose_version: applying $name to disposable PostgreSQL"
+          port="$(start_postgres "$container")" || exit 1
+          database_url="postgres://goose:goose@127.0.0.1:${port}/goose?sslmode=disable"
+          "$goose" -dir "$migrations" postgres "$database_url" up
+
+          cleanup_container "$container"
+          trap - EXIT
         done < <(jq -c '.[]' <<<"$components")
