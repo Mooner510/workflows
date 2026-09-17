@@ -1,9 +1,9 @@
 name: Deployment state
-description: Read or record persistent deployment state for one project service.
+description: Read, resolve the previous known-good deployment, or record persistent state for one project service.
 
 inputs:
   operation:
-    description: read or record.
+    description: read, previous, or record.
     required: true
   project:
     description: Stable project identifier.
@@ -34,16 +34,16 @@ inputs:
 
 outputs:
   exists:
-    description: Whether a current deployment state exists.
+    description: Whether the requested deployment state exists.
     value: ${{ steps.state.outputs.exists }}
   revision:
-    description: Current recorded revision.
+    description: Requested recorded revision.
     value: ${{ steps.state.outputs.revision }}
   image:
-    description: Current recorded image reference.
+    description: Requested recorded image reference.
     value: ${{ steps.state.outputs.image }}
   image-id:
-    description: Current recorded image ID/digest.
+    description: Requested recorded image ID/digest.
     value: ${{ steps.state.outputs.image_id }}
   state-directory:
     description: Persistent state directory.
@@ -68,7 +68,7 @@ runs:
         set -euo pipefail
 
         command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
-        case "$OPERATION" in read|record) ;; *) echo "::error::operation must be read or record."; exit 1 ;; esac
+        case "$OPERATION" in read|previous|record) ;; *) echo "::error::operation must be read, previous, or record."; exit 1 ;; esac
         [[ "$PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid project '$PROJECT'."; exit 1; }
         [[ "$SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid service '$SERVICE'."; exit 1; }
         [[ "$EVENT" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid event '$EVENT'."; exit 1; }
@@ -79,22 +79,27 @@ runs:
         history="$state_dir/history.jsonl"
         mkdir -p "$state_dir"
 
-        read_current() {
-          if [[ ! -f "$current" ]]; then
-            {
-              echo "exists=false"
-              echo "revision="
-              echo "image="
-              echo "image_id="
-              echo "state_directory=$state_dir"
-            } >>"$GITHUB_OUTPUT"
-            return 0
-          fi
+        emit_missing() {
+          {
+            echo "exists=false"
+            echo "revision="
+            echo "image="
+            echo "image_id="
+            echo "state_directory=$state_dir"
+          } >>"$GITHUB_OUTPUT"
+        }
 
-          jq -e 'type == "object" and (.revision | type == "string") and (.image | type == "string") and (.imageId | type == "string") and (.deployedAt | type == "string")' "$current" >/dev/null || {
-            echo "::error::Deployment state '$current' is invalid."
-            exit 1
-          }
+        validate_record_file() {
+          local file="$1"
+          jq -e 'type == "object" and (.revision | type == "string") and (.image | type == "string") and (.imageId | type == "string") and (.deployedAt | type == "string")' "$file" >/dev/null
+        }
+
+        if [[ "$OPERATION" == "read" ]]; then
+          if [[ ! -f "$current" ]]; then
+            emit_missing
+            exit 0
+          fi
+          validate_record_file "$current" || { echo "::error::Deployment state '$current' is invalid."; exit 1; }
           {
             echo "exists=true"
             echo "revision=$(jq -r '.revision' "$current")"
@@ -102,10 +107,32 @@ runs:
             echo "image_id=$(jq -r '.imageId' "$current")"
             echo "state_directory=$state_dir"
           } >>"$GITHUB_OUTPUT"
-        }
+          exit 0
+        fi
 
-        if [[ "$OPERATION" == "read" ]]; then
-          read_current
+        if [[ "$OPERATION" == "previous" ]]; then
+          if [[ ! -f "$current" || ! -s "$history" ]]; then
+            emit_missing
+            exit 0
+          fi
+          validate_record_file "$current" || { echo "::error::Deployment state '$current' is invalid."; exit 1; }
+          if ! jq -s -e 'all(.[]; type == "object" and (.revision | type == "string") and (.image | type == "string") and (.imageId | type == "string") and (.deployedAt | type == "string"))' "$history" >/dev/null; then
+            echo "::error::Deployment history '$history' is invalid."
+            exit 1
+          fi
+          current_image_id="$(jq -r '.imageId' "$current")"
+          candidate="$(jq -cs --arg current "$current_image_id" '[.[] | select(.imageId != $current)] | last // empty' "$history")"
+          if [[ -z "$candidate" || "$candidate" == "null" ]]; then
+            emit_missing
+            exit 0
+          fi
+          {
+            echo "exists=true"
+            echo "revision=$(jq -r '.revision' <<<"$candidate")"
+            echo "image=$(jq -r '.image' <<<"$candidate")"
+            echo "image_id=$(jq -r '.imageId' <<<"$candidate")"
+            echo "state_directory=$state_dir"
+          } >>"$GITHUB_OUTPUT"
           exit 0
         fi
 
