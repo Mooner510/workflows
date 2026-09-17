@@ -388,7 +388,7 @@ jobs:
 
       - name: Go CI
         if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'go'
-        uses: $/.github/actions/go
+        uses: $/.github/actions/ci/go
         with:
           components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
           version: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].version }}
@@ -397,7 +397,7 @@ jobs:
 
       - name: Node CI
         if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'node'
-        uses: $/.github/actions/node
+        uses: $/.github/actions/ci/node
         with:
           components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
           version: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].version }}
@@ -405,7 +405,7 @@ jobs:
 
       - name: Java/Kotlin CI
         if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'java-kotlin'
-        uses: $/.github/actions/java-kotlin
+        uses: $/.github/actions/ci/java-kotlin
         with:
           components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
           version: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].version }}
