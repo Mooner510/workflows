@@ -24,6 +24,7 @@
 └─ cd/
    ├─ guard/
    ├─ docker-service/
+   ├─ docker-service-rollback/
    ├─ docker/{build,deploy,health}/
    ├─ migration/{goose,prisma,flyway}/
    ├─ caddy/
@@ -98,25 +99,12 @@ Go migration source(`*.go`)는 지원하지 않습니다. 공용 CI에서는 por
 Goose 버전 우선순위:
 
 ```text
-1. component의 goose_version
+1. explicit goose_version
 2. component에서 repository root 방향으로 가장 가까운 go.mod의 github.com/pressly/goose/v3 버전
 3. 중앙 기본 버전 v3.28.0
 ```
 
-예시:
-
-```json
-{
-  "name": "api",
-  "type": "java-kotlin",
-  "path": "services/api",
-  "migration_engine": "goose",
-  "migration_path": "db/migrations",
-  "goose_version": "v3.28.0"
-}
-```
-
-Goose CLI는 언어 runtime에 의존하지 않도록 공식 Linux binary를 사용하고 release checksum을 검증한 뒤 runner tool cache에 저장합니다.
+Goose CLI는 언어 runtime에 의존하지 않도록 공식 Linux binary를 사용하고 release checksum을 검증한 뒤 runner tool cache에 저장합니다. CD도 같은 resolution 정책을 사용합니다.
 
 Prisma는 Node component, Flyway는 Java/Kotlin component에서 사용합니다.
 
@@ -174,23 +162,32 @@ Example:
     env-names-json: '["DATABASE_URL","SESSION_SECRET"]'
 ```
 
-`env-names-json`에는 **환경변수 이름만** 전달합니다. 실제 값은 caller step의 `env:`에서 GitHub Environment Secret/Variable로 주입되고 Docker에는 `docker run -e NAME`으로 전달됩니다. 값 자체를 action input, state/history 또는 host env file에 기록하지 않습니다.
+`env-names-json`에는 환경변수 이름만 전달합니다. 실제 값은 caller step의 `env:`에서 GitHub Environment Secret/Variable로 주입되고 Docker에는 `docker run -e NAME`으로 전달됩니다. 값 자체를 action input, state/history 또는 host env file에 기록하지 않습니다.
 
-정적 non-secret 설정은 필요하면 `env-files-json`으로 host의 `deploy.env`를 함께 전달할 수 있습니다.
+공통 Docker runtime hardening이 필요한 service는 caller input으로 다음을 사용할 수 있습니다.
+
+```text
+init
+security-opts-json
+cap-drop-json
+stop-timeout
+```
+
+예: `init: true`, `security-opts-json: '["no-new-privileges:true"]'`, `cap-drop-json: '["ALL"]'`.
 
 Project workflow에는 가능한 한 다음만 남깁니다.
 
 ```text
 trigger
 concurrency
-environment: production
+environment
 permissions
 checkout
 secrets / environment variables
 central action inputs
 ```
 
-## Deployment state
+## Deployment state / rollback
 
 Canonical storage:
 
@@ -200,38 +197,31 @@ Canonical storage:
 └─ history.jsonl
 ```
 
-`current.json`은 마지막 verified known-good deployment입니다.
+`current.json`은 마지막 verified known-good deployment입니다. `history.jsonl`에는 성공한 `deploy`/`rollback`만 append합니다.
 
-저장 값:
-
-```text
-project
-service
-revision
-image
-imageId
-deployedAt
-event
-```
-
-`history.jsonl`에는 성공한 `deploy`/`rollback`만 append합니다.
-
-Rollback 기준:
+자동 rollback:
 
 ```text
-1. current.json의 마지막 known-good imageId
-2. state가 없는 최초 중앙 CD 전환에서만 기존 running container image ID
+새 container replace 이후 health/Caddy/state 실패
+→ 직전 known-good image ID 복구
+→ rollback health 확인
 ```
 
-새 container가 실제로 배포되기 전 build/migration 단계에서 실패하면 기존 service를 건드리지 않습니다.
+명시적 수동 rollback:
 
-Replace 이후 health/Caddy/state 기록이 실패하면 previous known-good image ID로 복구하고 rollback health를 확인합니다.
+```text
+.github/actions/cd/docker-service-rollback
+```
+
+이 action은 `history.jsonl`에서 현재 image와 다른 가장 최근 known-good deployment를 선택하고, 해당 image ID가 host에 남아 있는지 확인한 뒤 복구합니다. rollback 자체가 실패하면 원래 current deployment를 다시 복구합니다. DB migration은 down하지 않습니다.
+
+따라서 image pruning은 최소한 현재 image와 직전 rollback 후보를 보존해야 합니다.
 
 기존 `deploy` CLI의 state/history/rollback 책임은 중앙 CD가 직접 소유합니다.
 
 ## Migration CD
 
-DB가 있는 API는 deploy마다 migrator를 호출합니다.
+DB가 있는 service는 deploy마다 migrator를 호출합니다.
 
 ```text
 Goose  -> DATABASE_URL
