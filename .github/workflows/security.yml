@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       components:
-        description: JSON array of affected components.
+        description: JSON array of affected normalized components.
         required: true
         type: string
       git_log_opts:
@@ -37,7 +37,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          command -v docker >/dev/null || { echo "::error::Docker is required on the self-hosted runner."; exit 1; }
+          command -v docker >/dev/null || { echo "::error::Docker is required on the self-hosted runner for scanner containers."; exit 1; }
           command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
 
           workspace="$(realpath "$GITHUB_WORKSPACE")"
@@ -59,7 +59,7 @@ jobs:
             component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
 
             case "$type" in
-              go|node|android) ;;
+              go|node|java-kotlin|android) ;;
               *) echo "::error::Unsupported component type '$type' for '$name'."; exit 1 ;;
             esac
 
@@ -78,17 +78,11 @@ jobs:
                 cursor="$component"
                 dependency_root=""
                 while :; do
-                  if [[ -f "$cursor/go.mod" ]]; then
-                    dependency_root="$cursor"
-                    break
-                  fi
+                  if [[ -f "$cursor/go.mod" ]]; then dependency_root="$cursor"; break; fi
                   [[ "$cursor" == "$workspace" ]] && break
                   cursor="$(dirname "$cursor")"
                 done
-                if [[ -z "$dependency_root" ]]; then
-                  echo "::error::No go.mod found from Go component '$name' up to the repository root."
-                  exit 1
-                fi
+                [[ -n "$dependency_root" ]] || { echo "::error::No go.mod found from Go component '$name' up to repository root."; exit 1; }
                 ;;
               node)
                 cursor="$component"
@@ -98,32 +92,22 @@ jobs:
                   [[ -f "$cursor/pnpm-lock.yaml" ]] && ((matches+=1))
                   [[ -f "$cursor/yarn.lock" ]] && ((matches+=1))
                   [[ -f "$cursor/package-lock.json" ]] && ((matches+=1))
-                  [[ -f "$cursor/bun.lock" ]] && ((matches+=1))
-                  [[ -f "$cursor/bun.lockb" ]] && ((matches+=1))
-                  if (( matches > 1 )); then
-                    echo "::error::Multiple Node package-manager lockfiles found in '$cursor'."
-                    exit 1
-                  fi
-                  if (( matches == 1 )); then
-                    dependency_root="$cursor"
-                    break
-                  fi
+                  [[ -f "$cursor/bun.lock" || -f "$cursor/bun.lockb" ]] && ((matches+=1))
+                  if (( matches > 1 )); then echo "::error::Multiple Node package-manager lockfiles found in '$cursor'."; exit 1; fi
+                  if (( matches == 1 )); then dependency_root="$cursor"; break; fi
                   [[ "$cursor" == "$workspace" ]] && break
                   cursor="$(dirname "$cursor")"
                 done
-                if [[ -z "$dependency_root" ]]; then
-                  echo "::error::No Node lockfile found from '$name' up to the repository root."
-                  exit 1
-                fi
+                [[ -n "$dependency_root" ]] || { echo "::error::No Node lockfile found from '$name' up to repository root."; exit 1; }
                 ;;
-              android)
+              java-kotlin|android)
                 if ! find "$component" -type f \( \
                   -name gradle.lockfile -o \
                   -name buildscript-gradle.lockfile -o \
                   -name verification-metadata.xml -o \
                   -name pom.xml \
                 \) -print -quit | grep -q .; then
-                  echo "::warning::No OSV-supported Java dependency metadata found for Android component '$name'; dependency coverage is incomplete."
+                  echo "::warning::No OSV-supported JVM dependency metadata found for '$name'; dependency coverage may be incomplete."
                 fi
                 ;;
             esac
@@ -138,28 +122,20 @@ jobs:
             local output="${source}.dedup"
             local target kept covered
             local -a ordered=()
-
             mapfile -t ordered < <(awk '{ print length($0) "\t" $0 }' "$source" | sort -n -k1,1 -k2,2 | cut -f2-)
             : >"$output"
-
             for target in "${ordered[@]}"; do
               covered=false
               while IFS= read -r kept; do
-                if [[ "$target" == "$kept" || "$target" == "$kept/"* ]]; then
-                  covered=true
-                  break
-                fi
+                if [[ "$target" == "$kept" || "$target" == "$kept/"* ]]; then covered=true; break; fi
               done <"$output"
-
               [[ "$covered" == "true" ]] || printf '%s\n' "$target" >>"$output"
             done
-
             mv "$output" "$source"
           }
 
           dedupe_tree_targets "$scan_targets"
           dedupe_tree_targets "$dependency_targets"
-
           {
             echo "scan_targets=$scan_targets"
             echo "dependency_targets=$dependency_targets"
@@ -169,41 +145,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           workflows_dir="$GITHUB_WORKSPACE/.github"
           [[ -d "$workflows_dir" ]] || exit 0
-
           invalid=0
           while IFS= read -r file; do
             while IFS= read -r line; do
               if [[ "$line" =~ ^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*([^#[:space:]]+) ]]; then
                 ref="${BASH_REMATCH[2]}"
-                ref="${ref#\"}"
-                ref="${ref%\"}"
-                ref="${ref#\'}"
-                ref="${ref%\'}"
-
+                ref="${ref#\"}"; ref="${ref%\"}"; ref="${ref#\'}"; ref="${ref%\'}"
                 [[ "$ref" == ./* ]] && continue
                 [[ "$ref" == docker://* ]] && continue
                 [[ "$ref" == *@* ]] || continue
-
                 action="${ref%@*}"
                 version="${ref##*@}"
-
-                if [[ "$version" =~ ^[0-9a-fA-F]{40}$ ]]; then
-                  continue
-                fi
-
-                if [[ "$action" == Mooner510/workflows/* ]] && [[ "$version" =~ ^v[0-9]+$ ]]; then
-                  continue
-                fi
-
+                [[ "$version" =~ ^[0-9a-fA-F]{40}$ ]] && continue
+                if [[ "$action" == Mooner510/workflows/* ]] && [[ "$version" =~ ^v[0-9]+$ ]]; then continue; fi
                 echo "::error file=${file#$GITHUB_WORKSPACE/}::Mutable GitHub Actions ref '$ref' is not allowed. Pin third-party actions to a full 40-character commit SHA. Only Mooner510/workflows/...@vN is allowed as a movable internal stable ref."
                 invalid=1
               fi
             done <"$file"
           done < <(find "$workflows_dir" -type f \( -name '*.yml' -o -name '*.yaml' \) -print)
-
           (( invalid == 0 )) || exit 1
 
       - name: Semgrep SAST
@@ -212,31 +173,15 @@ jobs:
           TARGET_FILE: ${{ steps.targets.outputs.scan_targets }}
         run: |
           set -euo pipefail
-
           while IFS= read -r target; do
-            if [[ "$target" == "/src" ]]; then
-              host_target="$GITHUB_WORKSPACE"
-            elif [[ "$target" == "/src/"* ]]; then
-              host_target="$GITHUB_WORKSPACE/${target#/src/}"
-            else
-              echo "::error::Invalid Semgrep target '$target'."
-              exit 1
-            fi
-
+            if [[ "$target" == "/src" ]]; then host_target="$GITHUB_WORKSPACE"; elif [[ "$target" == "/src/"* ]]; then host_target="$GITHUB_WORKSPACE/${target#/src/}"; else echo "::error::Invalid Semgrep target '$target'."; exit 1; fi
             echo "==> Semgrep: $target"
-            docker run --rm \
-              --cap-drop=ALL \
-              --security-opt=no-new-privileges \
-              -v "$host_target:/src:ro" \
-              -w /src \
+            docker run --rm --cap-drop=ALL --security-opt=no-new-privileges \
+              -v "$host_target:/src:ro" -w /src \
               semgrep/semgrep@sha256:012c8fe81c14da2d7691b90fcd826ce07f460a3301442b16c460575c87d3efb6 \
-              semgrep scan \
-                --config p/default \
+              semgrep scan --config p/default \
                 --exclude-rule yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag \
-                --error \
-                --metrics off \
-                --disable-version-check \
-                .
+                --error --metrics off --disable-version-check .
           done <"$TARGET_FILE"
 
       - name: OSV dependency vulnerabilities
@@ -245,19 +190,12 @@ jobs:
           TARGET_FILE: ${{ steps.targets.outputs.dependency_targets }}
         run: |
           set -euo pipefail
-
           while IFS= read -r target; do
             echo "==> OSV: $target"
-            docker run --rm \
-              --cap-drop=ALL \
-              --security-opt=no-new-privileges \
+            docker run --rm --cap-drop=ALL --security-opt=no-new-privileges \
               -v "$GITHUB_WORKSPACE:/src:ro" \
               ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475 \
-              scan source \
-                --recursive \
-                --allow-no-lockfiles \
-                --no-call-analysis=go \
-                "$target"
+              scan source --recursive --allow-no-lockfiles --no-call-analysis=go "$target"
           done <"$TARGET_FILE"
 
       - name: Gitleaks current files
@@ -266,13 +204,9 @@ jobs:
           TARGET_FILE: ${{ steps.targets.outputs.scan_targets }}
         run: |
           set -euo pipefail
-
           while IFS= read -r target; do
             echo "==> Gitleaks files: $target"
-            docker run --rm \
-              --network=none \
-              --cap-drop=ALL \
-              --security-opt=no-new-privileges \
+            docker run --rm --network=none --cap-drop=ALL --security-opt=no-new-privileges \
               -v "$GITHUB_WORKSPACE:/src:ro" \
               ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
               dir --redact --no-banner "$target"
@@ -284,14 +218,8 @@ jobs:
           GIT_LOG_OPTS: ${{ inputs.git_log_opts }}
         run: |
           set -euo pipefail
-
-          docker run --rm \
-            --network=none \
-            --cap-drop=ALL \
-            --security-opt=no-new-privileges \
-            -e GIT_CONFIG_COUNT=1 \
-            -e GIT_CONFIG_KEY_0=safe.directory \
-            -e GIT_CONFIG_VALUE_0=/src \
+          docker run --rm --network=none --cap-drop=ALL --security-opt=no-new-privileges \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/src \
             -v "$GITHUB_WORKSPACE:/src:ro" \
             ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
             git --redact --no-banner --log-opts="$GIT_LOG_OPTS" /src
@@ -302,27 +230,13 @@ jobs:
           TARGET_FILE: ${{ steps.targets.outputs.scan_targets }}
         run: |
           set -euo pipefail
-
           cache_volume="workflows-trivy-cache-${RUNNER_NAME//[^A-Za-z0-9_.-]/-}"
           docker volume create "$cache_volume" >/dev/null
-
           while IFS= read -r target; do
             echo "==> Trivy: $target"
-            docker run --rm \
-              --cap-drop=ALL \
-              --security-opt=no-new-privileges \
-              -v "$GITHUB_WORKSPACE:/src:ro" \
-              -v "$cache_volume:/root/.cache/trivy" \
+            docker run --rm --cap-drop=ALL --security-opt=no-new-privileges \
+              -v "$GITHUB_WORKSPACE:/src:ro" -v "$cache_volume:/root/.cache/trivy" \
               ghcr.io/aquasecurity/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 \
-              fs \
-                --scanners misconfig \
-                --severity HIGH,CRITICAL \
-                --exit-code 1 \
-                --no-progress \
-                --skip-version-check \
-                --skip-dirs .git \
-                --skip-dirs node_modules \
-                --skip-dirs build \
-                --skip-dirs .gradle \
-                "$target"
+              fs --scanners misconfig --severity HIGH,CRITICAL --exit-code 1 --no-progress \
+                --skip-version-check --skip-dirs .git --skip-dirs node_modules --skip-dirs build --skip-dirs .gradle "$target"
           done <"$TARGET_FILE"

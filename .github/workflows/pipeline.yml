@@ -23,7 +23,7 @@ on:
         required: false
     outputs:
       changed_components:
-        description: JSON array of changed components.
+        description: JSON array of normalized affected components.
         value: ${{ jobs.detect.outputs.all_components }}
       has_changes:
         description: Whether at least one configured component changed.
@@ -53,7 +53,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
-      - name: Validate configuration and detect affected components
+      - name: Validate, detect, and normalize affected components
         id: detect
         shell: bash
         env:
@@ -99,20 +99,18 @@ jobs:
           count="$(jq 'length' <<<"$components")"
           for ((i = 0; i < count; i++)); do
             component="$(jq -c ".[$i]" <<<"$components")"
-            name="$(jq -r '.name // empty' <<<"$component")"
-            type="$(jq -r '.type // empty' <<<"$component")"
-            path="$(jq -r '.path // empty' <<<"$component")"
-
             if [[ "$(jq 'type' <<<"$component")" != '"object"' ]]; then
               echo "::error::Every components entry must be an object."
               exit 1
             fi
-            if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
-              echo "::error::Invalid component name '$name'."
-              exit 1
-            fi
+
+            name="$(jq -r '.name // empty' <<<"$component")"
+            type="$(jq -r '.type // empty' <<<"$component")"
+            path="$(jq -r '.path // empty' <<<"$component")"
+
+            [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid component name '$name'."; exit 1; }
             case "$type" in
-              go|node|android) ;;
+              go|node|java-kotlin|android) ;;
               *) echo "::error::Component '$name' has unsupported type '$type'."; exit 1 ;;
             esac
 
@@ -137,6 +135,32 @@ jobs:
 
             if [[ "$(jq -r '.watch_path // true' <<<"$component")" == "false" ]] && [[ "$(jq '.watch // [] | length' <<<"$component")" -eq 0 ]]; then
               echo "::error::Component '$name' must define at least one watch entry when watch_path is false."
+              exit 1
+            fi
+
+            case "$type" in
+              node)
+                package_manager="$(jq -r '.package_manager // empty' <<<"$component")"
+                if [[ -n "$package_manager" ]]; then
+                  case "$package_manager" in npm|pnpm|yarn|bun) ;; *) echo "::error::Invalid package_manager '$package_manager' for '$name'."; exit 1 ;; esac
+                fi
+                ;;
+              java-kotlin)
+                build_tool="$(jq -r '.build_tool // empty' <<<"$component")"
+                profile="$(jq -r '.profile // "none"' <<<"$component")"
+                if [[ -n "$build_tool" ]]; then
+                  case "$build_tool" in gradle|maven) ;; *) echo "::error::Invalid build_tool '$build_tool' for '$name'."; exit 1 ;; esac
+                fi
+                case "$profile" in none|android|spring-boot) ;; *) echo "::error::Invalid profile '$profile' for '$name'."; exit 1 ;; esac
+                ;;
+            esac
+
+            if ! jq -e '(.gradle_tasks == null) or ((.gradle_tasks | type) == "string")' <<<"$component" >/dev/null; then
+              echo "::error::Component '$name' gradle_tasks must be a string when set."
+              exit 1
+            fi
+            if ! jq -e '(.maven_goals == null) or ((.maven_goals | type) == "string")' <<<"$component" >/dev/null; then
+              echo "::error::Component '$name' maven_goals must be a string when set."
               exit 1
             fi
           done
@@ -200,6 +224,97 @@ jobs:
             fi
           done
 
+          resolve_node_manager() {
+            local component="$1"
+            local cursor="$component"
+            local matches=()
+            while :; do
+              matches=()
+              [[ -f "$cursor/package-lock.json" ]] && matches+=(npm)
+              [[ -f "$cursor/pnpm-lock.yaml" ]] && matches+=(pnpm)
+              [[ -f "$cursor/yarn.lock" ]] && matches+=(yarn)
+              [[ -f "$cursor/bun.lock" || -f "$cursor/bun.lockb" ]] && matches+=(bun)
+              if (( ${#matches[@]} > 1 )); then
+                echo "::error::Multiple Node package-manager lockfiles found in '$cursor'." >&2
+                return 1
+              fi
+              if (( ${#matches[@]} == 1 )); then
+                printf '%s' "${matches[0]}"
+                return 0
+              fi
+              [[ "$cursor" == "$workspace" ]] && break
+              cursor="$(dirname "$cursor")"
+            done
+            echo "::error::No Node package-manager lockfile found from '$component' up to repository root." >&2
+            return 1
+          }
+
+          resolve_java_build_tool() {
+            local component="$1"
+            local gradle=false
+            local maven=false
+            [[ -f "$component/gradlew" || -f "$component/build.gradle" || -f "$component/build.gradle.kts" ]] && gradle=true
+            [[ -f "$component/mvnw" || -f "$component/pom.xml" ]] && maven=true
+            if [[ "$gradle" == "true" && "$maven" == "true" ]]; then
+              echo "::error::Both Gradle and Maven metadata found at '$component'; set build_tool explicitly." >&2
+              return 1
+            fi
+            if [[ "$gradle" == "true" ]]; then printf 'gradle'; return 0; fi
+            if [[ "$maven" == "true" ]]; then printf 'maven'; return 0; fi
+            echo "::error::No Gradle or Maven build metadata found at '$component'." >&2
+            return 1
+          }
+
+          normalized='[]'
+          while IFS= read -r component; do
+            name="$(jq -r '.name' <<<"$component")"
+            type="$(jq -r '.type' <<<"$component")"
+            path="$(jq -r '.path' <<<"$component")"
+            component_path="$(realpath -e "$GITHUB_WORKSPACE/$path")"
+
+            case "$type" in
+              go)
+                ;;
+              node)
+                detected_manager="$(resolve_node_manager "$component_path")" || exit 1
+                configured_manager="$(jq -r '.package_manager // empty' <<<"$component")"
+                if [[ -n "$configured_manager" && "$configured_manager" != "$detected_manager" ]]; then
+                  echo "::error::Node component '$name' declares '$configured_manager' but lockfile detection found '$detected_manager'."
+                  exit 1
+                fi
+                component="$(jq -c --arg manager "$detected_manager" '.package_manager = $manager' <<<"$component")"
+                ;;
+              android)
+                [[ -f "$component_path/gradlew" ]] || { echo "::error::Legacy android component '$name' must contain gradlew."; exit 1; }
+                component="$(jq -c '.type = "java-kotlin" | .build_tool = "gradle" | .profile = "android"' <<<"$component")"
+                ;;
+              java-kotlin)
+                configured_tool="$(jq -r '.build_tool // empty' <<<"$component")"
+                if [[ -n "$configured_tool" ]]; then
+                  build_tool="$configured_tool"
+                else
+                  build_tool="$(resolve_java_build_tool "$component_path")" || exit 1
+                fi
+                profile="$(jq -r '.profile // "none"' <<<"$component")"
+                if [[ "$build_tool" == "gradle" && ! -f "$component_path/gradlew" ]]; then
+                  echo "::error::Java/Kotlin Gradle component '$name' must contain gradlew at its component root."
+                  exit 1
+                fi
+                if [[ "$build_tool" == "maven" && ! -f "$component_path/mvnw" ]]; then
+                  echo "::error::Java/Kotlin Maven component '$name' must contain mvnw at its component root."
+                  exit 1
+                fi
+                if [[ "$profile" == "android" && "$build_tool" != "gradle" ]]; then
+                  echo "::error::Android profile requires Gradle for component '$name'."
+                  exit 1
+                fi
+                component="$(jq -c --arg tool "$build_tool" --arg profile "$profile" '.build_tool = $tool | .profile = $profile' <<<"$component")"
+                ;;
+            esac
+
+            normalized="$(jq -c --argjson component "$component" '. + [$component]' <<<"$normalized")"
+          done < <(jq -c '.[]' <<<"$selected")
+
           ci_groups="$(jq -c '
             [
               (map(select(.type == "go"))
@@ -211,35 +326,33 @@ jobs:
                     components: .
                   }),
               (map(select(.type == "node"))
-                | group_by(.node_version // "24")[]
+                | group_by([(.node_version // "24"), .package_manager])[]
                 | {
-                    target: ("Node " + (.[0].node_version // "24")),
+                    target: ("Node " + (.[0].node_version // "24") + " / " + .[0].package_manager),
                     type: "node",
                     version: (.[0].node_version // "24"),
+                    package_manager: .[0].package_manager,
                     components: .
                   }),
-              (map(select(.type == "android"))
-                | group_by(.java_version // "17")[]
+              (map(select(.type == "java-kotlin"))
+                | group_by([(.java_version // "17"), .build_tool, .profile])[]
                 | {
-                    target: ("Android Java " + (.[0].java_version // "17")),
-                    type: "android",
+                    target: ("Java " + (.[0].java_version // "17") + " / " + .[0].build_tool + (if .[0].profile == "none" then "" else " / " + .[0].profile end)),
+                    type: "java-kotlin",
                     version: (.[0].java_version // "17"),
+                    build_tool: .[0].build_tool,
+                    profile: .[0].profile,
                     components: .
                   })
             ]
-          ' <<<"$selected")"
+          ' <<<"$normalized")"
 
           ci_targets="$(jq -c 'map(.target)' <<<"$ci_groups")"
           ci_groups_by_target="$(jq -c 'reduce .[] as $group ({}; .[$group.target] = $group)' <<<"$ci_groups")"
-
-          if [[ "$(jq 'length' <<<"$selected")" -gt 0 ]]; then
-            has_changes=true
-          else
-            has_changes=false
-          fi
+          if [[ "$(jq 'length' <<<"$normalized")" -gt 0 ]]; then has_changes=true; else has_changes=false; fi
 
           {
-            echo "all_components=$selected"
+            echo "all_components=$normalized"
             echo "ci_targets=$ci_targets"
             echo "ci_groups_by_target=$ci_groups_by_target"
             echo "has_changes=$has_changes"
@@ -275,7 +388,7 @@ jobs:
 
       - name: Go CI
         if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'go'
-        uses: $/.github/actions/ci-go
+        uses: $/.github/actions/go
         with:
           components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
           version: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].version }}
@@ -284,14 +397,17 @@ jobs:
 
       - name: Node CI
         if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'node'
-        uses: $/.github/actions/ci-node
+        uses: $/.github/actions/node
         with:
           components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
           version: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].version }}
+          package-manager: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].package_manager }}
 
-      - name: Android CI
-        if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'android'
-        uses: $/.github/actions/ci-android
+      - name: Java/Kotlin CI
+        if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'java-kotlin'
+        uses: $/.github/actions/java-kotlin
         with:
           components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
           version: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].version }}
+          build-tool: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].build_tool }}
+          profile: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].profile }}
