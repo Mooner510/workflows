@@ -18,8 +18,13 @@ runs:
         echo "ANDROID_HOME=$android_sdk" >>"$GITHUB_ENV"
         echo "ANDROID_SDK_ROOT=$android_sdk" >>"$GITHUB_ENV"
 
-        sdkmanager="$android_sdk/cmdline-tools/20.0/bin/sdkmanager"
-        if [[ -x "$sdkmanager" ]] && [[ -f "$android_sdk/licenses/android-sdk-license" ]]; then
+        sdkmanager=""
+        if [[ -x "$android_sdk/cmdline-tools/latest/bin/sdkmanager" ]]; then
+          sdkmanager="$android_sdk/cmdline-tools/latest/bin/sdkmanager"
+        else
+          sdkmanager="$(find "$android_sdk/cmdline-tools" -mindepth 2 -maxdepth 2 -type f -name sdkmanager -perm -u+x -print 2>/dev/null | sort -V | tail -n1 || true)"
+        fi
+        if [[ -n "$sdkmanager" ]] && [[ -f "$android_sdk/licenses/android-sdk-license" ]]; then
           echo "android_sdk_ready=true" >>"$GITHUB_OUTPUT"
         else
           echo "android_sdk_ready=false" >>"$GITHUB_OUTPUT"
@@ -35,10 +40,18 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        sdkmanager_dir="$ANDROID_SDK_ROOT/cmdline-tools/20.0/bin"
-        [[ -x "$sdkmanager_dir/sdkmanager" ]] || {
+        sdkmanager="$(command -v sdkmanager 2>/dev/null || true)"
+        if [[ -z "$sdkmanager" || ! -x "$sdkmanager" ]]; then
+          if [[ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]]; then
+            sdkmanager="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          else
+            sdkmanager="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -mindepth 2 -maxdepth 2 -type f -name sdkmanager -perm -u+x -print 2>/dev/null | sort -V | tail -n1 || true)"
+          fi
+        fi
+        [[ -n "$sdkmanager" && -x "$sdkmanager" ]] || {
           echo "::error::Android sdkmanager is missing after setup."
           exit 1
         }
+        sdkmanager_dir="$(dirname "$sdkmanager")"
         echo "$sdkmanager_dir" >>"$GITHUB_PATH"
         echo "$ANDROID_SDK_ROOT/platform-tools" >>"$GITHUB_PATH"

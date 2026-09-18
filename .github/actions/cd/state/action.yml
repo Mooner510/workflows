@@ -151,15 +151,44 @@ runs:
           --arg event "$EVENT" \
           '{project:$project,service:$service,revision:$revision,image:$image,imageId:$imageId,deployedAt:$deployedAt,event:$event}')"
 
-        tmp="$(mktemp "$state_dir/.current.XXXXXX")"
-        trap 'rm -f "$tmp"' EXIT
-        printf '%s\n' "$record" >"$tmp"
-        chmod 0644 "$tmp"
-        mv -f "$tmp" "$current"
-        trap - EXIT
+        current_tmp="$(mktemp "$state_dir/.current.XXXXXX")"
+        history_tmp="$(mktemp "$state_dir/.history.XXXXXX")"
+        previous_tmp=""
+        if [[ -f "$current" ]]; then
+          previous_tmp="$(mktemp "$state_dir/.previous.XXXXXX")"
+          cp "$current" "$previous_tmp"
+        fi
+        cleanup_record_temps() {
+          rm -f "$current_tmp" "$history_tmp"
+          [[ -z "$previous_tmp" ]] || rm -f "$previous_tmp"
+        }
+        trap cleanup_record_temps EXIT
 
-        printf '%s\n' "$record" >>"$history"
-        chmod 0644 "$history"
+        printf '%s\n' "$record" >"$current_tmp"
+        chmod 0644 "$current_tmp"
+        if [[ -f "$history" ]]; then
+          cat "$history" >"$history_tmp"
+        fi
+        printf '%s\n' "$record" >>"$history_tmp"
+        chmod 0644 "$history_tmp"
+
+        mv -f "$current_tmp" "$current"
+        if ! mv -f "$history_tmp" "$history"; then
+          if [[ -n "$previous_tmp" ]]; then
+            mv -f "$previous_tmp" "$current" || {
+              echo "::error::Failed to restore previous deployment state after history write failure."
+              exit 1
+            }
+            previous_tmp=""
+          else
+            rm -f "$current"
+          fi
+          echo "::error::Failed to atomically update deployment history."
+          exit 1
+        fi
+        [[ -z "$previous_tmp" ]] || rm -f "$previous_tmp"
+        previous_tmp=""
+        trap - EXIT
 
         {
           echo "exists=true"

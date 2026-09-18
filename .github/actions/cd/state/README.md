@@ -8,6 +8,6 @@ Persistent production state is stored at:
 └─ history.jsonl
 ```
 
-`current.json` is the last verified known-good deployment. `history.jsonl` appends successful deploy/rollback records.
+`current.json` is the last verified known-good deployment. `history.jsonl` records successful deploy/rollback events and successful restoration after a failed rollback (`rollback-restore`). Record writes stage both files before replacement so a history write failure restores the previous current state.
 
-Use this action through `cd/docker-service`; direct calls are only for central CD composition.
+Use this action through `cd/docker-service` or `cd/docker-service-rollback`; direct calls are only for central CD composition. Deploy and rollback callers for the same service must share one GitHub Actions concurrency group.

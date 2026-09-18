@@ -72,8 +72,20 @@ runs:
           echo "::add-mask::${!name}"
         done
 
-        if [[ "$KEYSTORE_PATH" == /* ]]; then keystore="$KEYSTORE_PATH"; else keystore="$GITHUB_WORKSPACE/$KEYSTORE_PATH"; fi
-        keystore="$(realpath -e "$keystore" 2>/dev/null || true)"
+        [[ -n "$KEYSTORE_PATH" && "$KEYSTORE_PATH" != *$'\n'* && "$KEYSTORE_PATH" != *$'\r'* ]] || {
+          echo "::error::Invalid release keystore path."
+          exit 1
+        }
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        if [[ "$KEYSTORE_PATH" == /* ]]; then
+          keystore="$(realpath -e "$KEYSTORE_PATH" 2>/dev/null || true)"
+        else
+          keystore="$(realpath -e "$GITHUB_WORKSPACE/$KEYSTORE_PATH" 2>/dev/null || true)"
+          if [[ -n "$keystore" ]] && [[ "$keystore" != "$workspace" ]] && [[ "$keystore" != "$workspace/"* ]]; then
+            echo "::error::Relative release keystore path must resolve inside the repository."
+            exit 1
+          fi
+        fi
         [[ -f "$keystore" ]] || { echo "::error::Release keystore '$KEYSTORE_PATH' does not exist."; exit 1; }
 
         {
@@ -91,8 +103,16 @@ runs:
       run: |
         set -euo pipefail
         [[ "$GRADLE_TASK" =~ ^[A-Za-z0-9_:.-]+$ ]] || { echo "::error::Invalid Gradle release task '$GRADLE_TASK'."; exit 1; }
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        [[ -n "$WORKING_DIRECTORY" && "$WORKING_DIRECTORY" != /* && "$WORKING_DIRECTORY" != *$'\n'* && "$WORKING_DIRECTORY" != *$'\r'* ]] || {
+          echo "::error::Android working-directory must be a repository-relative path."
+          exit 1
+        }
         component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
-        [[ -d "$component" && -f "$component/gradlew" ]] || { echo "::error::Android working-directory must contain gradlew."; exit 1; }
+        if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; } || [[ ! -f "$component/gradlew" ]]; then
+          echo "::error::Android working-directory must resolve inside the repository and contain gradlew."
+          exit 1
+        fi
         (cd "$component" && chmod +x ./gradlew && ./gradlew --no-daemon "$GRADLE_TASK")
 
     - name: Resolve release artifact
@@ -104,13 +124,26 @@ runs:
       run: |
         set -euo pipefail
         command -v sha256sum >/dev/null || { echo "::error::sha256sum is required on the release runner."; exit 1; }
-        component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY")"
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
+        if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
+          echo "::error::Android working-directory must resolve inside the repository."
+          exit 1
+        fi
+        [[ -n "$ARTIFACT_GLOB" && "$ARTIFACT_GLOB" != /* && "$ARTIFACT_GLOB" != *$'\n'* && "$ARTIFACT_GLOB" != *$'\r'* ]] || {
+          echo "::error::artifact-glob must be relative to working-directory."
+          exit 1
+        }
         mapfile -t matches < <(compgen -G "$component/$ARTIFACT_GLOB" || true)
         if (( ${#matches[@]} != 1 )); then
           echo "::error::artifact-glob must resolve to exactly one release artifact; found ${#matches[@]}."
           exit 1
         fi
         artifact="$(realpath -e "${matches[0]}")"
+        if [[ "$artifact" != "$component/"* ]]; then
+          echo "::error::Release artifact must resolve inside the Android working-directory."
+          exit 1
+        fi
         digest="$(sha256sum "$artifact" | awk '{print $1}')"
         {
           echo "path=$artifact"

@@ -35,6 +35,7 @@ permissions:
 jobs:
   detect:
     name: Detect changes
+    if: github.event_name != 'pull_request_target' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, linux]
     timeout-minutes: 10
 
@@ -178,9 +179,15 @@ jobs:
                 ;;
               prisma)
                 [[ "$type" == "node" ]] || { echo "::error::Prisma migration requires a Node component ('$name')."; exit 1; }
+                migration_path="$(jq -r '.migration_path // "prisma/migrations"' <<<"$component")"
+                migration_schema="$(jq -r '.migration_schema // "prisma/schema.prisma"' <<<"$component")"
+                validate_relative_path "$migration_path" "Component '$name' migration_path"
+                validate_relative_path "$migration_schema" "Component '$name' migration_schema"
                 ;;
               flyway)
                 [[ "$type" == "java-kotlin" ]] || { echo "::error::Flyway migration requires a Java/Kotlin component ('$name')."; exit 1; }
+                migration_path="$(jq -r '.migration_path // "src/main/resources/db/migration"' <<<"$component")"
+                validate_relative_path "$migration_path" "Component '$name' migration_path"
                 ;;
               *)
                 echo "::error::Unsupported migration_engine '$migration_engine' for '$name'."
@@ -387,7 +394,7 @@ jobs:
     name: Security
     needs: detect
     if: needs.detect.outputs.has_changes == 'true'
-    uses: ./.github/workflows/security.yml
+    uses: $/.github/workflows/security.yml
     with:
       components: ${{ needs.detect.outputs.all_components }}
       git_log_opts: ${{ needs.detect.outputs.git_log_opts }}

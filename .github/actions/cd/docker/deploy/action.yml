@@ -109,11 +109,20 @@ runs:
         jq -e 'type == "array" and all(.[]; type == "string")' <<<"$SECURITY_OPTS_JSON" >/dev/null || { echo "::error::security-opts-json must be a string array."; exit 1; }
         jq -e 'type == "array" and all(.[]; type == "string")' <<<"$CAP_DROP_JSON" >/dev/null || { echo "::error::cap-drop-json must be a string array."; exit 1; }
 
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
         declare -a env_args=()
         while IFS= read -r encoded; do
           value="$(printf '%s' "$encoded" | base64 --decode)"
-          if [[ "$value" == /* ]]; then env_file="$value"; else env_file="$GITHUB_WORKSPACE/$value"; fi
-          env_file="$(realpath -e "$env_file" 2>/dev/null || true)"
+          [[ -n "$value" && "$value" != *$'\n'* && "$value" != *$'\r'* ]] || { echo "::error::Invalid Docker env file path."; exit 1; }
+          if [[ "$value" == /* ]]; then
+            env_file="$(realpath -e "$value" 2>/dev/null || true)"
+          else
+            env_file="$(realpath -e "$GITHUB_WORKSPACE/$value" 2>/dev/null || true)"
+            if [[ -n "$env_file" ]] && [[ "$env_file" != "$workspace" ]] && [[ "$env_file" != "$workspace/"* ]]; then
+              echo "::error::Relative Docker env file '$value' must resolve inside the repository."
+              exit 1
+            fi
+          fi
           [[ -f "$env_file" ]] || { echo "::error::Docker env file '$value' does not exist."; exit 1; }
           env_args+=(--env-file "$env_file")
         done < <(jq -r '.[] | @base64' <<<"$ENV_FILES_JSON")
