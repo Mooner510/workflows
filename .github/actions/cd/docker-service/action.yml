@@ -314,6 +314,7 @@ runs:
         attempts: ${{ inputs.health-attempts }}
 
     - name: Register Caddy route
+      id: caddy
       uses: $/.github/actions/cd/caddy
       with:
         service-name: ${{ inputs.service-name }}
@@ -374,6 +375,15 @@ runs:
         image-id: ${{ steps.rollback_source.outputs.image_id }}
         event: rollback
         root: ${{ inputs.state-root }}
+
+    - name: Remove Caddy route after failed first deployment
+      if: failure() && steps.deploy.outcome == 'success' && steps.rollback_source.outputs.exists != 'true' && steps.caddy.outcome == 'success'
+      uses: $/.github/actions/cd/caddy
+      with:
+        operation: remove
+        service-name: ${{ inputs.service-name }}
+        caddyfile: ${{ inputs.caddyfile }}
+        sites-directory: ${{ inputs.caddy-sites-directory }}
 
     - name: Remove failed first deployment
       if: failure() && steps.deploy.outcome == 'success' && steps.rollback_source.outputs.exists != 'true'
