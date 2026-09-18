@@ -39,59 +39,11 @@ runs:
         case "$BUILD_TOOL" in gradle|maven) ;; *) echo "::error::Flyway build-tool must be gradle or maven."; exit 1 ;; esac
 
         workspace="$(realpath "$GITHUB_WORKSPACE")"
-        [[ -n "$WORKING_DIRECTORY" && "$WORKING_DIRECTORY" != /* && "$WORKING_DIRECTORY" != *
-        echo "==> Flyway: applying pending migrations"
-        case "$BUILD_TOOL" in
-          gradle)
-            [[ -f "$component/gradlew" ]] || { echo "::error::Flyway Gradle service must contain gradlew."; exit 1; }
-            (cd "$component" && chmod +x ./gradlew && ./gradlew --no-daemon flywayMigrate)
-            ;;
-          maven)
-            [[ -f "$component/mvnw" ]] || { echo "::error::Flyway Maven service must contain mvnw."; exit 1; }
-            (cd "$component" && chmod +x ./mvnw && ./mvnw -B -ntp flyway:migrate)
-            ;;
-        esac
-\n'* && "$WORKING_DIRECTORY" != *
-        echo "==> Flyway: applying pending migrations"
-        case "$BUILD_TOOL" in
-          gradle)
-            [[ -f "$component/gradlew" ]] || { echo "::error::Flyway Gradle service must contain gradlew."; exit 1; }
-            (cd "$component" && chmod +x ./gradlew && ./gradlew --no-daemon flywayMigrate)
-            ;;
-          maven)
-            [[ -f "$component/mvnw" ]] || { echo "::error::Flyway Maven service must contain mvnw."; exit 1; }
-            (cd "$component" && chmod +x ./mvnw && ./mvnw -B -ntp flyway:migrate)
-            ;;
-        esac
-\r'* ]] || {
+        [[ -n "$WORKING_DIRECTORY" && "$WORKING_DIRECTORY" != /* && "$WORKING_DIRECTORY" != *$'\n'* && "$WORKING_DIRECTORY" != *$'\r'* ]] || {
           echo "::error::Flyway working-directory must be a repository-relative path."
           exit 1
         }
-        [[ -n "$MIGRATIONS_PATH" && "$MIGRATIONS_PATH" != /* && "$MIGRATIONS_PATH" != *
-        echo "==> Flyway: applying pending migrations"
-        case "$BUILD_TOOL" in
-          gradle)
-            [[ -f "$component/gradlew" ]] || { echo "::error::Flyway Gradle service must contain gradlew."; exit 1; }
-            (cd "$component" && chmod +x ./gradlew && ./gradlew --no-daemon flywayMigrate)
-            ;;
-          maven)
-            [[ -f "$component/mvnw" ]] || { echo "::error::Flyway Maven service must contain mvnw."; exit 1; }
-            (cd "$component" && chmod +x ./mvnw && ./mvnw -B -ntp flyway:migrate)
-            ;;
-        esac
-\n'* && "$MIGRATIONS_PATH" != *
-        echo "==> Flyway: applying pending migrations"
-        case "$BUILD_TOOL" in
-          gradle)
-            [[ -f "$component/gradlew" ]] || { echo "::error::Flyway Gradle service must contain gradlew."; exit 1; }
-            (cd "$component" && chmod +x ./gradlew && ./gradlew --no-daemon flywayMigrate)
-            ;;
-          maven)
-            [[ -f "$component/mvnw" ]] || { echo "::error::Flyway Maven service must contain mvnw."; exit 1; }
-            (cd "$component" && chmod +x ./mvnw && ./mvnw -B -ntp flyway:migrate)
-            ;;
-        esac
-\r'* ]] || {
+        [[ -n "$MIGRATIONS_PATH" && "$MIGRATIONS_PATH" != /* && "$MIGRATIONS_PATH" != *$'\n'* && "$MIGRATIONS_PATH" != *$'\r'* ]] || {
           echo "::error::Flyway migrations-path must be relative to working-directory."
           exit 1
         }
