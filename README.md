@@ -38,6 +38,8 @@
 runs-on: [self-hosted, linux]
 ```
 
+Production host와 runner를 공유하므로 중앙 pipeline은 `pull_request_target`과 fork PR을 self-hosted runner에서 실행하지 않습니다. Fork 기여를 별도로 검증하려면 production host와 분리된 runner/workflow를 사용합니다.
+
 ## CI
 
 Project는 `.github/workflows/ci.yml`에서 중앙 `pipeline.yml`을 호출합니다.
@@ -187,6 +189,16 @@ secrets / environment variables
 central action inputs
 ```
 
+같은 service의 deploy와 manual rollback은 **동일한 concurrency group**을 사용해야 합니다. 중앙 composite action 자체는 job-level `concurrency`를 선언할 수 없으므로 caller가 직렬화를 소유합니다.
+
+```yaml
+concurrency:
+  group: production-my-project-api
+  cancel-in-progress: false
+```
+
+동일 service를 병렬로 mutate하면 container/state/history가 서로 경합할 수 있으므로 production caller에서 concurrency를 생략하지 않습니다.
+
 ## Deployment state / rollback
 
 Canonical storage:
@@ -197,7 +209,7 @@ Canonical storage:
 └─ history.jsonl
 ```
 
-`current.json`은 마지막 verified known-good deployment입니다. `history.jsonl`에는 성공한 `deploy`/`rollback`만 append합니다.
+`current.json`은 마지막 verified known-good deployment입니다. `history.jsonl`에는 성공한 `deploy`/`rollback`과 rollback 실패 후 정상 원상복구(`rollback-restore`)만 기록합니다. State 갱신은 임시 파일을 사용해 current/history 불일치를 최소화합니다.
 
 자동 rollback:
 
@@ -216,6 +228,8 @@ Canonical storage:
 이 action은 `history.jsonl`에서 현재 image와 다른 가장 최근 known-good deployment를 선택하고, 해당 image ID가 host에 남아 있는지 확인한 뒤 복구합니다. rollback 자체가 실패하면 원래 current deployment를 다시 복구합니다. DB migration은 down하지 않습니다.
 
 따라서 image pruning은 최소한 현재 image와 직전 rollback 후보를 보존해야 합니다.
+
+최초 중앙 배포가 health/Caddy 이후 state 기록 단계에서 실패하면 새 container뿐 아니라 새로 적용한 Caddy route도 제거하여 dangling route를 남기지 않습니다.
 
 기존 `deploy` CLI의 state/history/rollback 책임은 중앙 CD가 직접 소유합니다.
 
