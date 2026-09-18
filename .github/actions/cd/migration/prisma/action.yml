@@ -85,10 +85,57 @@ runs:
       run: |
         set -euo pipefail
         [[ -n "${DATABASE_URL:-}" ]] || { echo "::error::DATABASE_URL must be provided to the deployment step."; exit 1; }
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        [[ -n "$WORKING_DIRECTORY" && "$WORKING_DIRECTORY" != /* && "$WORKING_DIRECTORY" != *
+        echo "==> Prisma: applying pending migrations"
+        case "$PACKAGE_MANAGER" in
+          npm)  (cd "$component" && npm exec --offline -- prisma migrate deploy --schema "$schema") ;;
+          pnpm) (cd "$component" && pnpm exec prisma migrate deploy --schema "$schema") ;;
+          yarn) (cd "$component" && yarn exec prisma migrate deploy --schema "$schema") ;;
+          bun)  (cd "$component" && bunx prisma migrate deploy --schema "$schema") ;;
+        esac
+\n'* && "$WORKING_DIRECTORY" != *
+        echo "==> Prisma: applying pending migrations"
+        case "$PACKAGE_MANAGER" in
+          npm)  (cd "$component" && npm exec --offline -- prisma migrate deploy --schema "$schema") ;;
+          pnpm) (cd "$component" && pnpm exec prisma migrate deploy --schema "$schema") ;;
+          yarn) (cd "$component" && yarn exec prisma migrate deploy --schema "$schema") ;;
+          bun)  (cd "$component" && bunx prisma migrate deploy --schema "$schema") ;;
+        esac
+\r'* ]] || {
+          echo "::error::Prisma working-directory must be a repository-relative path."
+          exit 1
+        }
+        [[ -n "$PRISMA_SCHEMA" && "$PRISMA_SCHEMA" != /* && "$PRISMA_SCHEMA" != *
+        echo "==> Prisma: applying pending migrations"
+        case "$PACKAGE_MANAGER" in
+          npm)  (cd "$component" && npm exec --offline -- prisma migrate deploy --schema "$schema") ;;
+          pnpm) (cd "$component" && pnpm exec prisma migrate deploy --schema "$schema") ;;
+          yarn) (cd "$component" && yarn exec prisma migrate deploy --schema "$schema") ;;
+          bun)  (cd "$component" && bunx prisma migrate deploy --schema "$schema") ;;
+        esac
+\n'* && "$PRISMA_SCHEMA" != *
+        echo "==> Prisma: applying pending migrations"
+        case "$PACKAGE_MANAGER" in
+          npm)  (cd "$component" && npm exec --offline -- prisma migrate deploy --schema "$schema") ;;
+          pnpm) (cd "$component" && pnpm exec prisma migrate deploy --schema "$schema") ;;
+          yarn) (cd "$component" && yarn exec prisma migrate deploy --schema "$schema") ;;
+          bun)  (cd "$component" && bunx prisma migrate deploy --schema "$schema") ;;
+        esac
+\r'* ]] || {
+          echo "::error::Prisma schema must be relative to working-directory."
+          exit 1
+        }
         component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
-        [[ -d "$component" ]] || { echo "::error::Prisma working-directory does not exist."; exit 1; }
+        if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
+          echo "::error::Prisma working-directory must resolve inside the repository."
+          exit 1
+        fi
         schema="$(realpath -e "$component/$PRISMA_SCHEMA" 2>/dev/null || true)"
-        [[ -f "$schema" ]] || { echo "::error::Prisma schema '$PRISMA_SCHEMA' does not exist."; exit 1; }
+        if [[ -z "$schema" || ! -f "$schema" ]] || { [[ "$schema" != "$component" ]] && [[ "$schema" != "$component/"* ]]; }; then
+          echo "::error::Prisma schema '$PRISMA_SCHEMA' must resolve inside the component."
+          exit 1
+        fi
 
         echo "==> Prisma: applying pending migrations"
         case "$PACKAGE_MANAGER" in
