@@ -70,7 +70,15 @@ Node        -> locked install / lint / type / test / build
 Java/Kotlin -> Gradle or Maven + optional Android/Spring Boot profile
 ```
 
-Migration CI는 언어 CI와 분리되어 상위 pipeline에서 한 번만 실행합니다.
+Migration CI는 언어 CI와 분리되어 상위 pipeline에서 한 번만 실행합니다. 일반 코드만 변경된 경우에는 실행하지 않고, 해당 component의 `migration_path`가 변경된 경우에만 실행합니다. Prisma는 `migration_schema` 변경도 migration 변경으로 취급합니다. `force_all`이거나 신뢰할 수 있는 diff 기준이 없는 경우에는 안전하게 전체 migration을 검증합니다.
+
+세 engine 모두 component별 disposable `postgres:17-alpine`을 동적 loopback port로 시작하고, clean PostgreSQL에 전체 migration history를 실제 적용한 뒤 즉시 제거합니다.
+
+```text
+Goose  -> goose validate + goose up
+Prisma -> prisma validate + prisma migrate deploy
+Flyway -> source/plugin validation + flyway migrate
+```
 
 ### Goose SQL migration CI
 
@@ -108,9 +116,9 @@ Goose 버전 우선순위:
 
 Goose CLI는 언어 runtime에 의존하지 않도록 공식 Linux binary를 사용하고 release checksum을 검증한 뒤 runner tool cache에 저장합니다. CD도 같은 resolution 정책을 사용합니다.
 
-Prisma는 Node component, Flyway는 Java/Kotlin component에서 사용합니다.
+Prisma는 Node component, Flyway는 Java/Kotlin component에서 사용합니다. Prisma의 `migration_path`는 schema 파일 옆의 native `migrations` directory를 가리켜야 합니다.
 
-CI에서는 production image를 `docker build`하지 않습니다.
+CI의 PostgreSQL은 migration 검증 전용 disposable instance이며 production DB/credential을 사용하지 않습니다. CI에서는 production image를 `docker build`하지 않습니다.
 
 Security:
 

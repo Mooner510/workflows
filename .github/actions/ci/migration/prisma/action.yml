@@ -1,10 +1,14 @@
 name: Prisma migration CI
-description: Validate Prisma schema and migration source structure without applying migrations.
+description: Validate Prisma migrations and apply them to an isolated disposable PostgreSQL instance.
 
 inputs:
   components:
     description: JSON array of affected Node components using Prisma.
     required: true
+  postgres-image:
+    description: PostgreSQL image used for disposable migration validation.
+    required: false
+    default: postgres:17-alpine
 
 runs:
   using: composite
@@ -13,10 +17,12 @@ runs:
       shell: bash
       env:
         COMPONENTS_JSON: ${{ inputs.components }}
+        POSTGRES_IMAGE: ${{ inputs.postgres-image }}
       run: |
         set -euo pipefail
 
         command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+        command -v docker >/dev/null || { echo "::error::docker is required for Prisma migration CI."; exit 1; }
         workspace="$(realpath "$GITHUB_WORKSPACE")"
         components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
         jq -e 'type == "array" and length > 0' <<<"$components" >/dev/null || {
@@ -37,6 +43,44 @@ runs:
           esac
         }
 
+        cleanup_container() {
+          local container="$1"
+          docker rm -f "$container" >/dev/null 2>&1 || true
+        }
+
+        start_postgres() {
+          local container="$1"
+          local port=""
+
+          docker run -d --rm \
+            --name "$container" \
+            -e POSTGRES_USER=prisma \
+            -e POSTGRES_PASSWORD=prisma \
+            -e POSTGRES_DB=prisma \
+            -p 127.0.0.1::5432 \
+            "$POSTGRES_IMAGE" >/dev/null
+
+          for _ in {1..60}; do
+            if docker exec "$container" pg_isready -U prisma -d prisma >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          if ! docker exec "$container" pg_isready -U prisma -d prisma >/dev/null 2>&1; then
+            docker logs "$container" >&2 || true
+            echo "::error::PostgreSQL did not become ready for Prisma migration CI." >&2
+            return 1
+          fi
+
+          port="$(docker port "$container" 5432/tcp | awk -F: 'NR == 1 { print $NF }')"
+          if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to resolve the temporary PostgreSQL port." >&2
+            return 1
+          fi
+          printf '%s' "$port"
+        }
+
         while IFS= read -r component_json; do
           name="$(jq -r '.name // empty' <<<"$component_json")"
           path="$(jq -r '.path // empty' <<<"$component_json")"
@@ -55,6 +99,12 @@ runs:
           migrations="$(realpath -e "$component/$migrations_path" 2>/dev/null || true)"
           [[ -f "$schema" ]] || { echo "::error::Prisma schema '$schema_path' does not exist for '$name'."; exit 1; }
           [[ -d "$migrations" ]] || { echo "::error::Prisma migrations directory '$migrations_path' does not exist for '$name'."; exit 1; }
+
+          expected_migrations="$(realpath -m "$(dirname "$schema")/migrations")"
+          if [[ "$migrations" != "$expected_migrations" ]]; then
+            echo "::error::Prisma migration_path for '$name' must resolve to the native migrations directory next to its schema."
+            exit 1
+          fi
 
           if ! (cd "$component" && node -e 'require.resolve("prisma/package.json")' >/dev/null 2>&1); then
             echo "::error::Prisma CLI must be installed as a local project dependency for '$name'."
@@ -77,5 +127,18 @@ runs:
             }
           done
 
-          echo "==> Prisma migration CI: $name (${#migration_dirs[@]} migrations)"
+          safe_name="$(tr -cs 'A-Za-z0-9_.-' '-' <<<"$name" | sed 's/^-*//; s/-*$//' | cut -c1-40)"
+          container="prisma-ci-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${safe_name}-${RANDOM}"
+          trap 'cleanup_container "$container"' EXIT
+
+          echo "==> Prisma migration CI: applying $name (${#migration_dirs[@]} migrations) to disposable PostgreSQL"
+          port="$(start_postgres "$container")" || exit 1
+          database_url="postgresql://prisma:prisma@127.0.0.1:${port}/prisma?sslmode=disable"
+          (
+            export DATABASE_URL="$database_url"
+            run_prisma "$manager" "$component" migrate deploy --schema "$schema"
+          )
+
+          cleanup_container "$container"
+          trap - EXIT
         done < <(jq -c '.[]' <<<"$components")

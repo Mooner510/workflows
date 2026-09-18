@@ -1,10 +1,14 @@
 name: Flyway migration CI
-description: Validate Flyway migration source conventions and plugin availability without connecting to a database.
+description: Validate Flyway migrations and apply them to an isolated disposable PostgreSQL instance.
 
 inputs:
   components:
     description: JSON array of affected Java/Kotlin components using Flyway.
     required: true
+  postgres-image:
+    description: PostgreSQL image used for disposable migration validation.
+    required: false
+    default: postgres:17-alpine
 
 runs:
   using: composite
@@ -13,15 +17,55 @@ runs:
       shell: bash
       env:
         COMPONENTS_JSON: ${{ inputs.components }}
+        POSTGRES_IMAGE: ${{ inputs.postgres-image }}
       run: |
         set -euo pipefail
 
         command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+        command -v docker >/dev/null || { echo "::error::docker is required for Flyway migration CI."; exit 1; }
         workspace="$(realpath "$GITHUB_WORKSPACE")"
         components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
         jq -e 'type == "array" and length > 0' <<<"$components" >/dev/null || {
           echo "::error::components must be a non-empty JSON array."
           exit 1
+        }
+
+        cleanup_container() {
+          local container="$1"
+          docker rm -f "$container" >/dev/null 2>&1 || true
+        }
+
+        start_postgres() {
+          local container="$1"
+          local port=""
+
+          docker run -d --rm \
+            --name "$container" \
+            -e POSTGRES_USER=flyway \
+            -e POSTGRES_PASSWORD=flyway \
+            -e POSTGRES_DB=flyway \
+            -p 127.0.0.1::5432 \
+            "$POSTGRES_IMAGE" >/dev/null
+
+          for _ in {1..60}; do
+            if docker exec "$container" pg_isready -U flyway -d flyway >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          if ! docker exec "$container" pg_isready -U flyway -d flyway >/dev/null 2>&1; then
+            docker logs "$container" >&2 || true
+            echo "::error::PostgreSQL did not become ready for Flyway migration CI." >&2
+            return 1
+          fi
+
+          port="$(docker port "$container" 5432/tcp | awk -F: 'NR == 1 { print $NF }')"
+          if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to resolve the temporary PostgreSQL port." >&2
+            return 1
+          fi
+          printf '%s' "$port"
         }
 
         while IFS= read -r component_json; do
@@ -83,5 +127,26 @@ runs:
               ;;
           esac
 
-          echo "==> Flyway migration CI: $name (${#files[@]} SQL migrations)"
+          safe_name="$(tr -cs 'A-Za-z0-9_.-' '-' <<<"$name" | sed 's/^-*//; s/-*$//' | cut -c1-40)"
+          container="flyway-ci-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${safe_name}-${RANDOM}"
+          trap 'cleanup_container "$container"' EXIT
+
+          echo "==> Flyway migration CI: applying $name (${#files[@]} SQL migrations) to disposable PostgreSQL"
+          port="$(start_postgres "$container")" || exit 1
+          export FLYWAY_URL="jdbc:postgresql://127.0.0.1:${port}/flyway"
+          export FLYWAY_USER=flyway
+          export FLYWAY_PASSWORD=flyway
+          export FLYWAY_LOCATIONS="filesystem:$migrations"
+
+          case "$build_tool" in
+            gradle)
+              (cd "$component" && ./gradlew --no-daemon flywayMigrate)
+              ;;
+            maven)
+              (cd "$component" && ./mvnw -B -ntp flyway:migrate)
+              ;;
+          esac
+
+          cleanup_container "$container"
+          trap - EXIT
         done < <(jq -c '.[]' <<<"$components")

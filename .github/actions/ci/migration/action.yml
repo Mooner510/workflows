@@ -27,9 +27,9 @@ runs:
         invalid="$(jq -r '.[] | (.migration_engine // "none") | select(. != "none" and . != "goose" and . != "prisma" and . != "flyway")' <<<"$components" | head -n1)"
         [[ -z "$invalid" ]] || { echo "::error::Unsupported migration engine '$invalid'."; exit 1; }
 
-        goose="$(jq -c '[.[] | select((.migration_engine // "none") == "goose")]' <<<"$components")"
-        prisma="$(jq -c '[.[] | select((.migration_engine // "none") == "prisma")]' <<<"$components")"
-        flyway="$(jq -c '[.[] | select((.migration_engine // "none") == "flyway")]' <<<"$components")"
+        goose="$(jq -c '[.[] | select((.migration_engine // "none") == "goose" and (.migration_changed // true))]' <<<"$components")"
+        prisma="$(jq -c '[.[] | select((.migration_engine // "none") == "prisma" and (.migration_changed // true))]' <<<"$components")"
+        flyway="$(jq -c '[.[] | select((.migration_engine // "none") == "flyway" and (.migration_changed // true))]' <<<"$components")"
 
         {
           echo "goose=$goose"

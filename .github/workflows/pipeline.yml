@@ -226,11 +226,67 @@ jobs:
             [[ -s "$changed_file_list" ]] && sed 's/^/  - /' "$changed_file_list" || echo "  (none)"
           fi
 
+          repo_relative_path() {
+            local input="$1"
+            local resolved
+            resolved="$(realpath -m "$GITHUB_WORKSPACE/$input")"
+            if [[ "$resolved" == "$workspace" ]]; then
+              printf '.'
+            elif [[ "$resolved" == "$workspace/"* ]]; then
+              printf '%s' "${resolved#"$workspace"/}"
+            else
+              echo "::error::Path '$input' resolves outside the repository." >&2
+              return 1
+            fi
+          }
+
           selected='[]'
           for ((i = 0; i < count; i++)); do
             component="$(jq -c ".[$i]" <<<"$components")"
             name="$(jq -r '.name' <<<"$component")"
+            path="$(jq -r '.path' <<<"$component")"
             affected="$force_all"
+            migration_changed=false
+            migration_engine="$(jq -r '.migration_engine // "none"' <<<"$component")"
+
+            if [[ "$migration_engine" != "none" ]]; then
+              if [[ "$force_all" == "true" ]]; then
+                migration_changed=true
+              else
+                case "$migration_engine" in
+                  goose)
+                    migration_path="$(jq -r '.migration_path // "db/migrations"' <<<"$component")"
+                    migration_schema=""
+                    ;;
+                  prisma)
+                    migration_path="$(jq -r '.migration_path // "prisma/migrations"' <<<"$component")"
+                    migration_schema="$(jq -r '.migration_schema // "prisma/schema.prisma"' <<<"$component")"
+                    ;;
+                  flyway)
+                    migration_path="$(jq -r '.migration_path // "src/main/resources/db/migration"' <<<"$component")"
+                    migration_schema=""
+                    ;;
+                esac
+
+                migration_root="$(repo_relative_path "$path/$migration_path")" || exit 1
+                migration_schema_path=""
+                if [[ -n "$migration_schema" ]]; then
+                  migration_schema_path="$(repo_relative_path "$path/$migration_schema")" || exit 1
+                fi
+
+                while IFS= read -r changed; do
+                  if [[ "$changed" == "$migration_root" ]] || [[ "$changed" == "$migration_root/"* ]] ||                      { [[ -n "$migration_schema_path" ]] && [[ "$changed" == "$migration_schema_path" ]]; }; then
+                    migration_changed=true
+                    break
+                  fi
+                done <"$changed_file_list"
+              fi
+            fi
+
+            if [[ "$migration_changed" == "true" ]]; then
+              affected=true
+              echo "Migration affected: $name"
+            fi
 
             if [[ "$affected" != "true" ]]; then
               while IFS= read -r changed; do
@@ -250,6 +306,7 @@ jobs:
             fi
 
             if [[ "$affected" == "true" ]]; then
+              component="$(jq -c --argjson migration_changed "$migration_changed" '.migration_changed = $migration_changed' <<<"$component")"
               selected="$(jq -c --argjson component "$component" '. + [$component]' <<<"$selected")"
               echo "Affected: $name ($(jq -r '.path' <<<"$component"))"
             fi
