@@ -2,15 +2,21 @@ name: Caddy reverse proxy
 description: Register or update one Caddy reverse-proxy site and reload Caddy safely.
 
 inputs:
+  operation:
+    description: apply or remove.
+    required: false
+    default: apply
   service-name:
     description: Stable service identifier used for the generated site filename.
     required: true
   domain:
-    description: Public hostname handled by Caddy.
-    required: true
+    description: Public hostname handled by Caddy. Required for apply.
+    required: false
+    default: ''
   upstream:
-    description: Reverse proxy upstream, for example 127.0.0.1:40100.
-    required: true
+    description: Reverse proxy upstream, for example 127.0.0.1:40100. Required for apply.
+    required: false
+    default: ''
   caddyfile:
     description: Main Caddyfile which imports the sites directory.
     required: false
@@ -26,6 +32,7 @@ runs:
     - name: Register Caddy site
       shell: bash
       env:
+        OPERATION: ${{ inputs.operation }}
         SERVICE_NAME: ${{ inputs.service-name }}
         DOMAIN: ${{ inputs.domain }}
         UPSTREAM: ${{ inputs.upstream }}
@@ -34,9 +41,12 @@ runs:
       run: |
         set -euo pipefail
         command -v caddy >/dev/null || { echo "::error::caddy CLI is required on the deployment runner."; exit 1; }
+        case "$OPERATION" in apply|remove) ;; *) echo "::error::Caddy operation must be apply or remove."; exit 1 ;; esac
         [[ "$SERVICE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid service-name '$SERVICE_NAME'."; exit 1; }
-        [[ "$DOMAIN" =~ ^[A-Za-z0-9*.-]+$ ]] || { echo "::error::Invalid Caddy domain '$DOMAIN'."; exit 1; }
-        [[ "$UPSTREAM" =~ ^[A-Za-z0-9._:-]+$ ]] || { echo "::error::Invalid Caddy upstream '$UPSTREAM'."; exit 1; }
+        if [[ "$OPERATION" == "apply" ]]; then
+          [[ "$DOMAIN" =~ ^[A-Za-z0-9*.-]+$ ]] || { echo "::error::Invalid Caddy domain '$DOMAIN'."; exit 1; }
+          [[ "$UPSTREAM" =~ ^[A-Za-z0-9._:-]+$ ]] || { echo "::error::Invalid Caddy upstream '$UPSTREAM'."; exit 1; }
+        fi
         [[ -f "$CADDYFILE" ]] || { echo "::error::Main Caddyfile '$CADDYFILE' does not exist."; exit 1; }
         mkdir -p "$SITES_DIRECTORY"
 
@@ -48,13 +58,17 @@ runs:
           had_previous=true
         fi
 
-        tmp="$(mktemp "$SITES_DIRECTORY/.${SERVICE_NAME}.XXXXXX")"
-        {
-          printf '%s {\n' "$DOMAIN"
-          printf '  reverse_proxy %s\n' "$UPSTREAM"
-          printf '}\n'
-        } >"$tmp"
-        mv "$tmp" "$site"
+        if [[ "$OPERATION" == "apply" ]]; then
+          tmp="$(mktemp "$SITES_DIRECTORY/.${SERVICE_NAME}.XXXXXX")"
+          {
+            printf '%s {\n' "$DOMAIN"
+            printf '  reverse_proxy %s\n' "$UPSTREAM"
+            printf '}\n'
+          } >"$tmp"
+          mv "$tmp" "$site"
+        else
+          rm -f "$site"
+        fi
 
         restore() {
           if [[ "$had_previous" == "true" ]]; then cp "$backup" "$site"; else rm -f "$site"; fi
@@ -72,3 +86,6 @@ runs:
           exit 1
         fi
         rm -f "$backup"
+        if [[ "$OPERATION" == "remove" ]]; then
+          echo "Removed Caddy route for $SERVICE_NAME"
+        fi
