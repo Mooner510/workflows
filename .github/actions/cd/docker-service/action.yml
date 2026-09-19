@@ -109,6 +109,10 @@ inputs:
     description: Drizzle Kit config path relative to migration-working-directory.
     required: false
     default: drizzle.config.ts
+  migration-package:
+    description: Go package for migration-engine=go-command.
+    required: false
+    default: './cmd/migrate'
   migration-dialect:
     description: Goose database dialect.
     required: false
@@ -205,6 +209,7 @@ runs:
         MIGRATION_WORKING_DIRECTORY: ${{ inputs.migration-working-directory }}
         MIGRATION_PATH: ${{ inputs.migration-path }}
         MIGRATION_CONFIG: ${{ inputs.migration-config }}
+        MIGRATION_PACKAGE: ${{ inputs.migration-package }}
         MIGRATION_PACKAGE_MANAGER: ${{ inputs.migration-package-manager }}
         MIGRATION_BUILD_TOOL: ${{ inputs.migration-build-tool }}
         DOMAIN_INPUT: ${{ inputs.domain }}
@@ -214,7 +219,7 @@ runs:
         HOST_ENV_KEYS_JSON: ${{ steps.runtime_env.outputs.env-keys-json }}
       run: |
         set -euo pipefail
-        case "$MIGRATION_ENGINE" in none|goose|prisma|drizzle|flyway) ;; *) echo "::error::migration-engine must be none, goose, prisma, drizzle, or flyway."; exit 1 ;; esac
+        case "$MIGRATION_ENGINE" in none|goose|go-command|prisma|drizzle|flyway) ;; *) echo "::error::migration-engine must be none, goose, go-command, prisma, drizzle, or flyway."; exit 1 ;; esac
         [[ "$HEALTH_PATH" == /* ]] || { echo "::error::health-path must start with '/'."; exit 1; }
 
         domain="$DOMAIN_INPUT"
@@ -226,7 +231,7 @@ runs:
         }
 
         case "$MIGRATION_ENGINE" in
-          goose|prisma|drizzle)
+          goose|go-command|prisma|drizzle)
             [[ -n "${DATABASE_URL:-}" ]] || {
               echo "::error::DATABASE_URL is required for migration but was not provided by GitHub Environment secrets or /opt/stacks/projects/${{ steps.identity.outputs.project }}/db.env."
               exit 1
@@ -267,7 +272,7 @@ runs:
         [[ -n "$migration_working_directory" ]] || migration_working_directory="$WORKING_DIRECTORY"
         migration_path="$MIGRATION_PATH"
         case "$MIGRATION_ENGINE" in
-          goose) [[ -n "$migration_path" ]] || migration_path="db/migrations" ;;
+          goose|go-command) [[ -n "$migration_path" ]] || migration_path="db/migrations" ;;
           prisma)
             [[ -n "$migration_path" ]] || migration_path="prisma/schema.prisma"
             case "$MIGRATION_PACKAGE_MANAGER" in npm|pnpm|yarn|bun) ;; *) echo "::error::Prisma migration requires migration-package-manager."; exit 1 ;; esac
@@ -377,6 +382,13 @@ runs:
         dialect: ${{ inputs.migration-dialect }}
         goose-version: ${{ inputs.goose-version }}
         default-version: ${{ inputs.goose-default-version }}
+
+    - name: Apply Go command migrations
+      if: inputs.migration-engine == 'go-command'
+      uses: $/.github/actions/cd/migration/go-command
+      with:
+        working-directory: ${{ steps.contract.outputs.migration_working_directory }}
+        package: ${{ inputs.migration-package }}
 
     - name: Apply Prisma migrations
       if: inputs.migration-engine == 'prisma'
