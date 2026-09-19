@@ -1,5 +1,5 @@
 name: Resolve database credentials
-description: Resolve production database credentials from the dedicated production host by default, with caller-provided GitHub credentials kept only as an explicit compatibility mode.
+description: Resolve production runtime database credentials plus host-loopback migration credentials from the dedicated production host.
 
 inputs:
   project:
@@ -144,18 +144,24 @@ runs:
         }
 
         declare -a resolved=()
+        encoded_password="$(urlencode "${values[DB_PASSWORD]}")"
 
         if [[ "$needs_database_url" == "true" && -z "${DATABASE_URL:-}" ]]; then
-          encoded_password="$(urlencode "${values[DB_PASSWORD]}")"
           database_url="postgresql://${values[DB_USER]}:${encoded_password}@${values[DB_HOST]}:${values[DB_PORT]}/${values[DB_NAME]}"
           write_env DATABASE_URL "$database_url"
           resolved+=("DATABASE_URL")
-          echo "Resolved DATABASE_URL from $db_env for project '$PROJECT'."
+          echo "Resolved runtime DATABASE_URL from $db_env for project '$PROJECT'."
+        fi
+
+        if [[ "$MIGRATION_ENGINE" == "goose" || "$MIGRATION_ENGINE" == "prisma" || "$MIGRATION_ENGINE" == "drizzle" ]]; then
+          migration_database_url="postgresql://${values[DB_USER]}:${encoded_password}@127.0.0.1:${values[DB_PORT]}/${values[DB_NAME]}"
+          write_env MIGRATION_DATABASE_URL "$migration_database_url"
+          echo "Resolved host-loopback migration DATABASE_URL from $db_env for project '$PROJECT'."
         fi
 
         if [[ "$needs_flyway" == "true" ]]; then
           if [[ -z "${FLYWAY_URL:-}" ]]; then
-            write_env FLYWAY_URL "jdbc:postgresql://${values[DB_HOST]}:${values[DB_PORT]}/${values[DB_NAME]}"
+            write_env FLYWAY_URL "jdbc:postgresql://127.0.0.1:${values[DB_PORT]}/${values[DB_NAME]}"
             resolved+=("FLYWAY_URL")
           fi
           if [[ -z "${FLYWAY_USER:-}" ]]; then
