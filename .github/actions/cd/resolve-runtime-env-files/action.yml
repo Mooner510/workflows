@@ -23,9 +23,6 @@ outputs:
   deploy-domain:
     description: DEPLOY_DOMAIN resolved from the canonical service deploy.env.
     value: ${{ steps.resolve.outputs.deploy_domain }}
-  deploy-host-port:
-    description: DEPLOY_HOST_PORT resolved from the canonical service deploy.env.
-    value: ${{ steps.resolve.outputs.deploy_host_port }}
 
 runs:
   using: composite
@@ -110,7 +107,6 @@ runs:
         resolved="$(jq -c 'unique' <<<"$resolved")"
         keys='[]'
         deploy_domain=""
-        deploy_host_port=""
 
         while IFS= read -r path; do
           while IFS= read -r line || [[ -n "$line" ]]; do
@@ -128,7 +124,6 @@ runs:
             if [[ "$path" == "$canonical_env" ]]; then
               case "$key" in
                 DEPLOY_DOMAIN) deploy_domain="$(normalize_value "$value")" ;;
-                DEPLOY_HOST_PORT) deploy_host_port="$(normalize_value "$value")" ;;
               esac
             fi
           done <"$path"
@@ -139,5 +134,4 @@ runs:
           echo "env_files_json=$resolved"
           echo "env_keys_json=$keys"
           echo "deploy_domain=$deploy_domain"
-          echo "deploy_host_port=$deploy_host_port"
         } >>"$GITHUB_OUTPUT"
