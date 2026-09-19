@@ -91,7 +91,7 @@ inputs:
     required: false
     default: '20'
   migration-engine:
-    description: none, goose, prisma, or flyway.
+    description: none, goose, prisma, drizzle, or flyway.
     required: false
     default: none
   migration-working-directory:
@@ -99,7 +99,7 @@ inputs:
     required: false
     default: ''
   migration-path:
-    description: Engine-specific migration directory or Prisma schema path. Empty uses the engine convention.
+    description: Engine-specific migration directory, Prisma schema path, or Drizzle migrations directory. Empty uses the engine convention.
     required: false
     default: ''
   migration-dialect:
@@ -115,7 +115,7 @@ inputs:
     required: false
     default: v3.28.0
   migration-package-manager:
-    description: Prisma package manager (npm, pnpm, yarn, or bun).
+    description: Prisma/Drizzle package manager (npm, pnpm, yarn, or bun).
     required: false
     default: ''
   migration-build-tool:
@@ -127,7 +127,7 @@ inputs:
     required: false
     default: stable
   node-version:
-    description: Node.js version used by Prisma migration.
+    description: Node.js version used by Prisma/Drizzle migration.
     required: false
     default: '24'
   java-version:
@@ -190,11 +190,11 @@ runs:
         ENV_NAMES_JSON: ${{ inputs.env-names-json }}
       run: |
         set -euo pipefail
-        case "$MIGRATION_ENGINE" in none|goose|prisma|flyway) ;; *) echo "::error::migration-engine must be none, goose, prisma, or flyway."; exit 1 ;; esac
+        case "$MIGRATION_ENGINE" in none|goose|prisma|drizzle|flyway) ;; *) echo "::error::migration-engine must be none, goose, prisma, drizzle, or flyway."; exit 1 ;; esac
         [[ "$HEALTH_PATH" == /* ]] || { echo "::error::health-path must start with '/'."; exit 1; }
 
         case "$MIGRATION_ENGINE" in
-          goose|prisma)
+          goose|prisma|drizzle)
             [[ -n "${DATABASE_URL:-}" ]] || {
               echo "::error::DATABASE_URL is required for migration but was not provided by GitHub Environment secrets or /opt/stacks/projects/${{ inputs.project }}/db.env."
               exit 1
@@ -231,6 +231,10 @@ runs:
           prisma)
             [[ -n "$migration_path" ]] || migration_path="prisma/schema.prisma"
             case "$MIGRATION_PACKAGE_MANAGER" in npm|pnpm|yarn|bun) ;; *) echo "::error::Prisma migration requires migration-package-manager."; exit 1 ;; esac
+            ;;
+          drizzle)
+            [[ -n "$migration_path" ]] || migration_path="drizzle"
+            case "$MIGRATION_PACKAGE_MANAGER" in npm|pnpm|yarn|bun) ;; *) echo "::error::Drizzle migration requires migration-package-manager."; exit 1 ;; esac
             ;;
           flyway)
             [[ -n "$migration_path" ]] || migration_path="src/main/resources/db/migration"
@@ -293,6 +297,16 @@ runs:
       with:
         working-directory: ${{ steps.contract.outputs.migration_working_directory }}
         schema: ${{ steps.contract.outputs.migration_path }}
+        node-version: ${{ inputs.node-version }}
+        package-manager: ${{ inputs.migration-package-manager }}
+
+    - name: Apply Drizzle migrations
+      if: inputs.migration-engine == 'drizzle'
+      uses: $/.github/actions/cd/migration/drizzle
+      with:
+        working-directory: ${{ steps.contract.outputs.migration_working_directory }}
+        migrations-path: ${{ steps.contract.outputs.migration_path }}
+        config: drizzle.config.ts
         node-version: ${{ inputs.node-version }}
         package-manager: ${{ inputs.migration-package-manager }}
 
