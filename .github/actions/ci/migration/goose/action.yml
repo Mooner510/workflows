@@ -158,13 +158,15 @@ runs:
             "$POSTGRES_IMAGE" >/dev/null
 
           for _ in {1..60}; do
-            if docker exec "$container" pg_isready -U goose -d goose >/dev/null 2>&1; then
+            if docker exec -e PGPASSWORD=goose "$container" \
+              psql -h 127.0.0.1 -U goose -d goose -tAc 'SELECT 1' 2>/dev/null | grep -qx '1'; then
               break
             fi
             sleep 1
           done
 
-          if ! docker exec "$container" pg_isready -U goose -d goose >/dev/null 2>&1; then
+          if ! docker exec -e PGPASSWORD=goose "$container" \
+            psql -h 127.0.0.1 -U goose -d goose -tAc 'SELECT 1' 2>/dev/null | grep -qx '1'; then
             docker logs "$container" >&2 || true
             echo "::error::PostgreSQL did not become ready for Goose migration CI." >&2
             return 1
