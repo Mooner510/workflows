@@ -291,6 +291,16 @@ runs:
         url: http://127.0.0.1:${{ steps.restore.outputs['host-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
+    - name: Restore original Caddy route
+      if: failure() && steps.restore_health.outcome == 'success'
+      uses: $/.github/actions/cd/caddy
+      with:
+        service-name: ${{ inputs.service-name }}
+        domain: ${{ steps.contract.outputs.domain }}
+        upstream: 127.0.0.1:${{ steps.restore.outputs['host-port'] }}
+        caddyfile: ${{ inputs.caddyfile }}
+        sites-directory: ${{ inputs.caddy-sites-directory }}
+
     - name: Restore original deployment state
       if: failure() && steps.restore_health.outcome == 'success'
       uses: $/.github/actions/cd/state
