@@ -1,0 +1,57 @@
+name: Go PostgreSQL integration CI
+description: Run opt-in Go application integration tests against isolated disposable PostgreSQL instances.
+
+inputs:
+  components:
+    description: JSON array of affected Go components.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Run PostgreSQL integration tests
+      shell: bash
+      env:
+        COMPONENTS_JSON: ${{ inputs.components }}
+      run: |
+        set -euo pipefail
+        command -v docker >/dev/null || { echo "::error::Docker is required."; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
+
+        while IFS= read -r component; do
+          enabled="$(jq -r '.postgres_test // false' <<<"$component")"
+          [[ "$enabled" == "true" ]] || continue
+          name="$(jq -r '.name' <<<"$component")"
+          path="$(jq -r '.path' <<<"$component")"
+          db_env="$(jq -r '.postgres_database_env // "TEST_DATABASE_URL"' <<<"$component")"
+          image="$(jq -r '.postgres_image // "postgres:17-alpine"' <<<"$component")"
+          args="$(jq -c '.postgres_test_args // ["./..."]' <<<"$component")"
+          extra="$(jq -c '.postgres_test_env // {}' <<<"$component")"
+
+          [[ "$db_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "::error::Invalid postgres_database_env for $name."; exit 1; }
+          jq -e 'type=="array" and all(.[]; type=="string")' <<<"$args" >/dev/null || { echo "::error::postgres_test_args must be string array."; exit 1; }
+          jq -e 'type=="object" and all(to_entries[]; (.key|test("^[A-Za-z_][A-Za-z0-9_]*$")) and (.value|type=="string"))' <<<"$extra" >/dev/null || { echo "::error::postgres_test_env must be string map."; exit 1; }
+
+          container="pgtest-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${name//[^A-Za-z0-9_.-]/-}"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' RETURN
+          docker run -d --name "$container" -e POSTGRES_USER=ci -e POSTGRES_PASSWORD=ci -e POSTGRES_DB=ci -p 127.0.0.1::5432 "$image" >/dev/null
+          port="$(docker port "$container" 5432/tcp | head -n1 | sed -E 's/^127\.0\.0\.1:([0-9]+)$/\1/')"
+          [[ "$port" =~ ^[0-9]+$ ]] || { docker logs "$container" >&2 || true; exit 1; }
+
+          ready=false
+          for _ in {1..60}; do
+            if docker exec -e PGPASSWORD=ci "$container" psql -h 127.0.0.1 -U ci -d ci -tAc 'SELECT 1' 2>/dev/null | grep -qx 1; then ready=true; break; fi
+            sleep 1
+          done
+          [[ "$ready" == true ]] || { docker logs "$container" >&2 || true; echo "::error::PostgreSQL did not become ready for $name integration test."; exit 1; }
+
+          root="$(realpath -e "$GITHUB_WORKSPACE/$path")"
+          mapfile -t test_args < <(jq -r '.[]' <<<"$args")
+          declare -a env_args=(env "$db_env=postgres://ci:ci@127.0.0.1:$port/ci?sslmode=disable")
+          while IFS= read -r item; do env_args+=("$item"); done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' <<<"$extra")
+          echo "==> Go PostgreSQL integration: $name"
+          (cd "$root" && "${env_args[@]}" go test "${test_args[@]}")
+
+          docker rm -f "$container" >/dev/null
+          trap - RETURN
+        done < <(jq -c '.[]' <<<"$COMPONENTS_JSON")
