@@ -23,6 +23,7 @@
 │  └─ migration/{goose,prisma,drizzle,flyway}/
 └─ cd/
    ├─ guard/
+   ├─ docker-service-production/
    ├─ docker-service/
    ├─ docker-service-rollback/
    ├─ docker/{build,deploy,health}/
@@ -42,7 +43,7 @@ Personal repository는 Gharp, Organization repository는 Organization scoped sel
 
 ## CI
 
-Project는 `.github/workflows/ci.yml`에서 중앙 `pipeline.yml`을 호출합니다.
+Project는 `.github/workflows/ci.yml`에서 중앙 `pipeline.yml`을 호출합니다. Node package manager는 lockfile에서, Go version은 가장 가까운 `go.mod`의 `toolchain` 또는 `go` directive에서 자동 감지하므로 특별한 이유가 없으면 caller가 중복 지정하지 않습니다. CI concurrency도 shared pipeline이 소유합니다.
 
 ```yaml
 jobs:
@@ -149,11 +150,13 @@ Trivy misconfiguration
 
 ## CD
 
-API/Web Docker service의 기본 entrypoint:
+API/Web Docker service의 canonical caller entrypoint:
 
 ```text
-.github/actions/cd/docker-service
+.github/actions/cd/docker-service-production
 ```
+
+이 action이 caller repository의 default branch, release/manual checkout, deploy/rollback 선택, 공통 runtime hardening을 해석한 뒤 내부적으로 `cd/docker-service` 또는 `cd/docker-service-rollback`을 호출합니다.
 
 Project identity는 caller가 지정하지 않습니다. 중앙 CD가 `github.repository`의 repository name을 그대로 사용합니다.
 
@@ -235,7 +238,7 @@ GitHub Environment는 approval/protection boundary 용도로 유지할 수 있�
 
 공용 reverse proxy는 `shared-caddy` container + `caddy-shared` network를 사용합니다. Generic HTTP service는 project network와 `caddy-shared`에 함께 연결되며, generated site는 `/opt/stacks/shared/caddy/sites/<service>.caddy`에 기록됩니다. `shared-caddy`는 host `sites`를 `/etc/caddy/sites:ro`로 mount하고 main Caddyfile에서 `import /etc/caddy/sites/*.caddy` 해야 합니다.
 
-공통 Docker runtime hardening이 필요한 service는 caller input으로 다음을 사용할 수 있습니다.
+Canonical production entrypoint는 generic HTTP service에 다음 hardening을 기본 적용합니다.
 
 ```text
 init
@@ -244,19 +247,22 @@ cap-drop-json
 stop-timeout
 ```
 
-예: `init: true`, `security-opts-json: '["no-new-privileges:true"]'`, `cap-drop-json: '["ALL"]'`.
+`init=true`, `security-opts-json=["no-new-privileges:true"]`, `cap-drop-json=["ALL"]`, `stop-timeout=20`. 특수 service가 실제로 필요할 때만 caller에서 override합니다.
 
-Project workflow에는 가능한 한 다음만 남깁니다.
+Project workflow에는 GitHub가 caller repository에서만 올바르게 소유할 수 있는 job boundary와 진짜 service-specific 값만 남깁니다.
 
 ```text
 trigger
+permissions
 concurrency
 environment
-permissions
-checkout
-secrets / environment variables
-central action inputs
+runs-on
+service working-directory/name/port
+non-default health or migration path
+central production action call
 ```
+
+Checkout, default production branch resolution, deploy/rollback branching, project identity, runtime config/db.env resolution, Docker hardening, migration, health, Caddy, state/history는 중앙 action이 소유합니다.
 
 같은 service의 deploy와 manual rollback은 **동일한 concurrency group**을 사용해야 합니다. 중앙 composite action 자체는 job-level `concurrency`를 선언할 수 없으므로 caller가 직렬화를 소유합니다.
 
