@@ -20,13 +20,13 @@
 │  ├─ java-kotlin/
 │  │  ├─ build-tools/{gradle,maven}/
 │  │  └─ profiles/{android,spring-boot}/
-│  └─ migration/{goose,prisma,flyway}/
+│  └─ migration/{goose,prisma,drizzle,flyway}/
 └─ cd/
    ├─ guard/
    ├─ docker-service/
    ├─ docker-service-rollback/
    ├─ docker/{build,deploy,health}/
-   ├─ migration/{goose,prisma,flyway}/
+   ├─ migration/{goose,prisma,drizzle,flyway}/
    ├─ caddy/
    ├─ state/
    └─ android/release/
@@ -70,15 +70,33 @@ Node        -> locked install / lint / type / test / build
 Java/Kotlin -> Gradle or Maven + optional Android/Spring Boot profile
 ```
 
-Migration CI는 언어 CI와 분리되어 상위 pipeline에서 한 번만 실행합니다. 일반 코드만 변경된 경우에는 실행하지 않고, 해당 component의 `migration_path`가 변경된 경우에만 실행합니다. Prisma는 `migration_schema` 변경도 migration 변경으로 취급합니다. `force_all`이거나 신뢰할 수 있는 diff 기준이 없는 경우에는 안전하게 전체 migration을 검증합니다.
+Migration CI는 언어 CI와 분리되어 상위 pipeline에서 한 번만 실행합니다. 일반 코드만 변경된 경우에는 실행하지 않고, 해당 component의 `migration_path`가 변경된 경우에만 실행합니다. Prisma는 `migration_schema`, Drizzle은 `migration_config` 변경도 migration 변경으로 취급합니다. `force_all`이거나 신뢰할 수 있는 diff 기준이 없는 경우에는 안전하게 전체 migration을 검증합니다.
 
-세 engine 모두 component별 disposable `postgres:17-alpine`을 동적 loopback port로 시작하고, clean PostgreSQL에 전체 migration history를 실제 적용한 뒤 즉시 제거합니다.
+네 engine 모두 component별 disposable `postgres:17-alpine`을 동적 loopback port로 시작하고, clean PostgreSQL에 전체 migration history를 실제 적용한 뒤 즉시 제거합니다.
 
 ```text
-Goose  -> goose validate + goose up
-Prisma -> prisma validate + prisma migrate deploy
-Flyway -> source/plugin validation + flyway migrate
+Goose   -> goose validate + goose up
+Prisma  -> prisma validate + prisma migrate deploy
+Drizzle -> drizzle-kit check + drizzle-kit migrate
+Flyway  -> source/plugin validation + flyway migrate
 ```
+
+### Drizzle Kit migration CI/CD
+
+Node/TypeScript service가 Drizzle ORM schema를 source of truth로 사용할 때 `migration_engine: drizzle`을 사용할 수 있습니다.
+
+```json
+{
+  "name": "api",
+  "type": "node",
+  "path": "services/api",
+  "migration_engine": "drizzle",
+  "migration_path": "drizzle",
+  "migration_config": "drizzle.config.ts"
+}
+```
+
+CI는 `drizzle-kit check` 후 disposable PostgreSQL에 `drizzle-kit migrate`를 실제 적용합니다. CD는 같은 project-local `drizzle-kit`과 lockfile을 사용해 production DB에 pending migration을 적용합니다. Production CD에서 `drizzle-kit push`는 사용하지 않습니다.
 
 ### Goose SQL migration CI
 
@@ -116,7 +134,7 @@ Goose 버전 우선순위:
 
 Goose CLI는 언어 runtime에 의존하지 않도록 공식 Linux binary를 사용하고 release checksum을 검증한 뒤 runner tool cache에 저장합니다. CD도 같은 resolution 정책을 사용합니다.
 
-Prisma는 Node component, Flyway는 Java/Kotlin component에서 사용합니다. Prisma의 `migration_path`는 schema 파일 옆의 native `migrations` directory를 가리켜야 합니다.
+Prisma와 Drizzle은 Node component, Flyway는 Java/Kotlin component에서 사용합니다. Prisma의 `migration_path`는 schema 파일 옆의 native `migrations` directory를 가리켜야 합니다. Drizzle은 project-local `drizzle-kit`, version-controlled SQL migration, `migration_config`를 사용합니다.
 
 CI의 PostgreSQL은 migration 검증 전용 disposable instance이며 production DB/credential을 사용하지 않습니다. CI에서는 production image를 `docker build`하지 않습니다.
 
@@ -271,9 +289,10 @@ Canonical storage:
 DB가 있는 service는 deploy마다 migrator를 호출합니다.
 
 ```text
-Goose  -> DATABASE_URL
-Prisma -> DATABASE_URL
-Flyway -> FLYWAY_URL (+ optional user/password)
+Goose   -> DATABASE_URL
+Prisma  -> DATABASE_URL
+Drizzle -> DATABASE_URL
+Flyway  -> FLYWAY_URL (+ optional user/password)
 ```
 
 이미 적용된 migration은 각 engine의 migration history가 no-op 처리합니다. Git diff로 migration 실행 여부를 결정하지 않습니다.
