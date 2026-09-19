@@ -102,6 +102,10 @@ inputs:
     description: Engine-specific migration directory, Prisma schema path, or Drizzle migrations directory. Empty uses the engine convention.
     required: false
     default: ''
+  migration-config:
+    description: Drizzle Kit config path relative to migration-working-directory.
+    required: false
+    default: drizzle.config.ts
   migration-dialect:
     description: Goose database dialect.
     required: false
@@ -183,6 +187,7 @@ runs:
         MIGRATION_ENGINE: ${{ inputs.migration-engine }}
         MIGRATION_WORKING_DIRECTORY: ${{ inputs.migration-working-directory }}
         MIGRATION_PATH: ${{ inputs.migration-path }}
+        MIGRATION_CONFIG: ${{ inputs.migration-config }}
         MIGRATION_PACKAGE_MANAGER: ${{ inputs.migration-package-manager }}
         MIGRATION_BUILD_TOOL: ${{ inputs.migration-build-tool }}
         HOST_PORT: ${{ inputs.host-port }}
@@ -234,6 +239,14 @@ runs:
             ;;
           drizzle)
             [[ -n "$migration_path" ]] || migration_path="drizzle"
+            [[ -n "$MIGRATION_CONFIG" && "$MIGRATION_CONFIG" != /* && "$MIGRATION_CONFIG" != *$'\n'* && "$MIGRATION_CONFIG" != *$'\r'* ]] || {
+              echo "::error::Drizzle migration-config must be a repository-relative path."
+              exit 1
+            }
+            if [[ "$MIGRATION_CONFIG" == ".." || "$MIGRATION_CONFIG" == ../* || "$MIGRATION_CONFIG" == */../* || "$MIGRATION_CONFIG" == */.. ]]; then
+              echo "::error::Drizzle migration-config must not contain '..' path traversal."
+              exit 1
+            fi
             case "$MIGRATION_PACKAGE_MANAGER" in npm|pnpm|yarn|bun) ;; *) echo "::error::Drizzle migration requires migration-package-manager."; exit 1 ;; esac
             ;;
           flyway)
@@ -245,6 +258,7 @@ runs:
         {
           echo "migration_working_directory=$migration_working_directory"
           echo "migration_path=$migration_path"
+          echo "migration_config=$MIGRATION_CONFIG"
           echo "health_url=http://127.0.0.1:$HOST_PORT$HEALTH_PATH"
           echo "caddy_upstream=127.0.0.1:$HOST_PORT"
         } >>"$GITHUB_OUTPUT"
@@ -306,7 +320,7 @@ runs:
       with:
         working-directory: ${{ steps.contract.outputs.migration_working_directory }}
         migrations-path: ${{ steps.contract.outputs.migration_path }}
-        config: drizzle.config.ts
+        config: ${{ steps.contract.outputs.migration_config }}
         node-version: ${{ inputs.node-version }}
         package-manager: ${{ inputs.migration-package-manager }}
 
