@@ -171,9 +171,10 @@ Guard
 → read previous known-good state
 → Docker build
 → migration when configured
-→ Docker simple replace + automatic loopback host port
-→ resolved port HTTP health
-→ Caddy upstream update + validate/reload
+→ Docker simple replace + automatic loopback health port
+→ attach service to caddy-shared
+→ resolved host port HTTP health
+→ shared-caddy route update + validate/reload
 → state/history record
 ```
 
@@ -213,7 +214,7 @@ APP_ENV=production
 SESSION_SECRET=...
 ```
 
-`DEPLOY_DOMAIN`은 중앙 CD가 Caddy route에 사용합니다. Generic HTTP service의 loopback host port는 Docker가 자동 할당하고 중앙 CD가 실제 할당값을 조회해 health check와 Caddy upstream에 사용합니다. 사용자가 host port를 지정하거나 관리하지 않습니다.
+`DEPLOY_DOMAIN`은 중앙 CD가 Caddy route에 사용합니다. Generic HTTP service의 loopback host port는 Docker가 자동 할당하며 runner의 health check에만 사용합니다. Caddy는 공용 `caddy-shared` Docker network에서 `<service-name>:<container-port>`로 service에 연결합니다. 사용자가 host port를 지정하거나 관리하지 않습니다.
 
 서비스별 deploy.env/secret/deploy.env는 더 이상 canonical 경로가 아닙니다. 프로젝트당 루트 `deploy.env` 하나를 모든 generic HTTP service가 공유하고, `db.env`만 DB lifecycle/credential 분리를 위해 별도로 유지합니다.
 
@@ -231,6 +232,8 @@ Docker image build에는 production credential을 전달하지 않습니다.
 GitHub Environment는 approval/protection boundary 용도로 유지할 수 있지만 canonical service 설정 저장소로 사용하지 않습니다. 기존 GitHub Secret 기반 deployment가 필요한 repository만 compatibility mode로 `db-credential-source: github`와 caller env를 사용할 수 있습니다.
 
 추가 `env-files-json`은 repository-relative 파일만 허용하며, canonical project root `deploy.env`는 중앙 action이 자동으로 추가합니다.
+
+공용 reverse proxy는 `shared-caddy` container + `caddy-shared` network를 사용합니다. Generic HTTP service는 project network와 `caddy-shared`에 함께 연결되며, generated site는 `/opt/stacks/shared/caddy/sites/<service>.caddy`에 기록됩니다. `shared-caddy`는 host `sites`를 `/etc/caddy/sites:ro`로 mount하고 main Caddyfile에서 `import /etc/caddy/sites/*.caddy` 해야 합니다.
 
 공통 Docker runtime hardening이 필요한 service는 caller input으로 다음을 사용할 수 있습니다.
 
