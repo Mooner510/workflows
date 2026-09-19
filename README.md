@@ -171,9 +171,9 @@ Guard
 → read previous known-good state
 → Docker build
 → migration when configured
-→ Docker simple replace
-→ HTTP health
-→ Caddy validate/reload
+→ Docker simple replace + automatic loopback host port
+→ resolved port HTTP health
+→ Caddy upstream update + validate/reload
 → state/history record
 ```
 
@@ -210,12 +210,11 @@ Canonical production service configuration은 production host의 **단일 `deplo
 
 ```env
 DEPLOY_DOMAIN=api.example.com
-DEPLOY_HOST_PORT=40100
 APP_ENV=production
 SESSION_SECRET=...
 ```
 
-`DEPLOY_DOMAIN`과 `DEPLOY_HOST_PORT`는 중앙 CD가 Caddy/host bind 설정으로 읽고, 나머지 값과 함께 Docker `--env-file`로 runtime에 주입합니다. GitHub Environment Variables에 같은 값을 중복 저장할 필요가 없습니다.
+`DEPLOY_DOMAIN`은 중앙 CD가 Caddy route에 사용합니다. Generic HTTP service의 loopback host port는 Docker가 자동 할당하고 중앙 CD가 실제 할당값을 조회해 health check와 Caddy upstream에 사용합니다. 사용자가 host port를 지정하거나 관리하지 않습니다.
 
 기존 `<service>/secret/deploy.env`는 호환용으로 계속 읽지만 새 구성에서는 사용하지 않습니다. `db.env`만 DB lifecycle/credential 분리를 위해 별도로 유지합니다.
 
@@ -232,7 +231,7 @@ Docker image build에는 production credential을 전달하지 않습니다.
 
 GitHub Environment는 approval/protection boundary 용도로 유지할 수 있지만 canonical service 설정 저장소로 사용하지 않습니다. 기존 GitHub Secret 기반 deployment가 필요한 repository만 compatibility mode로 `db-credential-source: github`와 caller env를 사용할 수 있습니다.
 
-추가 `env-files-json`은 repository-relative 파일만 허용하며, canonical host `deploy.env` / `secret/deploy.env`는 중앙 action이 자동으로 추가합니다.
+추가 `env-files-json`은 repository-relative 파일만 허용하며, canonical host `deploy.env`는 중앙 action이 자동으로 추가합니다. 기존 `secret/deploy.env`는 compatibility-only입니다.
 
 공통 Docker runtime hardening이 필요한 service는 caller input으로 다음을 사용할 수 있습니다.
 
