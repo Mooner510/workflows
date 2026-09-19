@@ -429,7 +429,7 @@ runs:
     - name: Verify new service
       uses: $/.github/actions/cd/docker/health
       with:
-        url: http://127.0.0.1:${{ steps.deploy.outputs['host-port'] }}${{ inputs.health-path }}
+        url: http://127.0.0.1:${{ steps.deploy.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
     - name: Register Caddy route
@@ -438,7 +438,7 @@ runs:
       with:
         service-name: ${{ inputs.service-name }}
         domain: ${{ steps.contract.outputs.domain }}
-        upstream: 127.0.0.1:${{ steps.deploy.outputs['host-port'] }}
+        upstream: 127.0.0.1:${{ steps.deploy.outputs['published-port'] }}
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
 
@@ -478,7 +478,7 @@ runs:
       if: failure() && steps.rollback.outcome == 'success'
       uses: $/.github/actions/cd/docker/health
       with:
-        url: http://127.0.0.1:${{ steps.rollback.outputs['host-port'] }}${{ inputs.health-path }}
+        url: http://127.0.0.1:${{ steps.rollback.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
     - name: Restore Caddy route after rollback
@@ -488,7 +488,7 @@ runs:
       with:
         service-name: ${{ inputs.service-name }}
         domain: ${{ steps.contract.outputs.domain }}
-        upstream: 127.0.0.1:${{ steps.rollback.outputs['host-port'] }}
+        upstream: 127.0.0.1:${{ steps.rollback.outputs['published-port'] }}
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
 
