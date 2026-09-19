@@ -1,5 +1,5 @@
 name: Caddy reverse proxy
-description: Register or update one Caddy reverse-proxy site and reload Caddy safely.
+description: Register or update one reverse-proxy site for the shared Docker Caddy container and reload it safely.
 
 inputs:
   operation:
@@ -14,7 +14,7 @@ inputs:
     required: false
     default: ''
   upstream:
-    description: Reverse proxy upstream, for example 127.0.0.1:40100. Required for apply.
+    description: Reverse proxy upstream reachable on caddy-shared, for example api:8080. Required for apply.
     required: false
     default: ''
   caddyfile:
@@ -40,7 +40,13 @@ runs:
         SITES_DIRECTORY: ${{ inputs.sites-directory }}
       run: |
         set -euo pipefail
-        command -v caddy >/dev/null || { echo "::error::caddy CLI is required on the deployment runner."; exit 1; }
+        command -v docker >/dev/null || { echo "::error::Docker is required on the deployment runner."; exit 1; }
+        docker container inspect shared-caddy >/dev/null 2>&1 || { echo "::error::shared-caddy container does not exist."; exit 1; }
+        [[ "$(docker inspect shared-caddy --format '{{.State.Running}}')" == "true" ]] || { echo "::error::shared-caddy container is not running."; exit 1; }
+        docker exec shared-caddy test -d /etc/caddy/sites || {
+          echo "::error::shared-caddy must mount the host sites directory at /etc/caddy/sites."
+          exit 1
+        }
         case "$OPERATION" in apply|remove) ;; *) echo "::error::Caddy operation must be apply or remove."; exit 1 ;; esac
         [[ "$SERVICE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid service-name '$SERVICE_NAME'."; exit 1; }
         if [[ "$OPERATION" == "apply" ]]; then
@@ -74,14 +80,14 @@ runs:
           if [[ "$had_previous" == "true" ]]; then cp "$backup" "$site"; else rm -f "$site"; fi
         }
 
-        if ! caddy validate --config "$CADDYFILE" --adapter caddyfile; then
+        if ! docker exec shared-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
           restore
           echo "::error::Caddy validation failed; previous site configuration was restored."
           exit 1
         fi
-        if ! caddy reload --config "$CADDYFILE" --adapter caddyfile; then
+        if ! docker exec shared-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile; then
           restore
-          caddy reload --config "$CADDYFILE" --adapter caddyfile >/dev/null 2>&1 || true
+          docker exec shared-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 || true
           echo "::error::Caddy reload failed; previous site configuration was restored."
           exit 1
         fi
