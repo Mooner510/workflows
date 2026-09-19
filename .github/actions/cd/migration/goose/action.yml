@@ -40,6 +40,9 @@ runs:
       run: |
         set -euo pipefail
 
+        if [[ -n "${MIGRATION_DATABASE_URL:-}" ]]; then
+          export DATABASE_URL="$MIGRATION_DATABASE_URL"
+        fi
         [[ -n "${DATABASE_URL:-}" ]] || { echo "::error::DATABASE_URL must be provided to the deployment step."; exit 1; }
         [[ "$DIALECT" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::Invalid Goose dialect '$DIALECT'."; exit 1; }
         command -v curl >/dev/null || { echo "::error::curl is required on the deployment runner."; exit 1; }
