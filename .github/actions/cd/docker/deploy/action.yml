@@ -182,7 +182,7 @@ runs:
           else
             publish="127.0.0.1::$CONTAINER_PORT"
           fi
-          local -a args=(docker run -d --name "$CONTAINER_NAME" --restart "$RESTART_POLICY" -p "$publish")
+          local -a args=(docker create --name "$CONTAINER_NAME" --restart "$RESTART_POLICY" -p "$publish")
           args+=("${env_args[@]}")
           args+=("${volume_args[@]}")
           args+=("${hardening_args[@]}")
@@ -194,6 +194,7 @@ runs:
           if [[ -z "$NETWORK" || "$NETWORK" != "$PROXY_NETWORK" ]]; then
             docker network connect "$PROXY_NETWORK" "$CONTAINER_NAME"
           fi
+          docker start "$CONTAINER_NAME" >/dev/null
         }
 
         resolve_host_port() {
