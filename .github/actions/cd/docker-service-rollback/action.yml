@@ -24,7 +24,7 @@ inputs:
     required: false
     default: host
   env-files-json:
-    description: Optional JSON array of additional repository-relative Docker env files. Canonical host deploy.env is discovered automatically; secret/deploy.env is compatibility-only.
+    description: Optional JSON array of additional repository-relative Docker env files. Canonical project host deploy.env is discovered automatically.
     required: false
     default: '[]'
   env-names-json:
@@ -119,7 +119,6 @@ runs:
       uses: $/.github/actions/cd/resolve-runtime-env-files
       with:
         project: ${{ steps.identity.outputs.project }}
-        service: ${{ inputs.service-name }}
         env-files-json: ${{ inputs.env-files-json }}
 
     - name: Resolve rollback contract
@@ -161,7 +160,7 @@ runs:
             if jq -e --arg name "$name" 'index($name) != null' <<<"$HOST_ENV_KEYS_JSON" >/dev/null; then
               continue
             fi
-            echo "::error::Environment variable '$name' is neither set on the caller rollback step nor present in the canonical host deploy.env or compatibility secret/deploy.env files."
+            echo "::error::Environment variable '$name' is neither set on the caller rollback step nor present in the canonical project deploy.env."
             exit 1
           done < <(jq -r '.[]' <<<"$ENV_NAMES_JSON")
         fi
