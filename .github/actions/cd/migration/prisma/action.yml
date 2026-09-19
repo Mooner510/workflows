@@ -94,6 +94,9 @@ runs:
         PACKAGE_MANAGER: ${{ inputs.package-manager }}
       run: |
         set -euo pipefail
+        if [[ -n "${MIGRATION_DATABASE_URL:-}" ]]; then
+          export DATABASE_URL="$MIGRATION_DATABASE_URL"
+        fi
         [[ -n "${DATABASE_URL:-}" ]] || { echo "::error::DATABASE_URL must be provided to the deployment step."; exit 1; }
         workspace="$(realpath "$GITHUB_WORKSPACE")"
         [[ -n "$WORKING_DIRECTORY" && "$WORKING_DIRECTORY" != /* && "$WORKING_DIRECTORY" != *$'\n'* && "$WORKING_DIRECTORY" != *$'\r'* ]] || {

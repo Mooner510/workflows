@@ -304,7 +304,7 @@ Canonical storage:
 
 ## Migration CD
 
-DB가 있는 service는 deploy마다 migrator를 호출합니다.
+DB가 있는 service는 deploy마다 migrator를 호출합니다. Production migrator는 self-hosted runner host에서 실행되므로 shared PostgreSQL의 loopback publish(`127.0.0.1:<DB_PORT>`)를 사용하고, application container runtime은 `db.env`의 Docker DNS host를 그대로 사용합니다.
 
 ```text
 Goose   -> DATABASE_URL
