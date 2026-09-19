@@ -18,6 +18,9 @@ runs:
         command -v docker >/dev/null || { echo "::error::Docker is required."; exit 1; }
         command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
 
+        cleanup=()
+        trap 'for c in "${cleanup[@]:-}"; do docker rm -f "$c" >/dev/null 2>&1 || true; done' EXIT
+
         while IFS= read -r component; do
           enabled="$(jq -r '.postgres_test // false' <<<"$component")"
           [[ "$enabled" == "true" ]] || continue
@@ -33,7 +36,7 @@ runs:
           jq -e 'type=="object" and all(to_entries[]; (.key|test("^[A-Za-z_][A-Za-z0-9_]*$")) and (.value|type=="string"))' <<<"$extra" >/dev/null || { echo "::error::postgres_test_env must be string map."; exit 1; }
 
           container="pgtest-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${name//[^A-Za-z0-9_.-]/-}"
-          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' RETURN
+          cleanup+=("$container")
           docker run -d --name "$container" -e POSTGRES_USER=ci -e POSTGRES_PASSWORD=ci -e POSTGRES_DB=ci -p 127.0.0.1::5432 "$image" >/dev/null
           port="$(docker port "$container" 5432/tcp | head -n1 | sed -E 's/^127\.0\.0\.1:([0-9]+)$/\1/')"
           [[ "$port" =~ ^[0-9]+$ ]] || { docker logs "$container" >&2 || true; exit 1; }
@@ -53,5 +56,7 @@ runs:
           (cd "$root" && "${env_args[@]}" go test "${test_args[@]}")
 
           docker rm -f "$container" >/dev/null
-          trap - RETURN
+          next=()
+          for item in "${cleanup[@]}"; do [[ "$item" == "$container" ]] || next+=("$item"); done
+          cleanup=("${next[@]}")
         done < <(jq -c '.[]' <<<"$COMPONENTS_JSON")
