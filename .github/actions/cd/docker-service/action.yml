@@ -34,6 +34,10 @@ inputs:
     description: JSON array of caller environment variable names exposed to Docker BuildKit as build secrets.
     required: false
     default: '[]'
+  build-arg-env-names-json:
+    description: Non-secret variable names loaded from resolved runtime env files and forwarded to Docker as build args.
+    required: false
+    default: '[]'
   container-port:
     description: Internal application port.
     required: true
@@ -189,6 +193,7 @@ runs:
       uses: $/.github/actions/cd/resolve-runtime-env-files
       with:
         project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
         env-files-json: ${{ inputs.env-files-json }}
 
     - name: Resolve deployment contract
@@ -310,6 +315,39 @@ runs:
         merged="$(jq -cn --argjson caller "$caller_set" --argjson resolved "$RESOLVED_ENV_NAMES_JSON" '$caller + $resolved | unique')"
         echo "env_names_json=$merged" >>"$GITHUB_OUTPUT"
 
+    - name: Resolve Docker build arguments from runtime config
+      id: build_args
+      shell: bash
+      env:
+        STATIC_ARGS: ${{ inputs.build-args-json }}
+        ENV_NAMES: ${{ inputs.build-arg-env-names-json }}
+        ENV_FILES: ${{ steps.runtime_env.outputs.env-files-json }}
+      run: |
+        set -euo pipefail
+        command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
+        jq -e 'type == "array" and all(.[]; type == "string")' <<<"$STATIC_ARGS" >/dev/null || { echo "::error::build-args-json must be a string array."; exit 1; }
+        jq -e 'type == "array" and all(.[]; type == "string")' <<<"$ENV_NAMES" >/dev/null || { echo "::error::build-arg-env-names-json must be a string array."; exit 1; }
+        merged="$(jq -c '.' <<<"$STATIC_ARGS")"
+        while IFS= read -r name; do
+          [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "::error::Invalid build arg variable '$name'."; exit 1; }
+          found=false
+          value=""
+          while IFS= read -r env_file; do
+            line="$(grep -E "^[[:space:]]*$name=" "$env_file" | tail -n1 || true)"
+            if [[ -n "$line" ]]; then
+              value="${line#*=}"
+              value="$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              if (( ${#value} >= 2 )) && { [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] || [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; }; then
+                value="${value:1:${#value}-2}"
+              fi
+              found=true
+            fi
+          done < <(jq -r '.[]' <<<"$ENV_FILES")
+          [[ "$found" == "true" ]] || { echo "::error::Build arg '$name' is not present in resolved runtime config."; exit 1; }
+          merged="$(jq -c --arg item "$name=$value" '. + [$item]' <<<"$merged")"
+        done < <(jq -r '.[]' <<<"$ENV_NAMES")
+        echo "build_args_json=$merged" >>"$GITHUB_OUTPUT"
+
     - name: Read previous known-good deployment
       id: previous
       uses: $/.github/actions/cd/state
@@ -327,7 +365,7 @@ runs:
         dockerfile: ${{ inputs.dockerfile }}
         image-name: ${{ inputs.image-name }}
         target: ${{ inputs.target }}
-        build-args-json: ${{ inputs.build-args-json }}
+        build-args-json: ${{ steps.build_args.outputs.build_args_json }}
         secret-env-names-json: ${{ inputs.build-secret-env-names-json }}
 
     - name: Apply Goose migrations
@@ -377,7 +415,7 @@ runs:
         container-port: ${{ inputs.container-port }}
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
         env-names-json: ${{ steps.container_env.outputs.env_names_json }}
-        volumes-json: ${{ inputs.volumes-json }}
+        volumes-json: ${{ inputs.volumes-json != '[]' && inputs.volumes-json || steps.runtime_env.outputs.deploy-volumes-json }}
         network: ${{ steps.identity.outputs.network }}
         restart-policy: ${{ inputs.restart-policy }}
         init: ${{ inputs.init }}
@@ -463,7 +501,7 @@ runs:
         container-port: ${{ inputs.container-port }}
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
         env-names-json: ${{ steps.container_env.outputs.env_names_json }}
-        volumes-json: ${{ inputs.volumes-json }}
+        volumes-json: ${{ inputs.volumes-json != '[]' && inputs.volumes-json || steps.runtime_env.outputs.deploy-volumes-json }}
         network: ${{ steps.identity.outputs.network }}
         restart-policy: ${{ inputs.restart-policy }}
         init: ${{ inputs.init }}
