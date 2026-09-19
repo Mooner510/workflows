@@ -43,8 +43,17 @@ runs:
         command -v docker >/dev/null || { echo "::error::Docker is required on the deployment runner."; exit 1; }
         docker container inspect shared-caddy >/dev/null 2>&1 || { echo "::error::shared-caddy container does not exist."; exit 1; }
         [[ "$(docker inspect shared-caddy --format '{{.State.Running}}')" == "true" ]] || { echo "::error::shared-caddy container is not running."; exit 1; }
-        docker exec shared-caddy test -d /etc/caddy/sites || {
+        sites_mount="$(docker inspect shared-caddy --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy/sites"}}{{.Source}}{{end}}{{end}}')"
+        [[ -n "$sites_mount" ]] || {
           echo "::error::shared-caddy must mount the host sites directory at /etc/caddy/sites."
+          exit 1
+        }
+        docker network inspect caddy-shared >/dev/null 2>&1 || {
+          echo "::error::Shared proxy Docker network 'caddy-shared' does not exist."
+          exit 1
+        }
+        docker inspect shared-caddy --format '{{json .NetworkSettings.Networks}}' | grep -q '"caddy-shared"' || {
+          echo "::error::shared-caddy is not attached to the caddy-shared Docker network."
           exit 1
         }
         case "$OPERATION" in apply|remove) ;; *) echo "::error::Caddy operation must be apply or remove."; exit 1 ;; esac
