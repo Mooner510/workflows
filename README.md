@@ -250,10 +250,11 @@ SESSION_SECRET=...
 
 서비스별 deploy.env/secret/deploy.env는 더 이상 canonical 경로가 아닙니다. 프로젝트당 루트 `deploy.env` 하나를 모든 generic HTTP service가 공유하고, `db.env`만 DB lifecycle/credential 분리를 위해 별도로 유지합니다.
 
-DB credential source 기본값은 `host`입니다.
+DB credential source 기본값은 `host`입니다. Service-specific DB credential file이 있으면 중앙 resolver가 자동 우선하고 없으면 project DB로 fallback합니다.
 
 ```text
-/opt/stacks/projects/<repository-name>/db.env
+/opt/stacks/projects/<repository-name>/<service>/db.env
+→ fallback /opt/stacks/projects/<repository-name>/db.env
 → CD step에서 DATABASE_URL 생성
 → migration에 사용
 → docker run -e DATABASE_URL
