@@ -1,0 +1,191 @@
+name: Docker service production
+description: Canonical production entrypoint for one generic HTTP Docker service. Resolves checkout, branch, deploy/rollback, migration, runtime hardening, Caddy, and state through shared actions.
+
+inputs:
+  production-branch:
+    description: Production branch. Empty uses the caller repository default branch.
+    required: false
+    default: ''
+  working-directory:
+    description: Service root relative to the caller repository.
+    required: true
+  service-name:
+    description: Stable Docker container, state, and Caddy site name.
+    required: true
+  image-name:
+    description: Local Docker image repository name. Empty uses service-name.
+    required: false
+    default: ''
+  dockerfile:
+    description: Dockerfile relative to working-directory.
+    required: false
+    default: Dockerfile
+  target:
+    description: Optional Docker build target.
+    required: false
+    default: ''
+  container-port:
+    description: Internal application port.
+    required: true
+  health-path:
+    description: HTTP readiness path.
+    required: false
+    default: /health
+  migration-engine:
+    description: none, goose, prisma, drizzle, or flyway.
+    required: false
+    default: none
+  migration-working-directory:
+    description: Migration component path. Empty uses working-directory.
+    required: false
+    default: ''
+  migration-path:
+    description: Migration path. Empty uses the migration engine convention.
+    required: false
+    default: ''
+  migration-config:
+    description: Drizzle config path.
+    required: false
+    default: drizzle.config.ts
+  migration-package-manager:
+    description: Prisma/Drizzle package manager.
+    required: false
+    default: ''
+  migration-build-tool:
+    description: Flyway build tool.
+    required: false
+    default: gradle
+  goose-version:
+    description: Optional explicit Goose version.
+    required: false
+    default: ''
+  volumes-json:
+    description: Docker volume specifications.
+    required: false
+    default: '[]'
+  env-files-json:
+    description: Additional repository-relative env files.
+    required: false
+    default: '[]'
+  env-names-json:
+    description: Caller environment variable names explicitly forwarded to the container.
+    required: false
+    default: '[]'
+  init:
+    description: Run Docker init. Canonical default is enabled.
+    required: false
+    default: 'true'
+  security-opts-json:
+    description: Docker security options. Canonical generic-service default prevents privilege escalation.
+    required: false
+    default: '["no-new-privileges:true"]'
+  cap-drop-json:
+    description: Linux capabilities to drop. Canonical generic-service default drops all capabilities.
+    required: false
+    default: '["ALL"]'
+  stop-timeout:
+    description: Graceful stop timeout in seconds.
+    required: false
+    default: '20'
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve production operation
+      id: contract
+      shell: bash
+      env:
+        PRODUCTION_BRANCH_INPUT: ${{ inputs.production-branch }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        EVENT_NAME: ${{ github.event_name }}
+        EVENT_OPERATION: ${{ github.event.inputs.operation }}
+        RELEASE_TAG: ${{ github.event.release.tag_name }}
+        IMAGE_NAME_INPUT: ${{ inputs.image-name }}
+        SERVICE_NAME: ${{ inputs.service-name }}
+      run: |
+        set -euo pipefail
+
+        branch="$PRODUCTION_BRANCH_INPUT"
+        [[ -n "$branch" ]] || branch="$DEFAULT_BRANCH"
+        [[ -n "$branch" ]] || { echo "::error::Unable to resolve the caller repository default branch."; exit 1; }
+
+        case "$EVENT_NAME" in
+          release)
+            operation=deploy
+            checkout_ref="$RELEASE_TAG"
+            ;;
+          workflow_dispatch)
+            operation="${EVENT_OPERATION:-deploy}"
+            checkout_ref="$branch"
+            ;;
+          *)
+            echo "::error::Production Docker service supports only workflow_dispatch or release events."
+            exit 1
+            ;;
+        esac
+
+        case "$operation" in deploy|rollback) ;; *) echo "::error::operation must be deploy or rollback."; exit 1 ;; esac
+        if [[ "$EVENT_NAME" == "release" && "$operation" != "deploy" ]]; then
+          echo "::error::Release events can only deploy."
+          exit 1
+        fi
+
+        image_name="$IMAGE_NAME_INPUT"
+        [[ -n "$image_name" ]] || image_name="$SERVICE_NAME"
+
+        {
+          echo "production_branch=$branch"
+          echo "operation=$operation"
+          echo "checkout_ref=$checkout_ref"
+          echo "image_name=$image_name"
+        } >>"$GITHUB_OUTPUT"
+
+    - name: Checkout production revision
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+        ref: ${{ steps.contract.outputs.checkout_ref }}
+
+    - name: Deploy service
+      if: steps.contract.outputs.operation == 'deploy'
+      uses: $/.github/actions/cd/docker-service
+      with:
+        production-branch: ${{ steps.contract.outputs.production_branch }}
+        working-directory: ${{ inputs.working-directory }}
+        service-name: ${{ inputs.service-name }}
+        image-name: ${{ steps.contract.outputs.image_name }}
+        dockerfile: ${{ inputs.dockerfile }}
+        target: ${{ inputs.target }}
+        container-port: ${{ inputs.container-port }}
+        health-path: ${{ inputs.health-path }}
+        migration-engine: ${{ inputs.migration-engine }}
+        migration-working-directory: ${{ inputs.migration-working-directory }}
+        migration-path: ${{ inputs.migration-path }}
+        migration-config: ${{ inputs.migration-config }}
+        migration-package-manager: ${{ inputs.migration-package-manager }}
+        migration-build-tool: ${{ inputs.migration-build-tool }}
+        goose-version: ${{ inputs.goose-version }}
+        volumes-json: ${{ inputs.volumes-json }}
+        env-files-json: ${{ inputs.env-files-json }}
+        env-names-json: ${{ inputs.env-names-json }}
+        init: ${{ inputs.init }}
+        security-opts-json: ${{ inputs.security-opts-json }}
+        cap-drop-json: ${{ inputs.cap-drop-json }}
+        stop-timeout: ${{ inputs.stop-timeout }}
+
+    - name: Roll back service
+      if: steps.contract.outputs.operation == 'rollback'
+      uses: $/.github/actions/cd/docker-service-rollback
+      with:
+        production-branch: ${{ steps.contract.outputs.production_branch }}
+        service-name: ${{ inputs.service-name }}
+        container-port: ${{ inputs.container-port }}
+        health-path: ${{ inputs.health-path }}
+        volumes-json: ${{ inputs.volumes-json }}
+        env-files-json: ${{ inputs.env-files-json }}
+        env-names-json: ${{ inputs.env-names-json }}
+        init: ${{ inputs.init }}
+        security-opts-json: ${{ inputs.security-opts-json }}
+        cap-drop-json: ${{ inputs.cap-drop-json }}
+        stop-timeout: ${{ inputs.stop-timeout }}
