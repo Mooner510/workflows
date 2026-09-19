@@ -6,8 +6,9 @@ inputs:
     description: Branch whose history is allowed to reach production.
     required: true
   project:
-    description: Stable project identifier used for persistent deployment state.
-    required: true
+    description: Deprecated compatibility input. Ignored; the caller repository name is always the canonical project identifier.
+    required: false
+    default: ''
   service-name:
     description: Stable Docker container, state, and Caddy site name.
     required: true
@@ -21,7 +22,7 @@ inputs:
     description: Public hostname registered in Caddy.
     required: true
   db-credential-source:
-    description: host reads database credentials from /opt/stacks/projects/<project>/db.env. github is a compatibility mode for caller-provided credentials.
+    description: host reads database credentials from /opt/stacks/projects/<repository-name>/db.env. github is a compatibility mode for caller-provided credentials.
     required: false
     default: host
   env-files-json:
@@ -37,7 +38,7 @@ inputs:
     required: false
     default: '[]'
   network:
-    description: Optional Docker network name.
+    description: Optional Docker network override. Empty uses project-<repository-name>.
     required: false
     default: ''
   restart-policy:
@@ -100,11 +101,17 @@ runs:
       with:
         production-branch: ${{ inputs.production-branch }}
 
+    - name: Resolve repository deployment identity
+      id: identity
+      uses: $/.github/actions/cd/identity
+      with:
+        network: ${{ inputs.network }}
+
     - name: Resolve database credentials
       id: credentials
       uses: $/.github/actions/cd/resolve-db-credentials
       with:
-        project: ${{ inputs.project }}
+        project: ${{ steps.identity.outputs.project }}
         credential-source: ${{ inputs.db-credential-source }}
         migration-engine: none
         env-names-json: ${{ inputs.env-names-json }}
@@ -113,7 +120,7 @@ runs:
       id: runtime_env
       uses: $/.github/actions/cd/resolve-runtime-env-files
       with:
-        project: ${{ inputs.project }}
+        project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
         env-files-json: ${{ inputs.env-files-json }}
 
@@ -178,7 +185,7 @@ runs:
       uses: $/.github/actions/cd/state
       with:
         operation: read
-        project: ${{ inputs.project }}
+        project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
         root: ${{ inputs.state-root }}
 
@@ -187,7 +194,7 @@ runs:
       uses: $/.github/actions/cd/state
       with:
         operation: previous
-        project: ${{ inputs.project }}
+        project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
         root: ${{ inputs.state-root }}
 
@@ -214,7 +221,7 @@ runs:
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
         env-names-json: ${{ steps.container_env.outputs.env_names_json }}
         volumes-json: ${{ inputs.volumes-json }}
-        network: ${{ inputs.network }}
+        network: ${{ steps.identity.outputs.network }}
         restart-policy: ${{ inputs.restart-policy }}
         init: ${{ inputs.init }}
         security-opts-json: ${{ inputs.security-opts-json }}
@@ -244,7 +251,7 @@ runs:
       uses: $/.github/actions/cd/state
       with:
         operation: record
-        project: ${{ inputs.project }}
+        project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
         revision: ${{ steps.target.outputs.revision }}
         image: ${{ steps.target.outputs.image }}
@@ -264,7 +271,7 @@ runs:
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
         env-names-json: ${{ steps.container_env.outputs.env_names_json }}
         volumes-json: ${{ inputs.volumes-json }}
-        network: ${{ inputs.network }}
+        network: ${{ steps.identity.outputs.network }}
         restart-policy: ${{ inputs.restart-policy }}
         init: ${{ inputs.init }}
         security-opts-json: ${{ inputs.security-opts-json }}
@@ -285,7 +292,7 @@ runs:
       uses: $/.github/actions/cd/state
       with:
         operation: record
-        project: ${{ inputs.project }}
+        project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
         revision: ${{ steps.current.outputs.revision }}
         image: ${{ steps.current.outputs.image }}
