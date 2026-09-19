@@ -1,0 +1,51 @@
+name: Resolve repository deployment identity
+description: Derive the canonical project identity from the caller repository and resolve its Docker network.
+
+inputs:
+  network:
+    description: Optional Docker network override. Empty uses project-<repository-name>.
+    required: false
+    default: ''
+
+outputs:
+  project:
+    description: Canonical project identifier derived from the caller repository name.
+    value: ${{ steps.identity.outputs.project }}
+  network:
+    description: Resolved Docker network name.
+    value: ${{ steps.identity.outputs.network }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve repository identity
+      id: identity
+      shell: bash
+      env:
+        REPOSITORY: ${{ github.repository }}
+        NETWORK_INPUT: ${{ inputs.network }}
+      run: |
+        set -euo pipefail
+
+        [[ "$REPOSITORY" == */* ]] || {
+          echo "::error::github.repository must use owner/repository form."
+          exit 1
+        }
+
+        project="${REPOSITORY#*/}"
+        [[ "$project" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || {
+          echo "::error::Repository name '$project' cannot be used as the canonical project identifier."
+          exit 1
+        }
+
+        network="$NETWORK_INPUT"
+        [[ -n "$network" ]] || network="project-$project"
+        [[ "$network" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || {
+          echo "::error::Invalid Docker network '$network'."
+          exit 1
+        }
+
+        {
+          echo "project=$project"
+          echo "network=$network"
+        } >>"$GITHUB_OUTPUT"

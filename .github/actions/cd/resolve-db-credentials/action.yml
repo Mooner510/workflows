@@ -1,12 +1,12 @@
 name: Resolve database credentials
-description: Resolve production database credentials from the runner host by default, with caller-provided GitHub credentials kept only as an explicit compatibility mode.
+description: Resolve production database credentials from the dedicated production host by default, with caller-provided GitHub credentials kept only as an explicit compatibility mode.
 
 inputs:
   project:
-    description: Stable project identifier matching /opt/stacks/projects/<project>/db.env.
+    description: Stable project identifier matching /opt/stacks/projects/<repository-name>/db.env.
     required: true
   credential-source:
-    description: host reads /opt/stacks/projects/<project>/db.env and is the canonical production mode. auto keeps legacy caller-first fallback behavior. github requires caller-provided values and never reads host db.env.
+    description: host reads /opt/stacks/projects/<repository-name>/db.env and is the canonical production mode. auto keeps legacy caller-first fallback behavior. github requires caller-provided values and never reads host db.env.
     required: false
     default: host
   migration-engine:
@@ -53,7 +53,7 @@ runs:
         ;;
         esac
 
-        # github is compatibility-only; host is the canonical production source.
+        # host is a compatibility alias for auto.
         if [[ "$CREDENTIAL_SOURCE" == "github" ]]; then
           echo 'resolved_env_names_json=[]' >>"$GITHUB_OUTPUT"
           exit 0
@@ -85,8 +85,8 @@ runs:
           exit 0
         fi
 
-        [[ "$PROJECT" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
-          echo "::error::Invalid project identifier '$PROJECT'."
+        [[ "$PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || {
+          echo "::error::Invalid repository-derived project identifier '$PROJECT'."
           exit 1
         }
 
@@ -94,7 +94,7 @@ runs:
         [[ -f "$db_env" ]] || {
           if [[ "$CREDENTIAL_SOURCE" == "host" ]]; then
             echo "::error::Canonical host database credential file $db_env is not visible to this runner."
-            echo "::error::The active [self-hosted, linux] runner cannot see the canonical host DB credential path. Gharp and organization-scoped runners must expose the same production host path when they run CD. Verify with: sudo db info $PROJECT"
+            echo "::error::The active self-hosted runner must expose the production host filesystem. Verify with: sudo db info $PROJECT"
             exit 1
           fi
           if [[ "$needs_database_url" == "true" ]]; then

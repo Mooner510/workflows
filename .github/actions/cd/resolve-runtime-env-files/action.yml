@@ -3,10 +3,10 @@ description: Resolve canonical host-managed runtime env files for one production
 
 inputs:
   project:
-    description: Stable project identifier matching /opt/stacks/projects/<project>.
+    description: Repository-derived project identifier matching /opt/stacks/projects/<repository-name>.
     required: true
   service:
-    description: Stable service identifier matching /opt/stacks/projects/<project>/<service>.
+    description: Stable service identifier matching /opt/stacks/projects/<repository-name>/<service>.
     required: true
   env-files-json:
     description: Optional additional repository-relative env files. Absolute caller paths are not accepted.
@@ -15,7 +15,7 @@ inputs:
 
 outputs:
   env-files-json:
-    description: JSON array of absolute env-file paths passed to Docker runtime.
+    description: JSON array of resolved env-file paths passed to Docker runtime.
     value: ${{ steps.resolve.outputs.env_files_json }}
   env-keys-json:
     description: JSON array of variable names provided by the resolved env files. Values are never emitted.
@@ -35,8 +35,8 @@ runs:
         set -euo pipefail
         command -v jq >/dev/null || { echo "::error::jq is required on the production runner."; exit 1; }
 
-        [[ "$PROJECT" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
-          echo "::error::Invalid project identifier '$PROJECT'."
+        [[ "$PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || {
+          echo "::error::Invalid repository-derived project identifier '$PROJECT'."
           exit 1
         }
         [[ "$SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || {
@@ -50,7 +50,7 @@ runs:
 
         [[ -f /opt/stacks/shared/caddy/Caddyfile ]] || {
           echo "::error::Production host filesystem is not visible to this runner (/opt/stacks/shared/caddy/Caddyfile missing)."
-          echo "::error::This runner must have access to the production host filesystem. Gharp and organization-scoped runners both use [self-hosted, linux] and must expose the same host runtime paths when they run CD."
+          echo "::error::The active self-hosted runner must expose the production host filesystem required by CD."
           exit 1
         }
 
@@ -83,8 +83,7 @@ runs:
         keys='[]'
         while IFS= read -r path; do
           while IFS= read -r line || [[ -n "$line" ]]; do
-            line="${line//
-\r'/}"
+            line="${line//$'\r'/}"
             [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
             key="${line%%=*}"
             key="$(printf '%s' "$key" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
