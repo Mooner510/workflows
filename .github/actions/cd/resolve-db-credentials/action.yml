@@ -1,14 +1,14 @@
 name: Resolve database credentials
-description: Use caller-provided database env vars when present; otherwise resolve missing values from /opt/stacks/projects/<project>/db.env on trusted self-hosted runners.
+description: Resolve production database credentials from the dedicated production host by default, with caller-provided GitHub credentials kept only as an explicit compatibility mode.
 
 inputs:
   project:
     description: Stable project identifier matching /opt/stacks/projects/<project>/db.env.
     required: true
   credential-source:
-    description: auto uses caller-provided values first and falls back to host db.env for any missing database credential. github requires caller-provided values and never reads host db.env.
+    description: host reads /opt/stacks/projects/<project>/db.env and is the canonical production mode. auto keeps legacy caller-first fallback behavior. github requires caller-provided values and never reads host db.env.
     required: false
-    default: auto
+    default: host
   migration-engine:
     description: none, goose, prisma, drizzle, or flyway.
     required: false
@@ -71,11 +71,13 @@ runs:
           exit 0
         fi
 
-        if [[ "$needs_database_url" == "true" && -n "${DATABASE_URL:-}" ]]; then
-          needs_database_url=false
-        fi
-        if [[ "$needs_flyway" == "true" && -n "${FLYWAY_URL:-}" && -n "${FLYWAY_USER:-}" && -n "${FLYWAY_PASSWORD:-}" ]]; then
-          needs_flyway=false
+        if [[ "$CREDENTIAL_SOURCE" != "host" ]]; then
+          if [[ "$needs_database_url" == "true" && -n "${DATABASE_URL:-}" ]]; then
+            needs_database_url=false
+          fi
+          if [[ "$needs_flyway" == "true" && -n "${FLYWAY_URL:-}" && -n "${FLYWAY_USER:-}" && -n "${FLYWAY_PASSWORD:-}" ]]; then
+            needs_flyway=false
+          fi
         fi
 
         if [[ "$needs_database_url" == "false" && "$needs_flyway" == "false" ]]; then
@@ -90,12 +92,17 @@ runs:
 
         db_env="/opt/stacks/projects/$PROJECT/db.env"
         [[ -f "$db_env" ]] || {
+          if [[ "$CREDENTIAL_SOURCE" == "host" ]]; then
+            echo "::error::Canonical host database credential file $db_env is not visible to this runner."
+            echo "::error::Run production CD on a dedicated host-level runner labeled [self-hosted, linux, production]. Verify with: sudo db info $PROJECT"
+            exit 1
+          fi
           if [[ "$needs_database_url" == "true" ]]; then
-            echo "::error::DATABASE_URL is not set and $db_env does not exist. Provide GitHub Environment secret DATABASE_URL or create the project database with 'sudo db new $PROJECT'."
+            echo "::error::DATABASE_URL is not set and $db_env is unavailable."
             exit 1
           fi
           if [[ "$needs_flyway" == "true" ]]; then
-            echo "::error::Flyway credentials are not set and $db_env does not exist. Provide GitHub Environment Flyway secrets or create the project database with 'sudo db new $PROJECT'."
+            echo "::error::Flyway credentials are not set and $db_env is unavailable."
             exit 1
           fi
           echo 'resolved_env_names_json=[]' >>"$GITHUB_OUTPUT"

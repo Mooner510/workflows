@@ -43,11 +43,11 @@ inputs:
     description: Public hostname registered in Caddy.
     required: true
   db-credential-source:
-    description: auto uses caller-provided database env vars first and falls back to /opt/stacks/projects/<project>/db.env for any missing value. github requires caller-provided values only.
+    description: host reads database credentials from /opt/stacks/projects/<project>/db.env. github is a compatibility mode for caller-provided credentials.
     required: false
-    default: auto
+    default: host
   env-files-json:
-    description: JSON array of repository-relative Docker env-file paths for non-secret config only. Host stack paths such as db.env are not supported.
+    description: Optional JSON array of additional repository-relative Docker env files. Canonical host deploy.env and secret/deploy.env are discovered automatically on the production runner.
     required: false
     default: '[]'
   env-names-json:
@@ -179,6 +179,14 @@ runs:
         migration-engine: ${{ inputs.migration-engine }}
         env-names-json: ${{ inputs.env-names-json }}
 
+    - name: Resolve runtime environment files
+      id: runtime_env
+      uses: $/.github/actions/cd/resolve-runtime-env-files
+      with:
+        project: ${{ inputs.project }}
+        service: ${{ inputs.service-name }}
+        env-files-json: ${{ inputs.env-files-json }}
+
     - name: Resolve deployment contract
       id: contract
       shell: bash
@@ -193,6 +201,7 @@ runs:
         HOST_PORT: ${{ inputs.host-port }}
         HEALTH_PATH: ${{ inputs.health-path }}
         ENV_NAMES_JSON: ${{ inputs.env-names-json }}
+        HOST_ENV_KEYS_JSON: ${{ steps.runtime_env.outputs.env-keys-json }}
       run: |
         set -euo pipefail
         case "$MIGRATION_ENGINE" in none|goose|prisma|drizzle|flyway) ;; *) echo "::error::migration-engine must be none, goose, prisma, drizzle, or flyway."; exit 1 ;; esac
@@ -219,12 +228,20 @@ runs:
             echo "::error::env-names-json must be a JSON array of strings."
             exit 1
           }
+          jq -e 'type == "array" and all(.[]; type == "string")' <<<"$HOST_ENV_KEYS_JSON" >/dev/null || {
+            echo "::error::resolved host env keys must be a JSON array of strings."
+            exit 1
+          }
           while IFS= read -r name; do
             [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "::error::Invalid environment variable name '$name'."; exit 1; }
-            [[ -v "$name" ]] || {
-              echo "::error::Environment variable '$name' listed in env-names-json is not set on the caller deploy step. Provide it through GitHub Environment secrets or variables."
-              exit 1
-            }
+            if [[ -v "$name" ]]; then
+              continue
+            fi
+            if jq -e --arg name "$name" 'index($name) != null' <<<"$HOST_ENV_KEYS_JSON" >/dev/null; then
+              continue
+            fi
+            echo "::error::Environment variable '$name' is neither set on the caller deploy step nor present in the canonical host deploy.env/secret/deploy.env files."
+            exit 1
           done < <(jq -r '.[]' <<<"$ENV_NAMES_JSON")
         fi
 
@@ -272,7 +289,13 @@ runs:
       run: |
         set -euo pipefail
         command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
-        merged="$(jq -cn --argjson caller "$ENV_NAMES_JSON" --argjson resolved "$RESOLVED_ENV_NAMES_JSON" '$caller + $resolved | unique')"
+        caller_set='[]'
+        while IFS= read -r name; do
+          if [[ -v "$name" ]]; then
+            caller_set="$(jq -c --arg name "$name" '. + [$name]' <<<"$caller_set")"
+          fi
+        done < <(jq -r '.[]' <<<"$ENV_NAMES_JSON")
+        merged="$(jq -cn --argjson caller "$caller_set" --argjson resolved "$RESOLVED_ENV_NAMES_JSON" '$caller + $resolved | unique')"
         echo "env_names_json=$merged" >>"$GITHUB_OUTPUT"
 
     - name: Read previous known-good deployment
@@ -341,7 +364,7 @@ runs:
         image: ${{ steps.build.outputs['image-id'] }}
         container-port: ${{ inputs.container-port }}
         host-port: ${{ inputs.host-port }}
-        env-files-json: ${{ inputs.env-files-json }}
+        env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
         env-names-json: ${{ steps.container_env.outputs.env_names_json }}
         volumes-json: ${{ inputs.volumes-json }}
         network: ${{ inputs.network }}
@@ -428,7 +451,7 @@ runs:
         image: ${{ steps.rollback_source.outputs.image_id }}
         container-port: ${{ inputs.container-port }}
         host-port: ${{ inputs.host-port }}
-        env-files-json: ${{ inputs.env-files-json }}
+        env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
         env-names-json: ${{ steps.container_env.outputs.env_names_json }}
         volumes-json: ${{ inputs.volumes-json }}
         network: ${{ inputs.network }}
