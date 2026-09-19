@@ -1,0 +1,142 @@
+name: Drizzle migration
+description: Install the pinned Node package root and apply pending Drizzle Kit migrations.
+
+inputs:
+  working-directory:
+    description: Node service directory relative to the caller repository.
+    required: true
+  migrations-path:
+    description: Drizzle migrations directory relative to working-directory.
+    required: false
+    default: drizzle
+  config:
+    description: Drizzle Kit config relative to working-directory.
+    required: false
+    default: drizzle.config.ts
+  node-version:
+    description: Node.js version.
+    required: false
+    default: '24'
+  package-manager:
+    description: npm, pnpm, yarn, or bun.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare Drizzle component
+      id: component
+      shell: bash
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        PACKAGE_MANAGER: ${{ inputs.package-manager }}
+      run: |
+        set -euo pipefail
+        case "$PACKAGE_MANAGER" in npm|pnpm|yarn|bun) ;; *) echo "::error::Invalid Drizzle package manager '$PACKAGE_MANAGER'."; exit 1 ;; esac
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        [[ -n "$WORKING_DIRECTORY" && "$WORKING_DIRECTORY" != /* && "$WORKING_DIRECTORY" != *$'\n'* && "$WORKING_DIRECTORY" != *$'\r'* ]] || {
+          echo "::error::Drizzle working-directory must be a repository-relative path."
+          exit 1
+        }
+        resolved="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
+        if [[ -z "$resolved" ]] || { [[ "$resolved" != "$workspace" ]] && [[ "$resolved" != "$workspace/"* ]]; }; then
+          echo "::error::Drizzle working-directory must resolve inside the repository."
+          exit 1
+        fi
+        component="$(jq -cn --arg path "$WORKING_DIRECTORY" --arg manager "$PACKAGE_MANAGER" '[{name:"migration", path:$path, package_manager:$manager}]')"
+        echo "json=$component" >>"$GITHUB_OUTPUT"
+
+    - name: Prepare Node cache paths
+      shell: bash
+      run: |
+        set -euo pipefail
+        cache_root="${RUNNER_TOOL_CACHE:-$HOME/.cache/github-actions-tool-cache}"
+        mkdir -p "$cache_root/corepack" "$cache_root/bun/install-cache" "$cache_root/pnpm/store" "$cache_root/yarn/cache" "$cache_root/npm"
+        {
+          echo "COREPACK_HOME=$cache_root/corepack"
+          echo "BUN_INSTALL_CACHE_DIR=$cache_root/bun/install-cache"
+          echo "PNPM_STORE_DIR=$cache_root/pnpm/store"
+          echo "YARN_CACHE_FOLDER=$cache_root/yarn/cache"
+          echo "npm_config_cache=$cache_root/npm"
+        } >>"$GITHUB_ENV"
+
+    - name: Set up Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        package-manager-cache: false
+
+    - name: Install npm dependencies
+      if: inputs.package-manager == 'npm'
+      uses: $/.github/actions/ci/node/npm
+      with:
+        components: ${{ steps.component.outputs.json }}
+
+    - name: Install pnpm dependencies
+      if: inputs.package-manager == 'pnpm'
+      uses: $/.github/actions/ci/node/pnpm
+      with:
+        components: ${{ steps.component.outputs.json }}
+
+    - name: Install Yarn dependencies
+      if: inputs.package-manager == 'yarn'
+      uses: $/.github/actions/ci/node/yarn
+      with:
+        components: ${{ steps.component.outputs.json }}
+
+    - name: Install Bun dependencies
+      if: inputs.package-manager == 'bun'
+      uses: $/.github/actions/ci/node/bun
+      with:
+        components: ${{ steps.component.outputs.json }}
+
+    - name: Apply Drizzle migrations
+      shell: bash
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        MIGRATIONS_PATH: ${{ inputs.migrations-path }}
+        DRIZZLE_CONFIG: ${{ inputs.config }}
+        PACKAGE_MANAGER: ${{ inputs.package-manager }}
+      run: |
+        set -euo pipefail
+        [[ -n "${DATABASE_URL:-}" ]] || { echo "::error::DATABASE_URL must be provided to the deployment step."; exit 1; }
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
+        if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
+          echo "::error::Drizzle working-directory must resolve inside the repository."
+          exit 1
+        fi
+
+        for value in "$MIGRATIONS_PATH" "$DRIZZLE_CONFIG"; do
+          [[ -n "$value" && "$value" != /* && "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != ".." && "$value" != ../* && "$value" != */../* && "$value" != */.. ]] || {
+            echo "::error::Drizzle migration paths must be relative to working-directory."
+            exit 1
+          }
+        done
+
+        migrations="$(realpath -e "$component/$MIGRATIONS_PATH" 2>/dev/null || true)"
+        config="$(realpath -e "$component/$DRIZZLE_CONFIG" 2>/dev/null || true)"
+        if [[ -z "$migrations" || ! -d "$migrations" ]] || { [[ "$migrations" != "$component" ]] && [[ "$migrations" != "$component/"* ]]; }; then
+          echo "::error::Drizzle migrations directory '$MIGRATIONS_PATH' must resolve inside the component."
+          exit 1
+        fi
+        if [[ -z "$config" || ! -f "$config" ]] || { [[ "$config" != "$component" ]] && [[ "$config" != "$component/"* ]]; }; then
+          echo "::error::Drizzle config '$DRIZZLE_CONFIG' must resolve inside the component."
+          exit 1
+        fi
+        if ! find "$migrations" -type f -name '*.sql' -print -quit | grep -q .; then
+          echo "::error::No Drizzle SQL migration files found under '$MIGRATIONS_PATH'."
+          exit 1
+        fi
+        if ! (cd "$component" && node -e 'require.resolve("drizzle-kit/package.json")' >/dev/null 2>&1); then
+          echo "::error::drizzle-kit must be installed as a local project dependency."
+          exit 1
+        fi
+
+        echo "==> Drizzle: applying pending migrations"
+        case "$PACKAGE_MANAGER" in
+          npm)  (cd "$component" && npm exec --offline -- drizzle-kit migrate --config "$config") ;;
+          pnpm) (cd "$component" && pnpm exec drizzle-kit migrate --config "$config") ;;
+          yarn) (cd "$component" && yarn exec drizzle-kit migrate --config "$config") ;;
+          bun)  (cd "$component" && bunx --bun drizzle-kit migrate --config "$config") ;;
+        esac
