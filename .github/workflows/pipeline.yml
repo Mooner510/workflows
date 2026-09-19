@@ -184,6 +184,13 @@ jobs:
                 validate_relative_path "$migration_path" "Component '$name' migration_path"
                 validate_relative_path "$migration_schema" "Component '$name' migration_schema"
                 ;;
+              drizzle)
+                [[ "$type" == "node" ]] || { echo "::error::Drizzle migration requires a Node component ('$name')."; exit 1; }
+                migration_path="$(jq -r '.migration_path // "drizzle"' <<<"$component")"
+                migration_config="$(jq -r '.migration_config // "drizzle.config.ts"' <<<"$component")"
+                validate_relative_path "$migration_path" "Component '$name' migration_path"
+                validate_relative_path "$migration_config" "Component '$name' migration_config"
+                ;;
               flyway)
                 [[ "$type" == "java-kotlin" ]] || { echo "::error::Flyway migration requires a Java/Kotlin component ('$name')."; exit 1; }
                 migration_path="$(jq -r '.migration_path // "src/main/resources/db/migration"' <<<"$component")"
@@ -261,6 +268,10 @@ jobs:
                   prisma)
                     migration_path="$(jq -r '.migration_path // "prisma/migrations"' <<<"$component")"
                     migration_schema="$(jq -r '.migration_schema // "prisma/schema.prisma"' <<<"$component")"
+                    ;;
+                  drizzle)
+                    migration_path="$(jq -r '.migration_path // "drizzle"' <<<"$component")"
+                    migration_schema="$(jq -r '.migration_config // "drizzle.config.ts"' <<<"$component")"
                     ;;
                   flyway)
                     migration_path="$(jq -r '.migration_path // "src/main/resources/db/migration"' <<<"$component")"
