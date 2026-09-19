@@ -482,6 +482,7 @@ runs:
         attempts: ${{ inputs.health-attempts }}
 
     - name: Restore Caddy route after rollback
+      id: rollback_caddy
       if: failure() && steps.rollback_health.outcome == 'success'
       uses: $/.github/actions/cd/caddy
       with:
@@ -492,7 +493,7 @@ runs:
         sites-directory: ${{ inputs.caddy-sites-directory }}
 
     - name: Record successful rollback
-      if: failure() && steps.rollback_health.outcome == 'success' && steps.rollback_source.outputs.persistent == 'true'
+      if: failure() && steps.rollback_health.outcome == 'success' && steps.rollback_caddy.outcome == 'success' && steps.rollback_source.outputs.persistent == 'true'
       uses: $/.github/actions/cd/state
       with:
         operation: record
