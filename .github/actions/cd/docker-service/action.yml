@@ -38,11 +38,13 @@ inputs:
     description: Internal application port.
     required: true
   host-port:
-    description: Fixed loopback host port assigned to this service.
-    required: true
+    description: Optional compatibility override. Empty reads DEPLOY_HOST_PORT from canonical host deploy.env.
+    required: false
+    default: ''
   domain:
-    description: Public hostname registered in Caddy.
-    required: true
+    description: Optional compatibility override. Empty reads DEPLOY_DOMAIN from canonical host deploy.env.
+    required: false
+    default: ''
   db-credential-source:
     description: host reads database credentials from /opt/stacks/projects/<repository-name>/db.env. github is a compatibility mode for caller-provided credentials.
     required: false
@@ -205,7 +207,10 @@ runs:
         MIGRATION_CONFIG: ${{ inputs.migration-config }}
         MIGRATION_PACKAGE_MANAGER: ${{ inputs.migration-package-manager }}
         MIGRATION_BUILD_TOOL: ${{ inputs.migration-build-tool }}
-        HOST_PORT: ${{ inputs.host-port }}
+        HOST_PORT_INPUT: ${{ inputs.host-port }}
+        DOMAIN_INPUT: ${{ inputs.domain }}
+        DEPLOY_HOST_PORT: ${{ steps.runtime_env.outputs.deploy-host-port }}
+        DEPLOY_DOMAIN: ${{ steps.runtime_env.outputs.deploy-domain }}
         HEALTH_PATH: ${{ inputs.health-path }}
         ENV_NAMES_JSON: ${{ inputs.env-names-json }}
         HOST_ENV_KEYS_JSON: ${{ steps.runtime_env.outputs.env-keys-json }}
@@ -213,6 +218,20 @@ runs:
         set -euo pipefail
         case "$MIGRATION_ENGINE" in none|goose|prisma|drizzle|flyway) ;; *) echo "::error::migration-engine must be none, goose, prisma, drizzle, or flyway."; exit 1 ;; esac
         [[ "$HEALTH_PATH" == /* ]] || { echo "::error::health-path must start with '/'."; exit 1; }
+
+        host_port="$HOST_PORT_INPUT"
+        [[ -n "$host_port" ]] || host_port="$DEPLOY_HOST_PORT"
+        domain="$DOMAIN_INPUT"
+        [[ -n "$domain" ]] || domain="$DEPLOY_DOMAIN"
+
+        [[ "$host_port" =~ ^[0-9]+$ ]] && (( host_port >= 1 && host_port <= 65535 )) || {
+          echo "::error::DEPLOY_HOST_PORT must be an integer between 1 and 65535 in the canonical deploy.env."
+          exit 1
+        }
+        [[ "$domain" =~ ^[A-Za-z0-9*.-]+$ ]] || {
+          echo "::error::DEPLOY_DOMAIN is required in the canonical deploy.env and must be a valid hostname."
+          exit 1
+        }
 
         case "$MIGRATION_ENGINE" in
           goose|prisma|drizzle)
@@ -283,8 +302,10 @@ runs:
           echo "migration_working_directory=$migration_working_directory"
           echo "migration_path=$migration_path"
           echo "migration_config=$MIGRATION_CONFIG"
-          echo "health_url=http://127.0.0.1:$HOST_PORT$HEALTH_PATH"
-          echo "caddy_upstream=127.0.0.1:$HOST_PORT"
+          echo "host_port=$host_port"
+          echo "domain=$domain"
+          echo "health_url=http://127.0.0.1:$host_port$HEALTH_PATH"
+          echo "caddy_upstream=127.0.0.1:$host_port"
         } >>"$GITHUB_OUTPUT"
 
     - name: Merge container environment names
@@ -370,7 +391,7 @@ runs:
         container-name: ${{ inputs.service-name }}
         image: ${{ steps.build.outputs['image-id'] }}
         container-port: ${{ inputs.container-port }}
-        host-port: ${{ inputs.host-port }}
+        host-port: ${{ steps.contract.outputs.host_port }}
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
         env-names-json: ${{ steps.container_env.outputs.env_names_json }}
         volumes-json: ${{ inputs.volumes-json }}
@@ -432,7 +453,7 @@ runs:
       uses: $/.github/actions/cd/caddy
       with:
         service-name: ${{ inputs.service-name }}
-        domain: ${{ inputs.domain }}
+        domain: ${{ steps.contract.outputs.domain }}
         upstream: ${{ steps.contract.outputs.caddy_upstream }}
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
@@ -457,7 +478,7 @@ runs:
         container-name: ${{ inputs.service-name }}
         image: ${{ steps.rollback_source.outputs.image_id }}
         container-port: ${{ inputs.container-port }}
-        host-port: ${{ inputs.host-port }}
+        host-port: ${{ steps.contract.outputs.host_port }}
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
         env-names-json: ${{ steps.container_env.outputs.env_names_json }}
         volumes-json: ${{ inputs.volumes-json }}
