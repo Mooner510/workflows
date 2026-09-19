@@ -75,6 +75,10 @@ inputs:
     description: Additional repository-relative env files.
     required: false
     default: '[]'
+  database:
+    description: Resolve and inject DATABASE_URL for runtime even when migration-engine is none.
+    required: false
+    default: 'false'
   env-names-json:
     description: Caller environment variable names explicitly forwarded to the container.
     required: false
@@ -178,6 +182,7 @@ runs:
         goose-version: ${{ inputs.goose-version }}
         volumes-json: ${{ inputs.volumes-json }}
         env-files-json: ${{ inputs.env-files-json }}
+        database: ${{ inputs.database }}
         env-names-json: ${{ inputs.env-names-json }}
         init: ${{ inputs.init }}
         security-opts-json: ${{ inputs.security-opts-json }}
@@ -194,6 +199,7 @@ runs:
         health-path: ${{ inputs.health-path }}
         volumes-json: ${{ inputs.volumes-json }}
         env-files-json: ${{ inputs.env-files-json }}
+        database: ${{ inputs.database }}
         env-names-json: ${{ inputs.env-names-json }}
         init: ${{ inputs.init }}
         security-opts-json: ${{ inputs.security-opts-json }}

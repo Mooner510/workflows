@@ -27,6 +27,10 @@ inputs:
     description: Optional JSON array of additional repository-relative Docker env files. Canonical project host deploy.env is discovered automatically.
     required: false
     default: '[]'
+  database:
+    description: Resolve and inject DATABASE_URL from canonical service/project db.env even when this service does not own migrations.
+    required: false
+    default: 'false'
   env-names-json:
     description: JSON array of caller environment variable names forwarded into the Docker container from GitHub Environment secrets or variables.
     required: false
@@ -105,6 +109,20 @@ runs:
       with:
         network: ${{ inputs.network }}
 
+    - name: Resolve requested database environment
+      id: requested_env
+      shell: bash
+      env:
+        ENV_NAMES_JSON: ${{ inputs.env-names-json }}
+        DATABASE: ${{ inputs.database }}
+      run: |
+        set -euo pipefail
+        command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
+        jq -e 'type=="array" and all(.[]; type=="string")' <<<"$ENV_NAMES_JSON" >/dev/null || { echo "::error::env-names-json must be a string array."; exit 1; }
+        names="$(jq -c '.' <<<"$ENV_NAMES_JSON")"
+        if [[ "$DATABASE" == "true" ]]; then names="$(jq -c '. + ["DATABASE_URL"] | unique' <<<"$names")"; fi
+        echo "env_names_json=$names" >>"$GITHUB_OUTPUT"
+
     - name: Resolve database credentials
       id: credentials
       uses: $/.github/actions/cd/resolve-db-credentials
@@ -113,7 +131,7 @@ runs:
         service: ${{ inputs.service-name }}
         credential-source: ${{ inputs.db-credential-source }}
         migration-engine: none
-        env-names-json: ${{ inputs.env-names-json }}
+        env-names-json: ${{ steps.requested_env.outputs.env_names_json }}
 
     - name: Resolve runtime environment files
       id: runtime_env

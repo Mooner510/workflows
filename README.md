@@ -169,7 +169,7 @@ owner/ANMC -> project = anmc\nowner/niki-babo -> project = niki-babo
 default Docker network = project-niki-babo
 ```
 
-`service-name`은 각 하위 서비스가 별도로 지정합니다.
+`service-name`은 각 하위 서비스가 별도로 지정합니다. Migration owner가 아니지만 runtime DB가 필요한 HTTP/process service는 `database: true`만 선언하면 중앙 resolver가 canonical `db.env`에서 `DATABASE_URL`을 주입합니다.
 
 Flow:
 
