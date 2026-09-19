@@ -50,7 +50,7 @@ runs:
 
         [[ -f /opt/stacks/shared/caddy/Caddyfile ]] || {
           echo "::error::Production host filesystem is not visible to this runner (/opt/stacks/shared/caddy/Caddyfile missing)."
-          echo "::error::Run CD on a dedicated host-level runner labeled [self-hosted, linux, production], not the generic Gharp CI runner."
+          echo "::error::This runner must have access to the production host filesystem. Gharp and organization-scoped runners both use [self-hosted, linux] and must expose the same host runtime paths when they run CD."
           exit 1
         }
 
