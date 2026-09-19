@@ -24,6 +24,10 @@ inputs:
     description: Optional Docker build target.
     required: false
     default: ''
+  build-arg-env-names-json:
+    description: Non-secret runtime config variables forwarded to Docker build as build args.
+    required: false
+    default: '[]'
   container-port:
     description: Internal application port.
     required: true
@@ -157,6 +161,7 @@ runs:
         image-name: ${{ steps.contract.outputs.image_name }}
         dockerfile: ${{ inputs.dockerfile }}
         target: ${{ inputs.target }}
+        build-arg-env-names-json: ${{ inputs.build-arg-env-names-json }}
         container-port: ${{ inputs.container-port }}
         health-path: ${{ inputs.health-path }}
         migration-engine: ${{ inputs.migration-engine }}
