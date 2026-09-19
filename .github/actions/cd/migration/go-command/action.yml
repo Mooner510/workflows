@@ -19,7 +19,7 @@ runs:
         MIGRATION_PACKAGE: ${{ inputs.package }}
       run: |
         set -euo pipefail
-        [[ -n "${DATABASE_URL:-}" ]] || { echo "::error::DATABASE_URL is required."; exit 1; }
+        [[ -n "${MIGRATION_DATABASE_URL:-}" ]] || { echo "::error::MIGRATION_DATABASE_URL is required."; exit 1; }
         [[ "$MIGRATION_PACKAGE" == ./* && "$MIGRATION_PACKAGE" != *".."* ]] || { echo "::error::package must be a safe relative Go package."; exit 1; }
         workspace="$(realpath "$GITHUB_WORKSPACE")"
         component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
@@ -28,4 +28,4 @@ runs:
           exit 1
         }
         echo "==> Applying production migration command $MIGRATION_PACKAGE"
-        (cd "$component" && go run "$MIGRATION_PACKAGE")
+        (cd "$component" && DATABASE_URL="$MIGRATION_DATABASE_URL" go run "$MIGRATION_PACKAGE")
