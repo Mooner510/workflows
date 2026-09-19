@@ -5,8 +5,12 @@ inputs:
   project:
     description: Stable project identifier matching /opt/stacks/projects/<repository-name>/db.env.
     required: true
+  service:
+    description: Optional service identifier. When <service>/db.env exists it overrides project db.env.
+    required: false
+    default: ''
   credential-source:
-    description: host reads /opt/stacks/projects/<repository-name>/db.env and is the canonical production mode. auto keeps legacy caller-first fallback behavior. github requires caller-provided values and never reads host db.env.
+    description: host reads canonical service/project db.env and is the canonical production mode. auto keeps legacy caller-first fallback behavior. github requires caller-provided values and never reads host db.env.
     required: false
     default: host
   migration-engine:
@@ -31,6 +35,7 @@ runs:
       shell: bash
       env:
         PROJECT: ${{ inputs.project }}
+        SERVICE: ${{ inputs.service }}
         CREDENTIAL_SOURCE: ${{ inputs.credential-source }}
         MIGRATION_ENGINE: ${{ inputs.migration-engine }}
         ENV_NAMES_JSON: ${{ inputs.env-names-json }}
@@ -91,6 +96,11 @@ runs:
         }
 
         db_env="/opt/stacks/projects/$PROJECT/db.env"
+        if [[ -n "$SERVICE" ]]; then
+          [[ "$SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || { echo "::error::Invalid service identifier '$SERVICE'."; exit 1; }
+          service_db_env="/opt/stacks/projects/$PROJECT/$SERVICE/db.env"
+          [[ ! -f "$service_db_env" ]] || db_env="$service_db_env"
+        fi
         [[ -f "$db_env" ]] || {
           if [[ "$CREDENTIAL_SOURCE" == "host" ]]; then
             echo "::error::Canonical host database credential file $db_env is not visible to this runner."
