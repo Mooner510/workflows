@@ -162,10 +162,10 @@ Generic HTTP Docker service의 canonical caller entrypoint:
 
 이 action이 caller repository의 default branch, release/manual checkout, deploy/rollback 선택, 공통 runtime hardening을 해석한 뒤 내부적으로 `cd/docker-service` 또는 `cd/docker-service-rollback`을 호출합니다.
 
-Project identity는 caller가 지정하지 않습니다. 중앙 CD가 `github.repository`의 repository name을 그대로 사용합니다.
+Project identity는 caller가 지정하지 않습니다. 중앙 CD가 `github.repository`의 repository name을 소문자로 정규화해 사용합니다.
 
 ```text
-owner/niki-babo -> project = niki-babo
+owner/ANMC -> project = anmc\nowner/niki-babo -> project = niki-babo
 default Docker network = project-niki-babo
 ```
 
