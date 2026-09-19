@@ -599,3 +599,9 @@ jobs:
         uses: $/.github/actions/ci/migration
         with:
           components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
+
+      - name: Go PostgreSQL integration CI
+        if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'go'
+        uses: $/.github/actions/ci/go-postgres
+        with:
+          components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
