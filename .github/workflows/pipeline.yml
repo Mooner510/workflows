@@ -173,7 +173,11 @@ jobs:
             case "$migration_engine" in
               none)
                 ;;
-              goose)
+              goose|go-command)
+                if [[ "$migration_engine" == "go-command" && "$type" != "go" ]]; then
+                  echo "::error::go-command migration requires a Go component ('$name')."
+                  exit 1
+                fi
                 migration_path="$(jq -r '.migration_path // "db/migrations"' <<<"$component")"
                 validate_relative_path "$migration_path" "Component '$name' migration_path"
                 if ! jq -e '(.goose_version == null) or ((.goose_version | type) == "string" and length > 0)' <<<"$component" >/dev/null; then
@@ -265,7 +269,7 @@ jobs:
                 migration_changed=true
               else
                 case "$migration_engine" in
-                  goose)
+                  goose|go-command)
                     migration_path="$(jq -r '.migration_path // "db/migrations"' <<<"$component")"
                     migration_schema=""
                     ;;
@@ -301,6 +305,41 @@ jobs:
             if [[ "$migration_changed" == "true" ]]; then
               affected=true
               echo "Migration affected: $name"
+            fi
+
+            if [[ "$affected" != "true" && "$force_all" != "true" ]]; then
+              type="$(jq -r '.type' <<<"$component")"
+              if [[ "$type" == "go" ]]; then
+                while IFS= read -r changed; do
+                  if [[ "$changed" == "go.work" || "$changed" == "go.work.sum" ]]; then
+                    affected=true
+                    break
+                  fi
+                  while IFS= read -r peer; do
+                    peer="${peer%/}"
+                    if [[ "$peer" == "." ]] || [[ "$changed" == "$peer" ]] || [[ "$changed" == "$peer/"* ]]; then
+                      affected=true
+                      break 2
+                    fi
+                  done < <(jq -r '.[] | select(.type == "go") | .path' <<<"$components")
+                done <"$changed_file_list"
+              elif [[ "$type" == "node" ]]; then
+                while IFS= read -r changed; do
+                  case "$changed" in
+                    package.json|package-lock.json|pnpm-lock.yaml|pnpm-workspace.yaml|yarn.lock|bun.lock|bun.lockb)
+                      affected=true
+                      break
+                      ;;
+                  esac
+                  while IFS= read -r peer; do
+                    peer="${peer%/}"
+                    if [[ "$peer" == "." ]] || [[ "$changed" == "$peer" ]] || [[ "$changed" == "$peer/"* ]]; then
+                      affected=true
+                      break 2
+                    fi
+                  done < <(jq -r '.[] | select(.type == "node") | .path' <<<"$components")
+                done <"$changed_file_list"
+              fi
             fi
 
             if [[ "$affected" != "true" ]]; then
