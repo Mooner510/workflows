@@ -197,13 +197,12 @@ Example:
 
 ### Production deploy.env
 
-Canonical production service configuration은 production host의 **단일 `deploy.env`** 입니다.
+Canonical production project configuration은 production host의 **단일 `deploy.env`** 입니다.
 
 ```text
 /opt/stacks/projects/<repository-name>/
 ├─ db.env
-└─ <service>/
-   └─ deploy.env
+└─ deploy.env
 ```
 
 `deploy.env`에는 runtime config/secret과 deployment metadata를 함께 둘 수 있습니다.
@@ -216,7 +215,7 @@ SESSION_SECRET=...
 
 `DEPLOY_DOMAIN`은 중앙 CD가 Caddy route에 사용합니다. Generic HTTP service의 loopback host port는 Docker가 자동 할당하고 중앙 CD가 실제 할당값을 조회해 health check와 Caddy upstream에 사용합니다. 사용자가 host port를 지정하거나 관리하지 않습니다.
 
-기존 `<service>/secret/deploy.env`는 호환용으로 계속 읽지만 새 구성에서는 사용하지 않습니다. `db.env`만 DB lifecycle/credential 분리를 위해 별도로 유지합니다.
+서비스별 deploy.env/secret/deploy.env는 더 이상 canonical 경로가 아닙니다. 프로젝트당 루트 `deploy.env` 하나를 모든 generic HTTP service가 공유하고, `db.env`만 DB lifecycle/credential 분리를 위해 별도로 유지합니다.
 
 DB credential source 기본값은 `host`입니다.
 
@@ -231,7 +230,7 @@ Docker image build에는 production credential을 전달하지 않습니다.
 
 GitHub Environment는 approval/protection boundary 용도로 유지할 수 있지만 canonical service 설정 저장소로 사용하지 않습니다. 기존 GitHub Secret 기반 deployment가 필요한 repository만 compatibility mode로 `db-credential-source: github`와 caller env를 사용할 수 있습니다.
 
-추가 `env-files-json`은 repository-relative 파일만 허용하며, canonical host `deploy.env`는 중앙 action이 자동으로 추가합니다. 기존 `secret/deploy.env`는 compatibility-only입니다.
+추가 `env-files-json`은 repository-relative 파일만 허용하며, canonical project root `deploy.env`는 중앙 action이 자동으로 추가합니다.
 
 공통 Docker runtime hardening이 필요한 service는 caller input으로 다음을 사용할 수 있습니다.
 
