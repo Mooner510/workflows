@@ -468,7 +468,7 @@ jobs:
       git_log_opts: ${{ needs.detect.outputs.git_log_opts }}
 
   ci:
-    name: CI
+    name: CI - ${{ matrix.target }}
     needs: detect
     if: needs.detect.outputs.ci_targets != '[]'
     runs-on: [self-hosted, linux]
