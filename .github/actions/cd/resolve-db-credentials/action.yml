@@ -10,7 +10,7 @@ inputs:
     required: false
     default: auto
   migration-engine:
-    description: none, goose, prisma, or flyway.
+    description: none, goose, prisma, drizzle, or flyway.
     required: false
     default: none
   env-names-json:
@@ -47,8 +47,8 @@ runs:
           exit 1
         ;;
         esac
-        case "$MIGRATION_ENGINE" in none|goose|prisma|flyway) ;; *)
-          echo "::error::migration-engine must be none, goose, prisma, or flyway."
+        case "$MIGRATION_ENGINE" in none|goose|prisma|drizzle|flyway) ;; *)
+          echo "::error::migration-engine must be none, goose, prisma, drizzle, or flyway."
           exit 1
         ;;
         esac
@@ -61,7 +61,7 @@ runs:
 
         needs_database_url=false
         needs_flyway=false
-        case "$MIGRATION_ENGINE" in goose|prisma) needs_database_url=true ;; flyway) needs_flyway=true ;; esac
+        case "$MIGRATION_ENGINE" in goose|prisma|drizzle) needs_database_url=true ;; flyway) needs_flyway=true ;; esac
         if jq -e 'index("DATABASE_URL") != null' <<<"$ENV_NAMES_JSON" >/dev/null; then
           needs_database_url=true
         fi
