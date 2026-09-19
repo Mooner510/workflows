@@ -3,10 +3,10 @@ description: Resolve production database credentials from the dedicated producti
 
 inputs:
   project:
-    description: Stable project identifier matching /opt/stacks/projects/<project>/db.env.
+    description: Stable project identifier matching /opt/stacks/projects/<repository-name>/db.env.
     required: true
   credential-source:
-    description: host reads /opt/stacks/projects/<project>/db.env and is the canonical production mode. auto keeps legacy caller-first fallback behavior. github requires caller-provided values and never reads host db.env.
+    description: host reads /opt/stacks/projects/<repository-name>/db.env and is the canonical production mode. auto keeps legacy caller-first fallback behavior. github requires caller-provided values and never reads host db.env.
     required: false
     default: host
   migration-engine:
@@ -94,7 +94,7 @@ runs:
         [[ -f "$db_env" ]] || {
           if [[ "$CREDENTIAL_SOURCE" == "host" ]]; then
             echo "::error::Canonical host database credential file $db_env is not visible to this runner."
-            echo "::error::Run production CD on a dedicated host-level runner labeled [self-hosted, linux, production]. Verify with: sudo db info $PROJECT"
+            echo "::error::The active self-hosted runner must expose the production host filesystem. Verify with: sudo db info $PROJECT"
             exit 1
           fi
           if [[ "$needs_database_url" == "true" ]]; then
