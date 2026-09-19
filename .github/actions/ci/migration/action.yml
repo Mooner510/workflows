@@ -24,20 +24,23 @@ runs:
           exit 1
         }
 
-        invalid="$(jq -r '.[] | (.migration_engine // "none") | select(. != "none" and . != "goose" and . != "prisma" and . != "drizzle" and . != "flyway")' <<<"$components" | head -n1)"
+        invalid="$(jq -r '.[] | (.migration_engine // "none") | select(. != "none" and . != "goose" and . != "go-command" and . != "prisma" and . != "drizzle" and . != "flyway")' <<<"$components" | head -n1)"
         [[ -z "$invalid" ]] || { echo "::error::Unsupported migration engine '$invalid'."; exit 1; }
 
         goose="$(jq -c '[.[] | select((.migration_engine // "none") == "goose" and (.migration_changed // true))]' <<<"$components")"
+        go_command="$(jq -c '[.[] | select((.migration_engine // "none") == "go-command" and (.migration_changed // true))]' <<<"$components")"
         prisma="$(jq -c '[.[] | select((.migration_engine // "none") == "prisma" and (.migration_changed // true))]' <<<"$components")"
         drizzle="$(jq -c '[.[] | select((.migration_engine // "none") == "drizzle" and (.migration_changed // true))]' <<<"$components")"
         flyway="$(jq -c '[.[] | select((.migration_engine // "none") == "flyway" and (.migration_changed // true))]' <<<"$components")"
 
         {
           echo "goose=$goose"
+          echo "go_command=$go_command"
           echo "prisma=$prisma"
           echo "drizzle=$drizzle"
           echo "flyway=$flyway"
           echo "has_goose=$([[ $(jq 'length' <<<"$goose") -gt 0 ]] && echo true || echo false)"
+          echo "has_go_command=$([[ $(jq 'length' <<<"$go_command") -gt 0 ]] && echo true || echo false)"
           echo "has_prisma=$([[ $(jq 'length' <<<"$prisma") -gt 0 ]] && echo true || echo false)"
           echo "has_drizzle=$([[ $(jq 'length' <<<"$drizzle") -gt 0 ]] && echo true || echo false)"
           echo "has_flyway=$([[ $(jq 'length' <<<"$flyway") -gt 0 ]] && echo true || echo false)"
@@ -48,6 +51,12 @@ runs:
       uses: $/.github/actions/ci/migration/goose
       with:
         components: ${{ steps.migration.outputs.goose }}
+
+    - name: Go command migration CI
+      if: steps.migration.outputs.has_go_command == 'true'
+      uses: $/.github/actions/ci/migration/go-command
+      with:
+        components: ${{ steps.migration.outputs.go_command }}
 
     - name: Prisma migration CI
       if: steps.migration.outputs.has_prisma == 'true'
