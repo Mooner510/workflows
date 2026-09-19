@@ -32,17 +32,13 @@
    └─ android/release/
 ```
 
-Runner는 CI와 production CD를 분리합니다.
+Canonical runner selector는 CI/CD 모두 다음을 사용합니다.
 
 ```yaml
-# Generic/containerized Gharp CI
-runs-on: [self-hosted, linux, ci]
-
-# Host-level production CD
-runs-on: [self-hosted, linux, production]
+runs-on: [self-hosted, linux]
 ```
 
-CI runner에는 `/opt/stacks/projects`를 mount하지 않습니다. Production runner만 host Docker, Caddy, `/opt/stacks/projects`, `/var/lib/stacks`에 접근합니다. 이 분리는 production secret이 일반 CI job에 노출되지 않게 하는 보안 경계입니다.
+Personal repository는 Gharp, Organization repository는 Organization scoped self-hosted runner를 사용합니다. 현재 운영 제약상 같은 runner가 CI/CD를 수행하며, production CD는 explicit workflow event와 최소 GitHub permissions로 제한합니다.
 
 ## CI
 
@@ -159,6 +155,15 @@ API/Web Docker service의 기본 entrypoint:
 .github/actions/cd/docker-service
 ```
 
+Project identity는 caller가 지정하지 않습니다. 중앙 CD가 `github.repository`의 repository name을 그대로 사용합니다.
+
+```text
+owner/niki-babo -> project = niki-babo
+default Docker network = project-niki-babo
+```
+
+`service-name`은 각 하위 서비스가 별도로 지정합니다.
+
 Flow:
 
 ```text
@@ -181,7 +186,6 @@ Example:
     SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
   with:
     production-branch: main
-    project: my-project
     working-directory: services/api
     service-name: api
     image-name: my-project-api
@@ -198,7 +202,7 @@ Example:
 Canonical production secret은 GitHub가 아니라 production host에 둡니다.
 
 ```text
-/opt/stacks/projects/<project>/
+/opt/stacks/projects/<repository-name>/
 ├─ db.env
 └─ <service>/
    ├─ deploy.env
@@ -219,7 +223,7 @@ db.env                 -> DB ops credential. CD가 migration/runtime DATABASE_UR
 DB credential source 기본값은 `host`입니다.
 
 ```text
-/opt/stacks/projects/<project>/db.env
+/opt/stacks/projects/<repository-name>/db.env
 → CD step에서 DATABASE_URL 생성
 → migration에 사용
 → docker run -e DATABASE_URL
@@ -269,7 +273,7 @@ concurrency:
 Canonical storage:
 
 ```text
-/var/lib/stacks/projects/<project>/<service>/deploy/
+/var/lib/stacks/projects/<repository-name>/<service>/deploy/
 ├─ current.json
 └─ history.jsonl
 ```
