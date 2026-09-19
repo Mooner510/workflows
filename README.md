@@ -32,23 +32,13 @@
    └─ android/release/
 ```
 
-Runner scope는 repository ownership에 따라 나뉘지만, **CI와 CD 역할로는 분리하지 않습니다.**
-
-```text
-Personal repositories
-→ Gharp self-hosted runner
-
-Organization repositories
-→ Organization scoped self-hosted runner
-```
-
-둘 다 같은 canonical selector를 사용합니다.
+Canonical runner selector는 CI/CD 모두 다음을 사용합니다.
 
 ```yaml
 runs-on: [self-hosted, linux]
 ```
 
-각 환경에서 동일 runner가 CI와 CD를 모두 수행합니다. 리소스 제약 때문에 CI 전용/CD 전용 runner를 따로 두지 않습니다. 따라서 CD를 수행하는 runner는 Docker/Caddy와 `/opt/stacks/projects`, `/var/lib/stacks`에 접근할 수 있어야 합니다. 이 선택은 격리 수준을 낮추지만 현재 운영 제약상 의도된 구조입니다.
+Personal repository는 Gharp, Organization repository는 Organization scoped self-hosted runner를 사용합니다. 현재 운영 제약상 같은 runner가 CI/CD를 수행하며, production CD는 explicit workflow event와 최소 GitHub permissions로 제한합니다.
 
 ## CI
 
@@ -165,6 +155,15 @@ API/Web Docker service의 기본 entrypoint:
 .github/actions/cd/docker-service
 ```
 
+Project identity는 caller가 지정하지 않습니다. 중앙 CD가 `github.repository`의 repository name을 그대로 사용합니다.
+
+```text
+owner/niki-babo -> project = niki-babo
+default Docker network = project-niki-babo
+```
+
+`service-name`은 각 하위 서비스가 별도로 지정합니다.
+
 Flow:
 
 ```text
@@ -187,7 +186,6 @@ Example:
     SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
   with:
     production-branch: main
-    project: my-project
     working-directory: services/api
     service-name: api
     image-name: my-project-api
@@ -204,7 +202,7 @@ Example:
 Canonical production secret은 GitHub가 아니라 production host에 둡니다.
 
 ```text
-/opt/stacks/projects/<project>/
+/opt/stacks/projects/<repository-name>/
 ├─ db.env
 └─ <service>/
    ├─ deploy.env
@@ -225,7 +223,7 @@ db.env                 -> DB ops credential. CD가 migration/runtime DATABASE_UR
 DB credential source 기본값은 `host`입니다.
 
 ```text
-/opt/stacks/projects/<project>/db.env
+/opt/stacks/projects/<repository-name>/db.env
 → CD step에서 DATABASE_URL 생성
 → migration에 사용
 → docker run -e DATABASE_URL
@@ -255,8 +253,8 @@ trigger
 concurrency
 environment
 permissions
-runs-on: [self-hosted, linux]
 checkout
+secrets / environment variables
 central action inputs
 ```
 
@@ -275,7 +273,7 @@ concurrency:
 Canonical storage:
 
 ```text
-/var/lib/stacks/projects/<project>/<service>/deploy/
+/var/lib/stacks/projects/<repository-name>/<service>/deploy/
 ├─ current.json
 └─ history.jsonl
 ```
