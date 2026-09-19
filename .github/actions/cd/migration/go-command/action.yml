@@ -1,0 +1,31 @@
+name: Go command migration
+description: Run an existing repository-owned Go migration command against the production database while preserving its migration history contract.
+
+inputs:
+  working-directory:
+    description: Go component root relative to caller repository.
+    required: true
+  package:
+    description: Relative Go package that owns the migration command.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Apply Go command migrations
+      shell: bash
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        MIGRATION_PACKAGE: ${{ inputs.package }}
+      run: |
+        set -euo pipefail
+        [[ -n "${DATABASE_URL:-}" ]] || { echo "::error::DATABASE_URL is required."; exit 1; }
+        [[ "$MIGRATION_PACKAGE" == ./* && "$MIGRATION_PACKAGE" != *".."* ]] || { echo "::error::package must be a safe relative Go package."; exit 1; }
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
+        [[ -n "$component" && ( "$component" == "$workspace" || "$component" == "$workspace/"* ) && -f "$component/go.mod" ]] || {
+          echo "::error::working-directory must resolve inside the repository and contain go.mod."
+          exit 1
+        }
+        echo "==> Applying production migration command $MIGRATION_PACKAGE"
+        (cd "$component" && go run "$MIGRATION_PACKAGE")
