@@ -481,6 +481,16 @@ runs:
         url: http://127.0.0.1:${{ steps.rollback.outputs['host-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
+    - name: Restore Caddy route after rollback
+      if: failure() && steps.rollback_health.outcome == 'success'
+      uses: $/.github/actions/cd/caddy
+      with:
+        service-name: ${{ inputs.service-name }}
+        domain: ${{ steps.contract.outputs.domain }}
+        upstream: 127.0.0.1:${{ steps.rollback.outputs['host-port'] }}
+        caddyfile: ${{ inputs.caddyfile }}
+        sites-directory: ${{ inputs.caddy-sites-directory }}
+
     - name: Record successful rollback
       if: failure() && steps.rollback_health.outcome == 'success' && steps.rollback_source.outputs.persistent == 'true'
       uses: $/.github/actions/cd/state
