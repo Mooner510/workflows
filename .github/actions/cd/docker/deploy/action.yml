@@ -1,5 +1,5 @@
 name: Docker deploy
-description: Replace one local Docker service container using a fixed loopback host port.
+description: Replace one local Docker service container using a Docker-assigned loopback host port.
 
 inputs:
   container-name:
@@ -10,9 +10,6 @@ inputs:
     required: true
   container-port:
     description: Internal application port.
-    required: true
-  host-port:
-    description: Fixed loopback host port used by Caddy.
     required: true
   env-files-json:
     description: JSON array of resolved Docker env-file paths. Repository-relative files and canonical host files under /opt/stacks/projects are accepted.
@@ -62,6 +59,9 @@ outputs:
     value: ${{ steps.deploy.outputs.previous_image }}
   previous-image-id:
     value: ${{ steps.deploy.outputs.previous_image_id }}
+  published-port:
+    description: Docker-assigned loopback published port for the running container.
+    value: ${{ steps.deploy.outputs.published_port }}
 
 runs:
   using: composite
@@ -73,7 +73,6 @@ runs:
         CONTAINER_NAME: ${{ inputs.container-name }}
         IMAGE: ${{ inputs.image }}
         CONTAINER_PORT: ${{ inputs.container-port }}
-        HOST_PORT: ${{ inputs.host-port }}
         ENV_FILES_JSON: ${{ inputs.env-files-json }}
         ENV_NAMES_JSON: ${{ inputs.env-names-json }}
         VOLUMES_JSON: ${{ inputs.volumes-json }}
@@ -92,9 +91,10 @@ runs:
 
         [[ "$CONTAINER_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid container-name '$CONTAINER_NAME'."; exit 1; }
         [[ -n "$IMAGE" && "$IMAGE" != *$'\n'* && "$IMAGE" != *$'\r'* ]] || { echo "::error::Invalid image reference."; exit 1; }
-        for port in "$CONTAINER_PORT" "$HOST_PORT"; do
-          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || { echo "::error::Ports must be integers from 1 to 65535."; exit 1; }
-        done
+        [[ "$CONTAINER_PORT" =~ ^[0-9]+$ ]] && (( CONTAINER_PORT >= 1 && CONTAINER_PORT <= 65535 )) || {
+          echo "::error::container-port must be an integer from 1 to 65535."
+          exit 1
+        }
         [[ "$STOP_TIMEOUT" =~ ^[0-9]+$ ]] || { echo "::error::stop-timeout must be an integer."; exit 1; }
         case "$RESTART_POLICY" in no|always|unless-stopped|on-failure) ;; *) echo "::error::Invalid restart policy '$RESTART_POLICY'."; exit 1 ;; esac
         case "$INIT" in true|false) ;; *) echo "::error::init must be true or false."; exit 1 ;; esac
@@ -162,7 +162,14 @@ runs:
 
         run_image() {
           local image="$1"
-          local -a args=(docker run -d --name "$CONTAINER_NAME" --restart "$RESTART_POLICY" -p "127.0.0.1:$HOST_PORT:$CONTAINER_PORT")
+          local requested_host_port="${2:-}"
+          local publish
+          if [[ -n "$requested_host_port" ]]; then
+            publish="127.0.0.1:$requested_host_port:$CONTAINER_PORT"
+          else
+            publish="127.0.0.1::$CONTAINER_PORT"
+          fi
+          local -a args=(docker run -d --name "$CONTAINER_NAME" --restart "$RESTART_POLICY" -p "$publish")
           args+=("${env_args[@]}")
           args+=("${volume_args[@]}")
           args+=("${hardening_args[@]}")
@@ -173,30 +180,53 @@ runs:
           "${args[@]}" >/dev/null
         }
 
+        resolve_host_port() {
+          local binding
+          binding="$(docker port "$CONTAINER_NAME" "$CONTAINER_PORT/tcp" 2>/dev/null | head -n1 || true)"
+          if [[ "$binding" =~ ^127\.0\.0\.1:([0-9]+)$ ]]; then
+            printf '%s' "${BASH_REMATCH[1]}"
+            return 0
+          fi
+          echo "::error::Could not resolve Docker loopback host port for $CONTAINER_NAME:$CONTAINER_PORT." >&2
+          return 1
+        }
+
         previous_existed=false
         previous_image=""
         previous_image_id=""
+        previous_host_port=""
         if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
           previous_existed=true
           previous_image="$(docker inspect "$CONTAINER_NAME" --format '{{.Config.Image}}')"
           previous_image_id="$(docker inspect "$CONTAINER_NAME" --format '{{.Image}}')"
+          previous_host_port="$(resolve_host_port)" || exit 1
           docker stop -t "$STOP_TIMEOUT" "$CONTAINER_NAME" >/dev/null || true
           docker rm -f "$CONTAINER_NAME" >/dev/null || true
         fi
 
-        echo "==> Deploying $CONTAINER_NAME from $IMAGE on 127.0.0.1:$HOST_PORT"
+        echo "==> Deploying $CONTAINER_NAME from $IMAGE with an automatic loopback host port"
         if ! run_image "$IMAGE"; then
           echo "::error::Failed to start '$CONTAINER_NAME' from '$IMAGE'."
           docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
           if [[ "$RESTORE_PREVIOUS_ON_FAILURE" == "true" && "$previous_existed" == "true" && -n "$previous_image_id" ]]; then
-            echo "Attempting immediate rollback to $previous_image_id"
-            run_image "$previous_image_id" || true
+            echo "Attempting immediate rollback to $previous_image_id on previous port $previous_host_port"
+            run_image "$previous_image_id" "$previous_host_port" || true
           fi
           exit 1
         fi
 
+        host_port="$(resolve_host_port)" || {
+          docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+          if [[ "$RESTORE_PREVIOUS_ON_FAILURE" == "true" && "$previous_existed" == "true" && -n "$previous_image_id" ]]; then
+            run_image "$previous_image_id" "$previous_host_port" || true
+          fi
+          exit 1
+        }
+
+        echo "Docker assigned 127.0.0.1:$host_port -> $CONTAINER_PORT/tcp"
         {
           echo "previous_existed=$previous_existed"
           echo "previous_image=$previous_image"
           echo "previous_image_id=$previous_image_id"
+          echo "published_port=$host_port"
         } >>"$GITHUB_OUTPUT"
