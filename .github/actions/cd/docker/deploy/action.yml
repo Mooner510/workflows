@@ -1,5 +1,5 @@
 name: Docker deploy
-description: Replace one local Docker service container using a Docker-assigned loopback host port.
+description: Replace one local Docker service container, publish a loopback health port, and attach it to the shared Caddy proxy network.
 
 inputs:
   container-name:
@@ -24,9 +24,13 @@ inputs:
     required: false
     default: '[]'
   network:
-    description: Optional Docker network name.
+    description: Optional project Docker network name.
     required: false
     default: ''
+  proxy-network:
+    description: Shared reverse-proxy Docker network attached in addition to the project network.
+    required: false
+    default: caddy-shared
   restart-policy:
     description: Docker restart policy.
     required: false
@@ -77,6 +81,7 @@ runs:
         ENV_NAMES_JSON: ${{ inputs.env-names-json }}
         VOLUMES_JSON: ${{ inputs.volumes-json }}
         NETWORK: ${{ inputs.network }}
+        PROXY_NETWORK: ${{ inputs.proxy-network }}
         RESTART_POLICY: ${{ inputs.restart-policy }}
         INIT: ${{ inputs.init }}
         SECURITY_OPTS_JSON: ${{ inputs.security-opts-json }}
@@ -103,6 +108,10 @@ runs:
           echo "::error::Invalid Docker network '$NETWORK'."
           exit 1
         fi
+        [[ "$PROXY_NETWORK" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || {
+          echo "::error::Invalid proxy network '$PROXY_NETWORK'."
+          exit 1
+        }
         jq -e 'type == "array" and all(.[]; type == "string")' <<<"$ENV_FILES_JSON" >/dev/null || { echo "::error::env-files-json must be a string array."; exit 1; }
         jq -e 'type == "array" and all(.[]; type == "string")' <<<"$ENV_NAMES_JSON" >/dev/null || { echo "::error::env-names-json must be a string array."; exit 1; }
         jq -e 'type == "array" and all(.[]; type == "string")' <<<"$VOLUMES_JSON" >/dev/null || { echo "::error::volumes-json must be a string array."; exit 1; }
@@ -159,6 +168,10 @@ runs:
         if [[ -n "$NETWORK" ]] && ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
           docker network create "$NETWORK" >/dev/null
         fi
+        docker network inspect "$PROXY_NETWORK" >/dev/null 2>&1 || {
+          echo "::error::Shared proxy Docker network '$PROXY_NETWORK' does not exist."
+          exit 1
+        }
 
         run_image() {
           local image="$1"
@@ -178,6 +191,9 @@ runs:
           [[ -z "${GITHUB_SHA:-}" ]] || args+=(--label "org.opencontainers.image.revision=$GITHUB_SHA")
           args+=("$image")
           "${args[@]}" >/dev/null
+          if [[ -z "$NETWORK" || "$NETWORK" != "$PROXY_NETWORK" ]]; then
+            docker network connect "$PROXY_NETWORK" "$CONTAINER_NAME"
+          fi
         }
 
         resolve_host_port() {
@@ -204,7 +220,7 @@ runs:
           docker rm -f "$CONTAINER_NAME" >/dev/null || true
         fi
 
-        echo "==> Deploying $CONTAINER_NAME from $IMAGE with an automatic loopback host port"
+        echo "==> Deploying $CONTAINER_NAME from $IMAGE with an automatic loopback health port and proxy network $PROXY_NETWORK"
         if ! run_image "$IMAGE"; then
           echo "::error::Failed to start '$CONTAINER_NAME' from '$IMAGE'."
           docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true

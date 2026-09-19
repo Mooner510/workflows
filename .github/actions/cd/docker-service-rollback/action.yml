@@ -246,7 +246,7 @@ runs:
       with:
         service-name: ${{ inputs.service-name }}
         domain: ${{ steps.contract.outputs.domain }}
-        upstream: 127.0.0.1:${{ steps.rollback.outputs['published-port'] }}
+        upstream: ${{ inputs.service-name }}:${{ inputs.container-port }}
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
 
@@ -297,7 +297,7 @@ runs:
       with:
         service-name: ${{ inputs.service-name }}
         domain: ${{ steps.contract.outputs.domain }}
-        upstream: 127.0.0.1:${{ steps.restore.outputs['published-port'] }}
+        upstream: ${{ inputs.service-name }}:${{ inputs.container-port }}
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
 
