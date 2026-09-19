@@ -126,9 +126,19 @@ runs:
         # shellcheck disable=SC1090
         source "$signing"
         set +a
+
+        ANDROID_KEYSTORE_PASSWORD="${ANDROID_KEYSTORE_PASSWORD:-${KEYSTORE_PASSWORD:-${STORE_PASSWORD:-${storePassword:-}}}}"
+        ANDROID_KEY_ALIAS="${ANDROID_KEY_ALIAS:-${KEY_ALIAS:-${keyAlias:-}}}"
+        ANDROID_KEY_PASSWORD="${ANDROID_KEY_PASSWORD:-${KEY_PASSWORD:-${keyPassword:-}}}"
+
         for name in ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
-          [[ -n "${!name:-}" ]] || { echo "::error::$name is missing from $signing."; exit 1; }
+          [[ -n "${!name:-}" ]] || { echo "::error::$name (or its canonical signing.env alias) is missing from $signing."; exit 1; }
           echo "::add-mask::${!name}"
+          {
+            echo "${name}<<__ANDROID_SIGNING__"
+            printf '%s\n' "${!name}"
+            echo "__ANDROID_SIGNING__"
+          } >>"$GITHUB_ENV"
         done
 
         if [[ -n "$VERSION_PREFIX" ]]; then
