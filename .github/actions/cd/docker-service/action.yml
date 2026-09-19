@@ -50,7 +50,7 @@ inputs:
     required: false
     default: host
   env-files-json:
-    description: Optional JSON array of additional repository-relative Docker env files. Canonical host deploy.env and secret/deploy.env are discovered automatically on the production runner.
+    description: Optional JSON array of additional repository-relative Docker env files. Canonical host deploy.env is discovered automatically; secret/deploy.env is compatibility-only.
     required: false
     default: '[]'
   env-names-json:
@@ -266,7 +266,7 @@ runs:
             if jq -e --arg name "$name" 'index($name) != null' <<<"$HOST_ENV_KEYS_JSON" >/dev/null; then
               continue
             fi
-            echo "::error::Environment variable '$name' is neither set on the caller deploy step nor present in the canonical host deploy.env/secret/deploy.env files."
+            echo "::error::Environment variable '$name' is neither set on the caller deploy step nor present in the canonical host deploy.env or compatibility secret/deploy.env files."
             exit 1
           done < <(jq -r '.[]' <<<"$ENV_NAMES_JSON")
         fi
