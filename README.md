@@ -156,7 +156,6 @@ Example:
 - name: Deploy API
   uses: Mooner510/workflows/.github/actions/cd/docker-service@v1
   env:
-    DATABASE_URL: ${{ secrets.DATABASE_URL }}
     SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
   with:
     production-branch: main
@@ -169,10 +168,36 @@ Example:
     domain: api.example.com
     migration-engine: goose
     migration-path: db/migrations
-    env-names-json: '["DATABASE_URL","SESSION_SECRET"]'
+    env-names-json: '["SESSION_SECRET"]'
 ```
 
-`env-names-json`에는 환경변수 이름만 전달합니다. 실제 값은 caller step의 `env:`에서 GitHub Environment Secret/Variable로 주입되고 Docker에는 `docker run -e NAME`으로 전달됩니다. 값 자체를 action input, state/history 또는 host env file에 기록하지 않습니다.
+### Database credential 자동 주입 (기본값)
+
+`db-credential-source` 기본값은 `auto`입니다. CD는 다음 순서로 database credential을 맞춥니다.
+
+```text
+1. caller step env / GitHub Environment secret이 이미 있으면 그대로 사용
+2. 없으면 /opt/stacks/projects/<project>/db.env에서 자동 resolve
+3. migration에 필요한데 어느 쪽도 없으면 실패
+```
+
+따라서 self-hosted production CD에서는 보통 아래만으로 충분합니다.
+
+```yaml
+with:
+  project: my-project
+  migration-engine: goose
+```
+
+`DATABASE_URL`은 migration과 container env에 자동 주입됩니다. `db github-sync`나 deploy step의 `env: DATABASE_URL`은 필요 없습니다.
+
+DB 외 secret(`SESSION_SECRET` 등)은 여전히 GitHub Environment에서 caller `env:`로 전달합니다.
+
+GitHub에 `DATABASE_URL`을 미리 넣어두면 `auto`는 그 값을 우선 사용합니다. host `db.env`를 절대 읽지 않으려면 `db-credential-source: github`를 지정합니다.
+
+`env-files-json`은 repository 안의 **비밀이 아닌** 설정 파일만 허용합니다. `/opt/stacks/projects/<project>/db.env`는 `env-files-json`로 mount하지 않고 `auto` resolve가 처리합니다.
+
+선택적으로 `db github-sync`로 GitHub Environment secret을 미리 등록할 수 있습니다. `auto` 모드에서는 필수가 아닙니다.
 
 공통 Docker runtime hardening이 필요한 service는 caller input으로 다음을 사용할 수 있습니다.
 

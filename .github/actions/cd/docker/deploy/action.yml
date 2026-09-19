@@ -15,7 +15,7 @@ inputs:
     description: Fixed loopback host port used by Caddy.
     required: true
   env-files-json:
-    description: JSON array of repository-relative or absolute Docker env-file paths.
+    description: JSON array of repository-relative Docker env-file paths for non-secret config only. Host stack paths such as db.env are not supported; use env-names-json with GitHub Environment secrets instead.
     required: false
     default: '[]'
   env-names-json:
@@ -115,13 +115,13 @@ runs:
           value="$(printf '%s' "$encoded" | base64 --decode)"
           [[ -n "$value" && "$value" != *$'\n'* && "$value" != *$'\r'* ]] || { echo "::error::Invalid Docker env file path."; exit 1; }
           if [[ "$value" == /* ]]; then
-            env_file="$(realpath -e "$value" 2>/dev/null || true)"
-          else
-            env_file="$(realpath -e "$GITHUB_WORKSPACE/$value" 2>/dev/null || true)"
-            if [[ -n "$env_file" ]] && [[ "$env_file" != "$workspace" ]] && [[ "$env_file" != "$workspace/"* ]]; then
-              echo "::error::Relative Docker env file '$value' must resolve inside the repository."
-              exit 1
-            fi
+            echo "::error::Docker env file '$value' must be repository-relative. Production secrets must come from GitHub Environment via env-names-json, not host stack files such as db.env."
+            exit 1
+          fi
+          env_file="$(realpath -e "$GITHUB_WORKSPACE/$value" 2>/dev/null || true)"
+          if [[ -z "$env_file" ]] || { [[ "$env_file" != "$workspace" ]] && [[ "$env_file" != "$workspace/"* ]]; }; then
+            echo "::error::Docker env file '$value' must resolve inside the repository."
+            exit 1
           fi
           [[ -f "$env_file" ]] || { echo "::error::Docker env file '$value' does not exist."; exit 1; }
           env_args+=(--env-file "$env_file")

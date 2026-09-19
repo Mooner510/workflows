@@ -20,12 +20,16 @@ inputs:
   domain:
     description: Public hostname registered in Caddy.
     required: true
+  db-credential-source:
+    description: auto uses caller-provided database env vars first and falls back to /opt/stacks/projects/<project>/db.env for any missing value. github requires caller-provided values only.
+    required: false
+    default: auto
   env-files-json:
-    description: JSON array of repository-relative or absolute Docker env-file paths.
+    description: JSON array of repository-relative Docker env-file paths for non-secret config only. Host stack paths such as db.env are not supported.
     required: false
     default: '[]'
   env-names-json:
-    description: JSON array of caller environment variable names forwarded into the Docker container.
+    description: JSON array of caller environment variable names forwarded into the Docker container from GitHub Environment secrets or variables.
     required: false
     default: '[]'
   volumes-json:
@@ -96,17 +100,55 @@ runs:
       with:
         production-branch: ${{ inputs.production-branch }}
 
+    - name: Resolve database credentials
+      id: credentials
+      uses: $/.github/actions/cd/resolve-db-credentials
+      with:
+        project: ${{ inputs.project }}
+        credential-source: ${{ inputs.db-credential-source }}
+        migration-engine: none
+        env-names-json: ${{ inputs.env-names-json }}
+
     - name: Resolve rollback contract
       id: contract
       shell: bash
       env:
         HOST_PORT: ${{ inputs.host-port }}
         HEALTH_PATH: ${{ inputs.health-path }}
+        ENV_NAMES_JSON: ${{ inputs.env-names-json }}
       run: |
         set -euo pipefail
         [[ "$HEALTH_PATH" == /* ]] || { echo "::error::health-path must start with '/'."; exit 1; }
+
+        if [[ -n "$ENV_NAMES_JSON" && "$ENV_NAMES_JSON" != "[]" ]]; then
+          command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
+          jq -e 'type == "array" and all(.[]; type == "string")' <<<"$ENV_NAMES_JSON" >/dev/null || {
+            echo "::error::env-names-json must be a JSON array of strings."
+            exit 1
+          }
+          while IFS= read -r name; do
+            [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "::error::Invalid environment variable name '$name'."; exit 1; }
+            [[ -v "$name" ]] || {
+              echo "::error::Environment variable '$name' listed in env-names-json is not set on the caller rollback step. Provide it through GitHub Environment secrets or variables."
+              exit 1
+            }
+          done < <(jq -r '.[]' <<<"$ENV_NAMES_JSON")
+        fi
+
         echo "health_url=http://127.0.0.1:$HOST_PORT$HEALTH_PATH" >>"$GITHUB_OUTPUT"
         echo "caddy_upstream=127.0.0.1:$HOST_PORT" >>"$GITHUB_OUTPUT"
+
+    - name: Merge container environment names
+      id: container_env
+      shell: bash
+      env:
+        ENV_NAMES_JSON: ${{ inputs.env-names-json }}
+        RESOLVED_ENV_NAMES_JSON: ${{ steps.credentials.outputs.resolved-env-names-json }}
+      run: |
+        set -euo pipefail
+        command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
+        merged="$(jq -cn --argjson caller "$ENV_NAMES_JSON" --argjson resolved "$RESOLVED_ENV_NAMES_JSON" '$caller + $resolved | unique')"
+        echo "env_names_json=$merged" >>"$GITHUB_OUTPUT"
 
     - name: Read current known-good deployment
       id: current
@@ -147,7 +189,7 @@ runs:
         container-port: ${{ inputs.container-port }}
         host-port: ${{ inputs.host-port }}
         env-files-json: ${{ inputs.env-files-json }}
-        env-names-json: ${{ inputs.env-names-json }}
+        env-names-json: ${{ steps.container_env.outputs.env_names_json }}
         volumes-json: ${{ inputs.volumes-json }}
         network: ${{ inputs.network }}
         restart-policy: ${{ inputs.restart-policy }}
@@ -197,7 +239,7 @@ runs:
         container-port: ${{ inputs.container-port }}
         host-port: ${{ inputs.host-port }}
         env-files-json: ${{ inputs.env-files-json }}
-        env-names-json: ${{ inputs.env-names-json }}
+        env-names-json: ${{ steps.container_env.outputs.env_names_json }}
         volumes-json: ${{ inputs.volumes-json }}
         network: ${{ inputs.network }}
         restart-policy: ${{ inputs.restart-policy }}

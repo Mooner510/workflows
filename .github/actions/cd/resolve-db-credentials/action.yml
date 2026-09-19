@@ -1,0 +1,171 @@
+name: Resolve database credentials
+description: Use caller-provided database env vars when present; otherwise resolve missing values from /opt/stacks/projects/<project>/db.env on trusted self-hosted runners.
+
+inputs:
+  project:
+    description: Stable project identifier matching /opt/stacks/projects/<project>/db.env.
+    required: true
+  credential-source:
+    description: auto uses caller-provided values first and falls back to host db.env for any missing database credential. github requires caller-provided values and never reads host db.env.
+    required: false
+    default: auto
+  migration-engine:
+    description: none, goose, prisma, or flyway.
+    required: false
+    default: none
+  env-names-json:
+    description: Caller-requested container environment variable names. Used to decide whether DATABASE_URL should be auto-resolved for non-migration services.
+    required: false
+    default: '[]'
+
+outputs:
+  resolved-env-names-json:
+    description: JSON array of environment variable names resolved from host db.env during this step.
+    value: ${{ steps.resolve.outputs.resolved_env_names_json }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve database credentials
+      id: resolve
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+        CREDENTIAL_SOURCE: ${{ inputs.credential-source }}
+        MIGRATION_ENGINE: ${{ inputs.migration-engine }}
+        ENV_NAMES_JSON: ${{ inputs.env-names-json }}
+      run: |
+        set -euo pipefail
+        command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
+        jq -e 'type == "array" and all(.[]; type == "string")' <<<"$ENV_NAMES_JSON" >/dev/null || {
+          echo "::error::env-names-json must be a JSON array of strings."
+          exit 1
+        }
+
+        case "$CREDENTIAL_SOURCE" in auto|github|host) ;; *)
+          echo "::error::credential-source must be auto, github, or host."
+          exit 1
+        ;;
+        esac
+        case "$MIGRATION_ENGINE" in none|goose|prisma|flyway) ;; *)
+          echo "::error::migration-engine must be none, goose, prisma, or flyway."
+          exit 1
+        ;;
+        esac
+
+        # host is a compatibility alias for auto.
+        if [[ "$CREDENTIAL_SOURCE" == "github" ]]; then
+          echo 'resolved_env_names_json=[]' >>"$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        needs_database_url=false
+        needs_flyway=false
+        case "$MIGRATION_ENGINE" in goose|prisma) needs_database_url=true ;; flyway) needs_flyway=true ;; esac
+        if jq -e 'index("DATABASE_URL") != null' <<<"$ENV_NAMES_JSON" >/dev/null; then
+          needs_database_url=true
+        fi
+
+        if [[ "$needs_database_url" == "false" && "$needs_flyway" == "false" ]]; then
+          echo 'resolved_env_names_json=[]' >>"$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        if [[ "$needs_database_url" == "true" && -n "${DATABASE_URL:-}" ]]; then
+          needs_database_url=false
+        fi
+        if [[ "$needs_flyway" == "true" && -n "${FLYWAY_URL:-}" && -n "${FLYWAY_USER:-}" && -n "${FLYWAY_PASSWORD:-}" ]]; then
+          needs_flyway=false
+        fi
+
+        if [[ "$needs_database_url" == "false" && "$needs_flyway" == "false" ]]; then
+          echo 'resolved_env_names_json=[]' >>"$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        [[ "$PROJECT" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
+          echo "::error::Invalid project identifier '$PROJECT'."
+          exit 1
+        }
+
+        db_env="/opt/stacks/projects/$PROJECT/db.env"
+        [[ -f "$db_env" ]] || {
+          if [[ "$needs_database_url" == "true" ]]; then
+            echo "::error::DATABASE_URL is not set and $db_env does not exist. Provide GitHub Environment secret DATABASE_URL or create the project database with 'sudo db new $PROJECT'."
+            exit 1
+          fi
+          if [[ "$needs_flyway" == "true" ]]; then
+            echo "::error::Flyway credentials are not set and $db_env does not exist. Provide GitHub Environment Flyway secrets or create the project database with 'sudo db new $PROJECT'."
+            exit 1
+          fi
+          echo 'resolved_env_names_json=[]' >>"$GITHUB_OUTPUT"
+          exit 0
+        }
+
+        declare -A values=()
+        while IFS= read -r line || [[ -n "$line" ]]; do
+          line="${line//$'\r'/}"
+          [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+          key="${line%%=*}"
+          value="${line#*=}"
+          key="$(printf '%s' "$key" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          value="$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          [[ -n "$key" ]] || continue
+          values["$key"]="$value"
+        done <"$db_env"
+
+        for required in DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD; do
+          [[ -n "${values[$required]:-}" ]] || {
+            echo "::error::$db_env is missing $required."
+            exit 1
+          }
+        done
+
+        urlencode() {
+          python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
+        }
+
+        write_env() {
+          local name="$1"
+          local value="$2"
+          {
+            echo "${name}<<__CREDENTIAL_EOF__"
+            printf '%s' "$value"
+            echo
+            echo '__CREDENTIAL_EOF__'
+          } >>"$GITHUB_ENV"
+        }
+
+        declare -a resolved=()
+
+        if [[ "$needs_database_url" == "true" && -z "${DATABASE_URL:-}" ]]; then
+          encoded_password="$(urlencode "${values[DB_PASSWORD]}")"
+          database_url="postgresql://${values[DB_USER]}:${encoded_password}@${values[DB_HOST]}:${values[DB_PORT]}/${values[DB_NAME]}"
+          write_env DATABASE_URL "$database_url"
+          resolved+=("DATABASE_URL")
+          echo "Resolved DATABASE_URL from $db_env for project '$PROJECT'."
+        fi
+
+        if [[ "$needs_flyway" == "true" ]]; then
+          if [[ -z "${FLYWAY_URL:-}" ]]; then
+            write_env FLYWAY_URL "jdbc:postgresql://${values[DB_HOST]}:${values[DB_PORT]}/${values[DB_NAME]}"
+            resolved+=("FLYWAY_URL")
+          fi
+          if [[ -z "${FLYWAY_USER:-}" ]]; then
+            write_env FLYWAY_USER "${values[DB_USER]}"
+            resolved+=("FLYWAY_USER")
+          fi
+          if [[ -z "${FLYWAY_PASSWORD:-}" ]]; then
+            write_env FLYWAY_PASSWORD "${values[DB_PASSWORD]}"
+            resolved+=("FLYWAY_PASSWORD")
+          fi
+          if ((${#resolved[@]} > 0)); then
+            echo "Resolved Flyway credentials from $db_env for project '$PROJECT'."
+          fi
+        fi
+
+        if ((${#resolved[@]} == 0)); then
+          printf '%s\n' 'resolved_env_names_json=[]' >>"$GITHUB_OUTPUT"
+        else
+          printf 'resolved_env_names_json=%s\n' "$(printf '%s\n' "${resolved[@]}" | jq -R . | jq -s -c .)" >>"$GITHUB_OUTPUT"
+        fi
