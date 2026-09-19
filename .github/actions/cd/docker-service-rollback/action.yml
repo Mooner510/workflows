@@ -132,8 +132,8 @@ runs:
       env:
         HOST_PORT_INPUT: ${{ inputs.host-port }}
         DOMAIN_INPUT: ${{ inputs.domain }}
-        DEPLOY_HOST_PORT: ${{ steps.runtime_env.outputs.deploy-host-port }}
-        DEPLOY_DOMAIN: ${{ steps.runtime_env.outputs.deploy-domain }}
+        DEPLOY_HOST_PORT: ${{ steps.runtime_env.outputs['deploy-host-port'] }}
+        DEPLOY_DOMAIN: ${{ steps.runtime_env.outputs['deploy-domain'] }}
         HEALTH_PATH: ${{ inputs.health-path }}
         ENV_NAMES_JSON: ${{ inputs.env-names-json }}
         HOST_ENV_KEYS_JSON: ${{ steps.runtime_env.outputs.env-keys-json }}
