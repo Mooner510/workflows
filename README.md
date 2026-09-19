@@ -32,17 +32,23 @@
    └─ android/release/
 ```
 
-Runner는 CI와 production CD를 분리합니다.
+Runner scope는 repository ownership에 따라 나뉘지만, **CI와 CD 역할로는 분리하지 않습니다.**
 
-```yaml
-# Generic/containerized Gharp CI
-runs-on: [self-hosted, linux, ci]
+```text
+Personal repositories
+→ Gharp self-hosted runner
 
-# Host-level production CD
-runs-on: [self-hosted, linux, production]
+Organization repositories
+→ Organization scoped self-hosted runner
 ```
 
-CI runner에는 `/opt/stacks/projects`를 mount하지 않습니다. Production runner만 host Docker, Caddy, `/opt/stacks/projects`, `/var/lib/stacks`에 접근합니다. 이 분리는 production secret이 일반 CI job에 노출되지 않게 하는 보안 경계입니다.
+둘 다 같은 canonical selector를 사용합니다.
+
+```yaml
+runs-on: [self-hosted, linux]
+```
+
+각 환경에서 동일 runner가 CI와 CD를 모두 수행합니다. 리소스 제약 때문에 CI 전용/CD 전용 runner를 따로 두지 않습니다. 따라서 CD를 수행하는 runner는 Docker/Caddy와 `/opt/stacks/projects`, `/var/lib/stacks`에 접근할 수 있어야 합니다. 이 선택은 격리 수준을 낮추지만 현재 운영 제약상 의도된 구조입니다.
 
 ## CI
 
@@ -249,8 +255,8 @@ trigger
 concurrency
 environment
 permissions
+runs-on: [self-hosted, linux]
 checkout
-secrets / environment variables
 central action inputs
 ```
 
