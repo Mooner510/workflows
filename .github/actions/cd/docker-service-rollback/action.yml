@@ -15,10 +15,6 @@ inputs:
   container-port:
     description: Internal application port.
     required: true
-  host-port:
-    description: Optional compatibility override. Empty reads DEPLOY_HOST_PORT from canonical host deploy.env.
-    required: false
-    default: ''
   domain:
     description: Optional compatibility override. Empty reads DEPLOY_DOMAIN from canonical host deploy.env.
     required: false
@@ -130,9 +126,7 @@ runs:
       id: contract
       shell: bash
       env:
-        HOST_PORT_INPUT: ${{ inputs.host-port }}
         DOMAIN_INPUT: ${{ inputs.domain }}
-        DEPLOY_HOST_PORT: ${{ steps.runtime_env.outputs['deploy-host-port'] }}
         DEPLOY_DOMAIN: ${{ steps.runtime_env.outputs['deploy-domain'] }}
         HEALTH_PATH: ${{ inputs.health-path }}
         ENV_NAMES_JSON: ${{ inputs.env-names-json }}
@@ -141,15 +135,9 @@ runs:
         set -euo pipefail
         [[ "$HEALTH_PATH" == /* ]] || { echo "::error::health-path must start with '/'."; exit 1; }
 
-        host_port="$HOST_PORT_INPUT"
-        [[ -n "$host_port" ]] || host_port="$DEPLOY_HOST_PORT"
         domain="$DOMAIN_INPUT"
         [[ -n "$domain" ]] || domain="$DEPLOY_DOMAIN"
 
-        [[ "$host_port" =~ ^[0-9]+$ ]] && (( host_port >= 1 && host_port <= 65535 )) || {
-          echo "::error::DEPLOY_HOST_PORT must be an integer between 1 and 65535 in the canonical deploy.env."
-          exit 1
-        }
         [[ "$domain" =~ ^[A-Za-z0-9*.-]+$ ]] || {
           echo "::error::DEPLOY_DOMAIN is required in the canonical deploy.env and must be a valid hostname."
           exit 1
@@ -178,12 +166,7 @@ runs:
           done < <(jq -r '.[]' <<<"$ENV_NAMES_JSON")
         fi
 
-        {
-          echo "host_port=$host_port"
-          echo "domain=$domain"
-          echo "health_url=http://127.0.0.1:$host_port$HEALTH_PATH"
-          echo "caddy_upstream=127.0.0.1:$host_port"
-        } >>"$GITHUB_OUTPUT"
+        echo "domain=$domain" >>"$GITHUB_OUTPUT"
 
     - name: Merge container environment names
       id: container_env
@@ -240,7 +223,6 @@ runs:
         container-name: ${{ inputs.service-name }}
         image: ${{ steps.target.outputs['image-id'] }}
         container-port: ${{ inputs.container-port }}
-        host-port: ${{ steps.contract.outputs.host_port }}
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
         env-names-json: ${{ steps.container_env.outputs.env_names_json }}
         volumes-json: ${{ inputs.volumes-json }}
@@ -256,7 +238,7 @@ runs:
       id: rollback_health
       uses: $/.github/actions/cd/docker/health
       with:
-        url: ${{ steps.contract.outputs.health_url }}
+        url: http://127.0.0.1:${{ steps.rollback.outputs['host-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
     - name: Register Caddy route
@@ -265,7 +247,7 @@ runs:
       with:
         service-name: ${{ inputs.service-name }}
         domain: ${{ steps.contract.outputs.domain }}
-        upstream: ${{ steps.contract.outputs.caddy_upstream }}
+        upstream: 127.0.0.1:${{ steps.rollback.outputs['host-port'] }}
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
 
@@ -290,7 +272,6 @@ runs:
         container-name: ${{ inputs.service-name }}
         image: ${{ steps.current.outputs['image-id'] }}
         container-port: ${{ inputs.container-port }}
-        host-port: ${{ steps.contract.outputs.host_port }}
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
         env-names-json: ${{ steps.container_env.outputs.env_names_json }}
         volumes-json: ${{ inputs.volumes-json }}
@@ -307,7 +288,7 @@ runs:
       if: failure() && steps.restore.outcome == 'success'
       uses: $/.github/actions/cd/docker/health
       with:
-        url: ${{ steps.contract.outputs.health_url }}
+        url: http://127.0.0.1:${{ steps.restore.outputs['host-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
     - name: Restore original deployment state
