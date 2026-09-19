@@ -1,5 +1,5 @@
 name: Resolve runtime environment files
-description: Resolve canonical host-managed runtime env files for one production service and merge optional caller files.
+description: Resolve the canonical host deploy.env for one production service, plus optional compatibility env files.
 
 inputs:
   project:
@@ -20,6 +20,12 @@ outputs:
   env-keys-json:
     description: JSON array of variable names provided by the resolved env files. Values are never emitted.
     value: ${{ steps.resolve.outputs.env_keys_json }}
+  deploy-domain:
+    description: DEPLOY_DOMAIN resolved from the canonical service deploy.env.
+    value: ${{ steps.resolve.outputs.deploy_domain }}
+  deploy-host-port:
+    description: DEPLOY_HOST_PORT resolved from the canonical service deploy.env.
+    value: ${{ steps.resolve.outputs.deploy_host_port }}
 
 runs:
   using: composite
@@ -54,6 +60,23 @@ runs:
           exit 1
         }
 
+        trim() {
+          printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+        }
+
+        normalize_value() {
+          local value
+          value="$(trim "$1")"
+          if (( ${#value} >= 2 )); then
+            if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]]; then
+              value="${value:1:${#value}-2}"
+            elif [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
+              value="${value:1:${#value}-2}"
+            fi
+          fi
+          printf '%s' "$value"
+        }
+
         workspace="$(realpath "$GITHUB_WORKSPACE")"
         resolved='[]'
 
@@ -72,28 +95,49 @@ runs:
         done < <(jq -r '.[]' <<<"$ENV_FILES_JSON")
 
         service_root="/opt/stacks/projects/$PROJECT/$SERVICE"
-        for path in "$service_root/deploy.env" "$service_root/secret/deploy.env"; do
-          if [[ -f "$path" ]]; then
-            resolved="$(jq -c --arg path "$path" '. + [$path]' <<<"$resolved")"
-            echo "Using host runtime env file: $path"
-          fi
-        done
+        canonical_env="$service_root/deploy.env"
+        legacy_secret_env="$service_root/secret/deploy.env"
+
+        if [[ -f "$canonical_env" ]]; then
+          resolved="$(jq -c --arg path "$canonical_env" '. + [$path]' <<<"$resolved")"
+          echo "Using canonical host deploy env: $canonical_env"
+        fi
+        if [[ -f "$legacy_secret_env" ]]; then
+          resolved="$(jq -c --arg path "$legacy_secret_env" '. + [$path]' <<<"$resolved")"
+          echo "::warning::$legacy_secret_env is a compatibility file. Prefer a single canonical $canonical_env."
+        fi
 
         resolved="$(jq -c 'unique' <<<"$resolved")"
         keys='[]'
+        deploy_domain=""
+        deploy_host_port=""
+
         while IFS= read -r path; do
           while IFS= read -r line || [[ -n "$line" ]]; do
             line="${line//$'\r'/}"
             [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
             key="${line%%=*}"
-            key="$(printf '%s' "$key" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            value="${line#*=}"
+            key="$(trim "$key")"
             [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || {
               echo "::error::Invalid environment variable name '$key' in $path."
               exit 1
             }
             keys="$(jq -c --arg key "$key" '. + [$key]' <<<"$keys")"
+
+            if [[ "$path" == "$canonical_env" ]]; then
+              case "$key" in
+                DEPLOY_DOMAIN) deploy_domain="$(normalize_value "$value")" ;;
+                DEPLOY_HOST_PORT) deploy_host_port="$(normalize_value "$value")" ;;
+              esac
+            fi
           done <"$path"
         done < <(jq -r '.[]' <<<"$resolved")
+
         keys="$(jq -c 'unique' <<<"$keys")"
-        echo "env_files_json=$resolved" >>"$GITHUB_OUTPUT"
-        echo "env_keys_json=$keys" >>"$GITHUB_OUTPUT"
+        {
+          echo "env_files_json=$resolved"
+          echo "env_keys_json=$keys"
+          echo "deploy_domain=$deploy_domain"
+          echo "deploy_host_port=$deploy_host_port"
+        } >>"$GITHUB_OUTPUT"

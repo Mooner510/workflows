@@ -16,17 +16,19 @@ inputs:
     description: Internal application port.
     required: true
   host-port:
-    description: Fixed loopback host port assigned to this service.
-    required: true
+    description: Optional compatibility override. Empty reads DEPLOY_HOST_PORT from canonical host deploy.env.
+    required: false
+    default: ''
   domain:
-    description: Public hostname registered in Caddy.
-    required: true
+    description: Optional compatibility override. Empty reads DEPLOY_DOMAIN from canonical host deploy.env.
+    required: false
+    default: ''
   db-credential-source:
     description: host reads database credentials from /opt/stacks/projects/<repository-name>/db.env. github is a compatibility mode for caller-provided credentials.
     required: false
     default: host
   env-files-json:
-    description: Optional JSON array of additional repository-relative Docker env files. Canonical host deploy.env and secret/deploy.env are discovered automatically on the production runner.
+    description: Optional JSON array of additional repository-relative Docker env files. Canonical host deploy.env is discovered automatically; secret/deploy.env is compatibility-only.
     required: false
     default: '[]'
   env-names-json:
@@ -128,13 +130,30 @@ runs:
       id: contract
       shell: bash
       env:
-        HOST_PORT: ${{ inputs.host-port }}
+        HOST_PORT_INPUT: ${{ inputs.host-port }}
+        DOMAIN_INPUT: ${{ inputs.domain }}
+        DEPLOY_HOST_PORT: ${{ steps.runtime_env.outputs['deploy-host-port'] }}
+        DEPLOY_DOMAIN: ${{ steps.runtime_env.outputs['deploy-domain'] }}
         HEALTH_PATH: ${{ inputs.health-path }}
         ENV_NAMES_JSON: ${{ inputs.env-names-json }}
         HOST_ENV_KEYS_JSON: ${{ steps.runtime_env.outputs.env-keys-json }}
       run: |
         set -euo pipefail
         [[ "$HEALTH_PATH" == /* ]] || { echo "::error::health-path must start with '/'."; exit 1; }
+
+        host_port="$HOST_PORT_INPUT"
+        [[ -n "$host_port" ]] || host_port="$DEPLOY_HOST_PORT"
+        domain="$DOMAIN_INPUT"
+        [[ -n "$domain" ]] || domain="$DEPLOY_DOMAIN"
+
+        [[ "$host_port" =~ ^[0-9]+$ ]] && (( host_port >= 1 && host_port <= 65535 )) || {
+          echo "::error::DEPLOY_HOST_PORT must be an integer between 1 and 65535 in the canonical deploy.env."
+          exit 1
+        }
+        [[ "$domain" =~ ^[A-Za-z0-9*.-]+$ ]] || {
+          echo "::error::DEPLOY_DOMAIN is required in the canonical deploy.env and must be a valid hostname."
+          exit 1
+        }
 
         if [[ -n "$ENV_NAMES_JSON" && "$ENV_NAMES_JSON" != "[]" ]]; then
           command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
@@ -154,13 +173,17 @@ runs:
             if jq -e --arg name "$name" 'index($name) != null' <<<"$HOST_ENV_KEYS_JSON" >/dev/null; then
               continue
             fi
-            echo "::error::Environment variable '$name' is neither set on the caller rollback step nor present in the canonical host deploy.env/secret/deploy.env files."
+            echo "::error::Environment variable '$name' is neither set on the caller rollback step nor present in the canonical host deploy.env or compatibility secret/deploy.env files."
             exit 1
           done < <(jq -r '.[]' <<<"$ENV_NAMES_JSON")
         fi
 
-        echo "health_url=http://127.0.0.1:$HOST_PORT$HEALTH_PATH" >>"$GITHUB_OUTPUT"
-        echo "caddy_upstream=127.0.0.1:$HOST_PORT" >>"$GITHUB_OUTPUT"
+        {
+          echo "host_port=$host_port"
+          echo "domain=$domain"
+          echo "health_url=http://127.0.0.1:$host_port$HEALTH_PATH"
+          echo "caddy_upstream=127.0.0.1:$host_port"
+        } >>"$GITHUB_OUTPUT"
 
     - name: Merge container environment names
       id: container_env
@@ -217,7 +240,7 @@ runs:
         container-name: ${{ inputs.service-name }}
         image: ${{ steps.target.outputs['image-id'] }}
         container-port: ${{ inputs.container-port }}
-        host-port: ${{ inputs.host-port }}
+        host-port: ${{ steps.contract.outputs.host_port }}
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
         env-names-json: ${{ steps.container_env.outputs.env_names_json }}
         volumes-json: ${{ inputs.volumes-json }}
@@ -241,7 +264,7 @@ runs:
       uses: $/.github/actions/cd/caddy
       with:
         service-name: ${{ inputs.service-name }}
-        domain: ${{ inputs.domain }}
+        domain: ${{ steps.contract.outputs.domain }}
         upstream: ${{ steps.contract.outputs.caddy_upstream }}
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
@@ -267,7 +290,7 @@ runs:
         container-name: ${{ inputs.service-name }}
         image: ${{ steps.current.outputs['image-id'] }}
         container-port: ${{ inputs.container-port }}
-        host-port: ${{ inputs.host-port }}
+        host-port: ${{ steps.contract.outputs.host_port }}
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
         env-names-json: ${{ steps.container_env.outputs.env_names_json }}
         volumes-json: ${{ inputs.volumes-json }}

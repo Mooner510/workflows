@@ -190,35 +190,34 @@ Example:
     service-name: api
     image-name: my-project-api
     container-port: '8080'
-    host-port: '40100'
-    domain: api.example.com
     migration-engine: goose
     migration-path: db/migrations
     env-names-json: '["SESSION_SECRET"]'
 ```
 
-### Production runtime configuration / secret
+### Production deploy.env
 
-Canonical production secret은 GitHub가 아니라 production host에 둡니다.
+Canonical production service configuration은 production host의 **단일 `deploy.env`** 입니다.
 
 ```text
 /opt/stacks/projects/<repository-name>/
 ├─ db.env
 └─ <service>/
-   ├─ deploy.env
-   └─ secret/
-      └─ deploy.env
+   └─ deploy.env
 ```
 
-역할:
+`deploy.env`에는 runtime config/secret과 deployment metadata를 함께 둘 수 있습니다.
 
-```text
-db.env                 -> DB ops credential. CD가 migration/runtime DATABASE_URL을 일시 resolve
-<service>/deploy.env   -> non-secret runtime environment
-<service>/secret/deploy.env -> runtime secrets (YouTube/VAPID/Discord/session secret 등)
+```env
+DEPLOY_DOMAIN=api.example.com
+DEPLOY_HOST_PORT=40100
+APP_ENV=production
+SESSION_SECRET=...
 ```
 
-`docker-service`와 `docker-service-rollback`은 production host에서 위 두 service env file을 자동 발견하여 Docker `--env-file`로 runtime에만 주입합니다. 값은 GitHub output/state/history에 기록하지 않습니다.
+`DEPLOY_DOMAIN`과 `DEPLOY_HOST_PORT`는 중앙 CD가 Caddy/host bind 설정으로 읽고, 나머지 값과 함께 Docker `--env-file`로 runtime에 주입합니다. GitHub Environment Variables에 같은 값을 중복 저장할 필요가 없습니다.
+
+기존 `<service>/secret/deploy.env`는 호환용으로 계속 읽지만 새 구성에서는 사용하지 않습니다. `db.env`만 DB lifecycle/credential 분리를 위해 별도로 유지합니다.
 
 DB credential source 기본값은 `host`입니다.
 
@@ -231,7 +230,7 @@ DB credential source 기본값은 `host`입니다.
 
 Docker image build에는 production credential을 전달하지 않습니다.
 
-GitHub Environment는 approval boundary와 필요 시 비민감 Variables 용도로 사용할 수 있습니다. 기존 GitHub Secret 기반 deployment가 필요한 repository만 compatibility mode로 `db-credential-source: github`와 caller env를 사용할 수 있습니다.
+GitHub Environment는 approval/protection boundary 용도로 유지할 수 있지만 canonical service 설정 저장소로 사용하지 않습니다. 기존 GitHub Secret 기반 deployment가 필요한 repository만 compatibility mode로 `db-credential-source: github`와 caller env를 사용할 수 있습니다.
 
 추가 `env-files-json`은 repository-relative 파일만 허용하며, canonical host `deploy.env` / `secret/deploy.env`는 중앙 action이 자동으로 추가합니다.
 
