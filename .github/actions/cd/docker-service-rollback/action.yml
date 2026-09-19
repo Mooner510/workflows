@@ -22,7 +22,7 @@ inputs:
     description: Public hostname registered in Caddy.
     required: true
   db-credential-source:
-    description: host reads database credentials from /opt/stacks/projects/<project>/db.env. github is a compatibility mode for caller-provided credentials.
+    description: host reads database credentials from /opt/stacks/projects/<repository-name>/db.env. github is a compatibility mode for caller-provided credentials.
     required: false
     default: host
   env-files-json:
