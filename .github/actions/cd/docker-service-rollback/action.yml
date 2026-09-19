@@ -292,6 +292,7 @@ runs:
         attempts: ${{ inputs.health-attempts }}
 
     - name: Restore original Caddy route
+      id: restore_caddy
       if: failure() && steps.restore_health.outcome == 'success'
       uses: $/.github/actions/cd/caddy
       with:
@@ -302,7 +303,7 @@ runs:
         sites-directory: ${{ inputs.caddy-sites-directory }}
 
     - name: Restore original deployment state
-      if: failure() && steps.restore_health.outcome == 'success'
+      if: failure() && steps.restore_health.outcome == 'success' && steps.restore_caddy.outcome == 'success'
       uses: $/.github/actions/cd/state
       with:
         operation: record
