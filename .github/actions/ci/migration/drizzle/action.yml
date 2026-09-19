@@ -1,0 +1,134 @@
+name: Drizzle migration CI
+description: Validate Drizzle migration history and apply it to an isolated disposable PostgreSQL instance.
+
+inputs:
+  components:
+    description: JSON array of affected Node components using Drizzle Kit migrations.
+    required: true
+  postgres-image:
+    description: PostgreSQL image used for disposable migration validation.
+    required: false
+    default: postgres:17-alpine
+
+runs:
+  using: composite
+  steps:
+    - name: Validate Drizzle migrations
+      shell: bash
+      env:
+        COMPONENTS_JSON: ${{ inputs.components }}
+        POSTGRES_IMAGE: ${{ inputs.postgres-image }}
+      run: |
+        set -euo pipefail
+
+        command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+        command -v docker >/dev/null || { echo "::error::docker is required for Drizzle migration CI."; exit 1; }
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+        jq -e 'type == "array" and length > 0' <<<"$components" >/dev/null || {
+          echo "::error::components must be a non-empty JSON array."
+          exit 1
+        }
+
+        run_drizzle() {
+          local manager="$1"
+          local component="$2"
+          shift 2
+          case "$manager" in
+            npm)  (cd "$component" && npm exec --offline -- drizzle-kit "$@") ;;
+            pnpm) (cd "$component" && pnpm exec drizzle-kit "$@") ;;
+            yarn) (cd "$component" && yarn exec drizzle-kit "$@") ;;
+            bun)  (cd "$component" && bunx --bun drizzle-kit "$@") ;;
+            *) echo "::error::Unsupported Drizzle package manager '$manager'."; return 1 ;;
+          esac
+        }
+
+        cleanup_container() {
+          local container="$1"
+          docker rm -f "$container" >/dev/null 2>&1 || true
+        }
+
+        start_postgres() {
+          local container="$1"
+          local port=""
+
+          docker run -d --rm \
+            --name "$container" \
+            -e POSTGRES_USER=drizzle \
+            -e POSTGRES_PASSWORD=drizzle \
+            -e POSTGRES_DB=drizzle \
+            -p 127.0.0.1::5432 \
+            "$POSTGRES_IMAGE" >/dev/null
+
+          for _ in {1..60}; do
+            if docker exec "$container" pg_isready -U drizzle -d drizzle >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          if ! docker exec "$container" pg_isready -U drizzle -d drizzle >/dev/null 2>&1; then
+            docker logs "$container" >&2 || true
+            echo "::error::PostgreSQL did not become ready for Drizzle migration CI." >&2
+            return 1
+          fi
+
+          port="$(docker port "$container" 5432/tcp | awk -F: 'NR == 1 { print $NF }')"
+          if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to resolve the temporary PostgreSQL port." >&2
+            return 1
+          fi
+          printf '%s' "$port"
+        }
+
+        while IFS= read -r component_json; do
+          name="$(jq -r '.name // empty' <<<"$component_json")"
+          path="$(jq -r '.path // empty' <<<"$component_json")"
+          manager="$(jq -r '.package_manager // empty' <<<"$component_json")"
+          migrations_path="$(jq -r '.migration_path // "drizzle"' <<<"$component_json")"
+          config_path="$(jq -r '.migration_config // "drizzle.config.ts"' <<<"$component_json")"
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+
+          if [[ -z "$component" ]] || { [[ "$component" != "$workspace" ]] && [[ "$component" != "$workspace/"* ]]; }; then
+            echo "::error::Drizzle component '$name' must resolve inside the repository."
+            exit 1
+          fi
+          case "$manager" in npm|pnpm|yarn|bun) ;; *) echo "::error::Drizzle component '$name' has invalid package manager '$manager'."; exit 1 ;; esac
+
+          config="$(realpath -e "$component/$config_path" 2>/dev/null || true)"
+          migrations="$(realpath -e "$component/$migrations_path" 2>/dev/null || true)"
+          if [[ -z "$config" || ! -f "$config" ]] || { [[ "$config" != "$component" ]] && [[ "$config" != "$component/"* ]]; }; then
+            echo "::error::Drizzle config '$config_path' must resolve inside component '$name'."
+            exit 1
+          fi
+          if [[ -z "$migrations" || ! -d "$migrations" ]] || { [[ "$migrations" != "$component" ]] && [[ "$migrations" != "$component/"* ]]; }; then
+            echo "::error::Drizzle migrations directory '$migrations_path' must resolve inside component '$name'."
+            exit 1
+          fi
+
+          if ! (cd "$component" && node -e 'require.resolve("drizzle-kit/package.json")' >/dev/null 2>&1); then
+            echo "::error::drizzle-kit must be installed as a local project dependency for '$name'."
+            exit 1
+          fi
+
+          if ! find "$migrations" -type f -name '*.sql' -print -quit | grep -q .; then
+            echo "::error::No Drizzle SQL migration files found under '$migrations_path' for '$name'."
+            exit 1
+          fi
+
+          safe_name="$(tr -cs 'A-Za-z0-9_.-' '-' <<<"$name" | sed 's/^-*//; s/-*$//' | cut -c1-40)"
+          container="drizzle-ci-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${safe_name}-${RANDOM}"
+          trap 'cleanup_container "$container"' EXIT
+
+          echo "==> Drizzle migration CI: checking and applying $name to disposable PostgreSQL"
+          port="$(start_postgres "$container")" || exit 1
+          database_url="postgresql://drizzle:drizzle@127.0.0.1:${port}/drizzle?sslmode=disable"
+          (
+            export DATABASE_URL="$database_url"
+            run_drizzle "$manager" "$component" check --config "$config"
+            run_drizzle "$manager" "$component" migrate --config "$config"
+          )
+
+          cleanup_container "$container"
+          trap - EXIT
+        done < <(jq -c '.[]' <<<"$components")
