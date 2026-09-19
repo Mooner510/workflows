@@ -1,0 +1,59 @@
+name: Go command migration CI
+description: Validate a repository-owned Go migration command against a disposable PostgreSQL instance while preserving its existing migration history format.
+
+inputs:
+  components:
+    description: JSON array of affected Go components using migration_engine=go-command.
+    required: true
+  postgres-image:
+    description: Disposable PostgreSQL image.
+    required: false
+    default: postgres:17-alpine
+
+runs:
+  using: composite
+  steps:
+    - name: Validate Go command migrations
+      shell: bash
+      env:
+        COMPONENTS_JSON: ${{ inputs.components }}
+        POSTGRES_IMAGE: ${{ inputs.postgres-image }}
+      run: |
+        set -euo pipefail
+        command -v docker >/dev/null || { echo "::error::Docker is required."; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
+
+        cleanup=()
+        trap 'for c in "${cleanup[@]:-}"; do docker rm -f "$c" >/dev/null 2>&1 || true; done' EXIT
+
+        while IFS= read -r component; do
+          name="$(jq -r '.name' <<<"$component")"
+          path="$(jq -r '.path' <<<"$component")"
+          pkg="$(jq -r '.migration_package // "./cmd/migrate"' <<<"$component")"
+          [[ "$pkg" == ./* && "$pkg" != *".."* ]] || { echo "::error::migration_package for $name must be a safe relative Go package."; exit 1; }
+          root="$(realpath -e "$GITHUB_WORKSPACE/$path")"
+          container="migration-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${name//[^A-Za-z0-9_.-]/-}"
+          cleanup+=("$container")
+
+          docker run -d --name "$container" -e POSTGRES_USER=ci -e POSTGRES_PASSWORD=ci -e POSTGRES_DB=ci -p 127.0.0.1::5432 "$POSTGRES_IMAGE" >/dev/null
+          port="$(docker port "$container" 5432/tcp | head -n1 | sed -E 's/^127\.0\.0\.1:([0-9]+)$/\1/')"
+          [[ "$port" =~ ^[0-9]+$ ]] || { docker logs "$container" >&2 || true; exit 1; }
+
+          ready=false
+          for _ in {1..60}; do
+            if docker exec -e PGPASSWORD=ci "$container" psql -h 127.0.0.1 -U ci -d ci -tAc 'SELECT 1' 2>/dev/null | grep -qx '1'; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          [[ "$ready" == "true" ]] || { docker logs "$container" >&2 || true; echo "::error::PostgreSQL did not become ready for $name."; exit 1; }
+
+          echo "==> Applying $name migration command to disposable PostgreSQL"
+          (
+            cd "$root"
+            DATABASE_URL="postgres://ci:ci@127.0.0.1:$port/ci?sslmode=disable" go run "$pkg"
+          )
+          docker rm -f "$container" >/dev/null
+          cleanup=("${cleanup[@]/$container}")
+        done < <(jq -c '.[]' <<<"$COMPONENTS_JSON")

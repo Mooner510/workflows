@@ -89,6 +89,7 @@ runs:
         [[ -f "$keystore" ]] || { echo "::error::Release keystore '$KEYSTORE_PATH' does not exist."; exit 1; }
 
         {
+          echo "ANDROID_KEYSTORE_PATH=$keystore"
           echo "ORG_GRADLE_PROJECT_releaseStoreFile=$keystore"
           echo "ORG_GRADLE_PROJECT_releaseStorePassword=$ANDROID_KEYSTORE_PASSWORD"
           echo "ORG_GRADLE_PROJECT_releaseKeyAlias=$ANDROID_KEY_ALIAS"
@@ -144,6 +145,21 @@ runs:
           echo "::error::Release artifact must resolve inside the Android working-directory."
           exit 1
         fi
+        if [[ "$artifact" == *.apk ]]; then
+          apksigner="$(find "${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}" -type f -name apksigner -perm -u+x 2>/dev/null | sort -V | tail -n1 || true)"
+          [[ -n "$apksigner" ]] || { echo "::error::apksigner is required for APK release artifacts."; exit 1; }
+          if ! "$apksigner" verify "$artifact" >/dev/null 2>&1; then
+            echo "==> APK is unsigned; signing with canonical Android key"
+            "$apksigner" sign \
+              --ks "$ANDROID_KEYSTORE_PATH" \
+              --ks-key-alias "$ANDROID_KEY_ALIAS" \
+              --ks-pass "env:ANDROID_KEYSTORE_PASSWORD" \
+              --key-pass "env:ANDROID_KEY_PASSWORD" \
+              "$artifact"
+          fi
+          "$apksigner" verify --verbose "$artifact" >/dev/null
+        fi
+
         digest="$(sha256sum "$artifact" | awk '{print $1}')"
         {
           echo "path=$artifact"

@@ -20,14 +20,17 @@
 │  ├─ java-kotlin/
 │  │  ├─ build-tools/{gradle,maven}/
 │  │  └─ profiles/{android,spring-boot}/
-│  └─ migration/{goose,prisma,drizzle,flyway}/
+│  ├─ go-postgres/
+│  └─ migration/{goose,go-command,prisma,drizzle,flyway}/
 └─ cd/
    ├─ guard/
    ├─ docker-service-production/
+   ├─ docker-process-production/
+   ├─ android-production/
    ├─ docker-service/
    ├─ docker-service-rollback/
    ├─ docker/{build,deploy,health}/
-   ├─ migration/{goose,prisma,drizzle,flyway}/
+   ├─ migration/{goose,go-command,prisma,drizzle,flyway}/
    ├─ caddy/
    ├─ state/
    └─ android/release/
@@ -43,7 +46,7 @@ Personal repository는 Gharp, Organization repository는 Organization scoped sel
 
 ## CI
 
-Project는 `.github/workflows/ci.yml`에서 중앙 `pipeline.yml`을 호출합니다. Node package manager는 lockfile에서, Go version은 가장 가까운 `go.mod`의 `toolchain` 또는 `go` directive에서 자동 감지하므로 특별한 이유가 없으면 caller가 중복 지정하지 않습니다. CI concurrency도 shared pipeline이 소유합니다.
+Project는 `.github/workflows/ci.yml`에서 중앙 `pipeline.yml`을 호출합니다. Node package manager는 lockfile에서, Go version은 가장 가까운 `go.mod`의 `toolchain` 또는 `go` directive에서 자동 감지하므로 특별한 이유가 없으면 caller가 중복 지정하지 않습니다. CI concurrency와 동일 언어 monorepo impact detection도 shared pipeline이 소유합니다. 실제 PostgreSQL application behavior test가 필요한 Go component는 `postgres_test` contract를 선언하면 disposable PostgreSQL lifecycle과 test 실행을 중앙이 처리합니다.
 
 ```yaml
 jobs:
@@ -76,10 +79,11 @@ Migration CI는 언어 CI와 분리되어 상위 pipeline에서 한 번만 실�
 네 engine 모두 component별 disposable `postgres:17-alpine`을 동적 loopback port로 시작하고, clean PostgreSQL에 전체 migration history를 실제 적용한 뒤 즉시 제거합니다.
 
 ```text
-Goose   -> goose validate + goose up
-Prisma  -> prisma validate + prisma migrate deploy
-Drizzle -> drizzle-kit check + drizzle-kit migrate
-Flyway  -> source/plugin validation + flyway migrate
+Goose      -> goose validate + goose up
+Go command -> existing Go migrator + disposable PostgreSQL
+Prisma     -> prisma validate + prisma migrate deploy
+Drizzle    -> drizzle-kit check + drizzle-kit migrate
+Flyway     -> source/plugin validation + flyway migrate
 ```
 
 ### Drizzle Kit migration CI/CD
@@ -150,7 +154,7 @@ Trivy misconfiguration
 
 ## CD
 
-API/Web Docker service의 canonical caller entrypoint:
+Generic HTTP Docker service의 canonical caller entrypoint:
 
 ```text
 .github/actions/cd/docker-service-production
@@ -199,15 +203,40 @@ Example:
     env-names-json: '["SESSION_SECRET"]'
 ```
 
+### Non-HTTP process service
+
+Worker, key daemon, exclusive process처럼 Caddy/HTTP port가 없는 service는 다음 공용 entrypoint를 사용합니다.
+
+```text
+.github/actions/cd/docker-process-production
+```
+
+Source checkout/build, project identity, runtime config, optional DATABASE_URL, process replace, readiness command, shared state/history, deploy/rollback을 중앙 action이 소유합니다.
+
+### Android production
+
+Android release caller는 다음 공용 entrypoint를 사용합니다.
+
+```text
+.github/actions/cd/android-production
+```
+
+`andr`가 관리하는 host signing material과 Android service `deploy.env`를 자동으로 읽고, release checkout/version/signing/upload를 중앙에서 처리합니다. APK가 Gradle 단계에서 unsigned이면 중앙 action이 `apksigner` fallback으로 서명합니다.
+
 ### Production deploy.env
 
-Canonical production project configuration은 production host의 **단일 `deploy.env`** 입니다.
+Canonical production configuration은 project 공통값과 선택적 service override/secret 계층으로 구성합니다.
 
 ```text
 /opt/stacks/projects/<repository-name>/
 ├─ db.env
-└─ deploy.env
+├─ deploy.env
+└─ <service>/
+   ├─ deploy.env
+   └─ secret/deploy.env
 ```
+
+중앙 CD는 project `deploy.env`를 먼저 읽고, service `deploy.env`, service `secret/deploy.env`가 존재하면 순서대로 overlay합니다. 따라서 caller workflow가 runtime secret 이름이나 service domain/volume을 반복 선언할 필요가 없습니다.
 
 `deploy.env`에는 runtime config/secret과 deployment metadata를 함께 둘 수 있습니다.
 

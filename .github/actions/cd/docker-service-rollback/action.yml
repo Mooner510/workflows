@@ -119,6 +119,7 @@ runs:
       uses: $/.github/actions/cd/resolve-runtime-env-files
       with:
         project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
         env-files-json: ${{ inputs.env-files-json }}
 
     - name: Resolve rollback contract
@@ -224,7 +225,7 @@ runs:
         container-port: ${{ inputs.container-port }}
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
         env-names-json: ${{ steps.container_env.outputs.env_names_json }}
-        volumes-json: ${{ inputs.volumes-json }}
+        volumes-json: ${{ inputs.volumes-json != '[]' && inputs.volumes-json || steps.runtime_env.outputs.deploy-volumes-json }}
         network: ${{ steps.identity.outputs.network }}
         restart-policy: ${{ inputs.restart-policy }}
         init: ${{ inputs.init }}
@@ -273,7 +274,7 @@ runs:
         container-port: ${{ inputs.container-port }}
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
         env-names-json: ${{ steps.container_env.outputs.env_names_json }}
-        volumes-json: ${{ inputs.volumes-json }}
+        volumes-json: ${{ inputs.volumes-json != '[]' && inputs.volumes-json || steps.runtime_env.outputs.deploy-volumes-json }}
         network: ${{ steps.identity.outputs.network }}
         restart-policy: ${{ inputs.restart-policy }}
         init: ${{ inputs.init }}

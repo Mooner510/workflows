@@ -1,0 +1,273 @@
+name: Docker process production
+description: Canonical production entrypoint for workers, key services, and other non-HTTP Docker processes with shared state and rollback.
+
+inputs:
+  production-branch:
+    description: Production branch. Empty uses the caller repository default branch.
+    required: false
+    default: ''
+  working-directory:
+    description: Docker build context relative to caller repository.
+    required: true
+  service-name:
+    description: Stable container and deployment-state service name.
+    required: true
+  image-name:
+    description: Local image repository name. Empty uses service-name.
+    required: false
+    default: ''
+  dockerfile:
+    description: Dockerfile relative to working-directory.
+    required: false
+    default: Dockerfile
+  target:
+    description: Optional Docker build target.
+    required: false
+    default: ''
+  database:
+    description: Resolve and inject DATABASE_URL from canonical db.env.
+    required: false
+    default: 'false'
+  volumes-json:
+    description: Docker volume specs. Empty uses DEPLOY_VOLUMES_JSON from resolved runtime config.
+    required: false
+    default: '[]'
+  readiness-command-json:
+    description: Optional JSON command array executed with docker exec until ready.
+    required: false
+    default: '[]'
+  readiness-jq:
+    description: Optional jq expression evaluated against readiness command JSON output.
+    required: false
+    default: ''
+  readiness-attempts:
+    description: Maximum readiness attempts.
+    required: false
+    default: '20'
+  init:
+    description: Run Docker init.
+    required: false
+    default: 'true'
+  security-opts-json:
+    description: Docker security opts.
+    required: false
+    default: '["no-new-privileges:true"]'
+  cap-drop-json:
+    description: Capabilities to drop.
+    required: false
+    default: '["ALL"]'
+  stop-timeout:
+    description: Graceful stop timeout.
+    required: false
+    default: '20'
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve production operation
+      id: contract
+      shell: bash
+      env:
+        BRANCH_INPUT: ${{ inputs.production-branch }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        EVENT_NAME: ${{ github.event_name }}
+        EVENT_OPERATION: ${{ github.event.inputs.operation }}
+        RELEASE_TAG: ${{ github.event.release.tag_name }}
+        IMAGE_INPUT: ${{ inputs.image-name }}
+        SERVICE: ${{ inputs.service-name }}
+      run: |
+        set -euo pipefail
+        branch="$BRANCH_INPUT"; [[ -n "$branch" ]] || branch="$DEFAULT_BRANCH"
+        [[ -n "$branch" ]] || { echo "::error::Unable to resolve production branch."; exit 1; }
+        case "$EVENT_NAME" in
+          release) operation=deploy; checkout_ref="$RELEASE_TAG" ;;
+          workflow_dispatch) operation="${EVENT_OPERATION:-deploy}"; checkout_ref="$branch" ;;
+          *) echo "::error::Production process deployment supports only workflow_dispatch or release."; exit 1 ;;
+        esac
+        case "$operation" in deploy|rollback) ;; *) echo "::error::operation must be deploy or rollback."; exit 1 ;; esac
+        image="$IMAGE_INPUT"; [[ -n "$image" ]] || image="$SERVICE"
+        {
+          echo "branch=$branch"
+          echo "operation=$operation"
+          echo "checkout_ref=$checkout_ref"
+          echo "image_name=$image"
+        } >>"$GITHUB_OUTPUT"
+
+    - name: Checkout production revision
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+        ref: ${{ steps.contract.outputs.checkout_ref }}
+
+    - name: Validate production source
+      uses: $/.github/actions/cd/guard
+      with:
+        production-branch: ${{ steps.contract.outputs.branch }}
+
+    - name: Resolve project identity
+      id: identity
+      uses: $/.github/actions/cd/identity
+
+    - name: Resolve database credentials
+      id: credentials
+      uses: $/.github/actions/cd/resolve-db-credentials
+      with:
+        project: ${{ steps.identity.outputs.project }}
+        migration-engine: none
+        env-names-json: ${{ inputs.database == 'true' && '["DATABASE_URL"]' || '[]' }}
+
+    - name: Resolve runtime config
+      id: runtime
+      uses: $/.github/actions/cd/resolve-runtime-env-files
+      with:
+        project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
+
+    - name: Read current deployment
+      id: current
+      uses: $/.github/actions/cd/state
+      with:
+        operation: read
+        project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
+
+    - name: Read rollback target
+      id: previous
+      if: steps.contract.outputs.operation == 'rollback'
+      uses: $/.github/actions/cd/state
+      with:
+        operation: previous
+        project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
+
+    - name: Build production image
+      id: build
+      if: steps.contract.outputs.operation == 'deploy'
+      uses: $/.github/actions/cd/docker/build
+      with:
+        working-directory: ${{ inputs.working-directory }}
+        dockerfile: ${{ inputs.dockerfile }}
+        image-name: ${{ steps.contract.outputs.image_name }}
+        target: ${{ inputs.target }}
+
+    - name: Replace process
+      id: deploy
+      shell: bash
+      env:
+        OPERATION: ${{ steps.contract.outputs.operation }}
+        SERVICE: ${{ inputs.service-name }}
+        DEPLOY_IMAGE_ID: ${{ steps.build.outputs.image-id }}
+        ROLLBACK_IMAGE_ID: ${{ steps.previous.outputs.image-id }}
+        CURRENT_EXISTS: ${{ steps.current.outputs.exists }}
+        CURRENT_IMAGE_ID: ${{ steps.current.outputs.image-id }}
+        NETWORK: ${{ steps.identity.outputs.network }}
+        ENV_FILES: ${{ steps.runtime.outputs.env-files-json }}
+        DB_ENV_NAMES: ${{ steps.credentials.outputs.resolved-env-names-json }}
+        INPUT_VOLUMES: ${{ inputs.volumes-json }}
+        CONFIG_VOLUMES: ${{ steps.runtime.outputs.deploy-volumes-json }}
+        READY_COMMAND: ${{ inputs.readiness-command-json }}
+        READY_JQ: ${{ inputs.readiness-jq }}
+        READY_ATTEMPTS: ${{ inputs.readiness-attempts }}
+        INIT: ${{ inputs.init }}
+        SECURITY_OPTS: ${{ inputs.security-opts-json }}
+        CAP_DROP: ${{ inputs.cap-drop-json }}
+        STOP_TIMEOUT: ${{ inputs.stop-timeout }}
+      run: |
+        set -euo pipefail
+        command -v docker >/dev/null || { echo "::error::Docker is required."; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
+        jq -e 'type=="array" and all(.[]; type=="string")' <<<"$ENV_FILES" >/dev/null
+        jq -e 'type=="array" and all(.[]; type=="string")' <<<"$DB_ENV_NAMES" >/dev/null
+        jq -e 'type=="array" and all(.[]; type=="string")' <<<"$READY_COMMAND" >/dev/null
+        [[ "$READY_ATTEMPTS" =~ ^[0-9]+$ ]] || { echo "::error::readiness-attempts must be numeric."; exit 1; }
+
+        image="$DEPLOY_IMAGE_ID"
+        if [[ "$OPERATION" == "rollback" ]]; then
+          [[ -n "$ROLLBACK_IMAGE_ID" ]] || { echo "::error::No previous known-good deployment exists."; exit 1; }
+          docker image inspect "$ROLLBACK_IMAGE_ID" >/dev/null 2>&1 || { echo "::error::Rollback image is unavailable."; exit 1; }
+          image="$ROLLBACK_IMAGE_ID"
+        fi
+        [[ -n "$image" ]] || { echo "::error::Deployment image is unavailable."; exit 1; }
+
+        volumes="$INPUT_VOLUMES"
+        [[ "$volumes" != "[]" ]] || volumes="$CONFIG_VOLUMES"
+        jq -e 'type=="array" and all(.[]; type=="string")' <<<"$volumes" >/dev/null || { echo "::error::volumes must be a string array."; exit 1; }
+
+        create_args=(docker create --name "$SERVICE" --restart unless-stopped)
+        [[ "$INIT" != "true" ]] || create_args+=(--init)
+        while IFS= read -r opt; do create_args+=(--security-opt "$opt"); done < <(jq -r '.[]' <<<"$SECURITY_OPTS")
+        while IFS= read -r cap; do create_args+=(--cap-drop "$cap"); done < <(jq -r '.[]' <<<"$CAP_DROP")
+        while IFS= read -r file; do create_args+=(--env-file "$file"); done < <(jq -r '.[]' <<<"$ENV_FILES")
+        while IFS= read -r name; do create_args+=(-e "$name"); done < <(jq -r '.[]' <<<"$DB_ENV_NAMES")
+        while IFS= read -r volume; do create_args+=(-v "$volume"); done < <(jq -r '.[]' <<<"$volumes")
+        create_args+=(--network "$NETWORK" --label "com.mooner510.workflows.service=$SERVICE" --label "org.opencontainers.image.revision=$GITHUB_SHA" "$image")
+
+        docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK" >/dev/null
+
+        restore() {
+          [[ "$CURRENT_EXISTS" == "true" && -n "$CURRENT_IMAGE_ID" ]] || return 0
+          docker rm -f "$SERVICE" >/dev/null 2>&1 || true
+          create_args[-1]="$CURRENT_IMAGE_ID"
+          "${create_args[@]}" >/dev/null
+          docker start "$SERVICE" >/dev/null
+        }
+
+        if docker container inspect "$SERVICE" >/dev/null 2>&1; then
+          docker stop -t "$STOP_TIMEOUT" "$SERVICE" >/dev/null || true
+          docker rm -f "$SERVICE" >/dev/null || true
+        fi
+        if ! "${create_args[@]}" >/dev/null || ! docker start "$SERVICE" >/dev/null; then
+          restore
+          echo "::error::Failed to start process service $SERVICE."
+          exit 1
+        fi
+
+        ready=false
+        if [[ "$(jq 'length' <<<"$READY_COMMAND")" -eq 0 ]]; then
+          sleep 2
+          [[ "$(docker inspect "$SERVICE" --format '{{.State.Running}}')" == "true" ]] && ready=true
+        else
+          mapfile -t command < <(jq -r '.[]' <<<"$READY_COMMAND")
+          for ((i=0; i<READY_ATTEMPTS; i++)); do
+            if output="$(docker exec "$SERVICE" "${command[@]}" 2>/dev/null)"; then
+              if [[ -z "$READY_JQ" ]]; then
+                ready=true
+              elif jq -e "$READY_JQ" <<<"$output" >/dev/null 2>&1; then
+                ready=true
+              fi
+            fi
+            [[ "$ready" == "true" ]] && break
+            sleep 2
+          done
+        fi
+        if [[ "$ready" != "true" ]]; then
+          docker logs "$SERVICE" >&2 || true
+          restore
+          echo "::error::Process service $SERVICE did not become ready."
+          exit 1
+        fi
+
+    - name: Record deployment
+      if: steps.contract.outputs.operation == 'deploy'
+      uses: $/.github/actions/cd/state
+      with:
+        operation: record
+        project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
+        revision: ${{ github.sha }}
+        image: ${{ steps.build.outputs.image }}
+        image-id: ${{ steps.build.outputs.image-id }}
+        event: deploy
+
+    - name: Record rollback
+      if: steps.contract.outputs.operation == 'rollback'
+      uses: $/.github/actions/cd/state
+      with:
+        operation: record
+        project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
+        revision: ${{ steps.previous.outputs.revision }}
+        image: ${{ steps.previous.outputs.image }}
+        image-id: ${{ steps.previous.outputs.image-id }}
+        event: rollback

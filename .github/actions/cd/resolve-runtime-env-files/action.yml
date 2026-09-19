@@ -1,10 +1,14 @@
 name: Resolve runtime environment files
-description: Resolve the canonical project-level host deploy.env plus optional repository-relative compatibility env files.
+description: Resolve canonical project config plus optional service-scoped runtime config and secret overlays.
 
 inputs:
   project:
     description: Repository-derived project identifier matching /opt/stacks/projects/<repository-name>.
     required: true
+  service:
+    description: Optional stable service identifier. When set, service deploy.env and secret/deploy.env are discovered automatically.
+    required: false
+    default: ''
   env-files-json:
     description: Optional additional repository-relative env files. Absolute caller paths are not accepted.
     required: false
@@ -12,14 +16,17 @@ inputs:
 
 outputs:
   env-files-json:
-    description: JSON array of resolved env-file paths passed to Docker runtime.
+    description: Ordered JSON array of resolved env-file paths passed to Docker runtime.
     value: ${{ steps.resolve.outputs.env_files_json }}
   env-keys-json:
     description: JSON array of variable names provided by the resolved env files. Values are never emitted.
     value: ${{ steps.resolve.outputs.env_keys_json }}
   deploy-domain:
-    description: DEPLOY_DOMAIN resolved from the canonical project deploy.env.
+    description: DEPLOY_DOMAIN resolved with service config overriding project config.
     value: ${{ steps.resolve.outputs.deploy_domain }}
+  deploy-volumes-json:
+    description: DEPLOY_VOLUMES_JSON resolved with service config overriding project config.
+    value: ${{ steps.resolve.outputs.deploy_volumes_json }}
 
 runs:
   using: composite
@@ -29,6 +36,7 @@ runs:
       shell: bash
       env:
         PROJECT: ${{ inputs.project }}
+        SERVICE: ${{ inputs.service }}
         ENV_FILES_JSON: ${{ inputs.env-files-json }}
       run: |
         set -euo pipefail
@@ -38,6 +46,10 @@ runs:
           echo "::error::Invalid repository-derived project identifier '$PROJECT'."
           exit 1
         }
+        if [[ -n "$SERVICE" && ! "$SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then
+          echo "::error::Invalid service identifier '$SERVICE'."
+          exit 1
+        fi
         jq -e 'type == "array" and all(.[]; type == "string")' <<<"$ENV_FILES_JSON" >/dev/null || {
           echo "::error::env-files-json must be a JSON array of strings."
           exit 1
@@ -45,14 +57,10 @@ runs:
 
         [[ -f /opt/stacks/shared/caddy/Caddyfile ]] || {
           echo "::error::Production host filesystem is not visible to this runner (/opt/stacks/shared/caddy/Caddyfile missing)."
-          echo "::error::The active self-hosted runner must expose the production host filesystem required by CD."
           exit 1
         }
 
-        trim() {
-          printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
-        }
-
+        trim() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
         normalize_value() {
           local value
           value="$(trim "$1")"
@@ -83,36 +91,50 @@ runs:
           resolved="$(jq -c --arg path "$path" '. + [$path]' <<<"$resolved")"
         done < <(jq -r '.[]' <<<"$ENV_FILES_JSON")
 
-        canonical_env="/opt/stacks/projects/$PROJECT/deploy.env"
-        [[ -f "$canonical_env" ]] || {
-          echo "::error::Canonical project deploy env '$canonical_env' does not exist."
+        project_env="/opt/stacks/projects/$PROJECT/deploy.env"
+        [[ -f "$project_env" ]] || {
+          echo "::error::Canonical project deploy env '$project_env' does not exist."
           exit 1
         }
-        resolved="$(jq -c --arg path "$canonical_env" '. + [$path]' <<<"$resolved")"
-        echo "Using canonical project deploy env: $canonical_env"
+        resolved="$(jq -c --arg path "$project_env" '. + [$path]' <<<"$resolved")"
 
-        resolved="$(jq -c 'unique' <<<"$resolved")"
+        if [[ -n "$SERVICE" ]]; then
+          service_env="/opt/stacks/projects/$PROJECT/$SERVICE/deploy.env"
+          service_secret="/opt/stacks/projects/$PROJECT/$SERVICE/secret/deploy.env"
+          [[ ! -f "$service_env" ]] || resolved="$(jq -c --arg path "$service_env" '. + [$path]' <<<"$resolved")"
+          [[ ! -f "$service_secret" ]] || resolved="$(jq -c --arg path "$service_secret" '. + [$path]' <<<"$resolved")"
+        fi
+
         keys='[]'
         deploy_domain=""
+        deploy_volumes_json='[]'
 
         while IFS= read -r path; do
+          echo "Using runtime env: $path"
           while IFS= read -r line || [[ -n "$line" ]]; do
             line="${line//$'\r'/}"
             [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-            key="${line%%=*}"
-            value="${line#*=}"
-            key="$(trim "$key")"
+            [[ "$line" == *=* ]] || { echo "::error::Invalid env assignment in $path."; exit 1; }
+            key="$(trim "${line%%=*}")"
+            raw="${line#*=}"
             [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || {
               echo "::error::Invalid environment variable name '$key' in $path."
               exit 1
             }
             keys="$(jq -c --arg key "$key" '. + [$key]' <<<"$keys")"
-
-            if [[ "$path" == "$canonical_env" ]]; then
-              case "$key" in
-                DEPLOY_DOMAIN) deploy_domain="$(normalize_value "$value")" ;;
-              esac
-            fi
+            case "$key" in
+              DEPLOY_DOMAIN)
+                deploy_domain="$(normalize_value "$raw")"
+                ;;
+              DEPLOY_VOLUMES_JSON)
+                candidate="$(normalize_value "$raw")"
+                jq -e 'type == "array" and all(.[]; type == "string")' <<<"$candidate" >/dev/null || {
+                  echo "::error::DEPLOY_VOLUMES_JSON in $path must be a JSON string array."
+                  exit 1
+                }
+                deploy_volumes_json="$(jq -c '.' <<<"$candidate")"
+                ;;
+            esac
           done <"$path"
         done < <(jq -r '.[]' <<<"$resolved")
 
@@ -121,4 +143,5 @@ runs:
           echo "env_files_json=$resolved"
           echo "env_keys_json=$keys"
           echo "deploy_domain=$deploy_domain"
+          echo "deploy_volumes_json=$deploy_volumes_json"
         } >>"$GITHUB_OUTPUT"
