@@ -1,0 +1,100 @@
+name: Resolve runtime environment files
+description: Resolve canonical host-managed runtime env files for one production service and merge optional caller files.
+
+inputs:
+  project:
+    description: Stable project identifier matching /opt/stacks/projects/<project>.
+    required: true
+  service:
+    description: Stable service identifier matching /opt/stacks/projects/<project>/<service>.
+    required: true
+  env-files-json:
+    description: Optional additional repository-relative env files. Absolute caller paths are not accepted.
+    required: false
+    default: '[]'
+
+outputs:
+  env-files-json:
+    description: JSON array of absolute env-file paths passed to Docker runtime.
+    value: ${{ steps.resolve.outputs.env_files_json }}
+  env-keys-json:
+    description: JSON array of variable names provided by the resolved env files. Values are never emitted.
+    value: ${{ steps.resolve.outputs.env_keys_json }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve runtime environment files
+      id: resolve
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+        SERVICE: ${{ inputs.service }}
+        ENV_FILES_JSON: ${{ inputs.env-files-json }}
+      run: |
+        set -euo pipefail
+        command -v jq >/dev/null || { echo "::error::jq is required on the production runner."; exit 1; }
+
+        [[ "$PROJECT" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
+          echo "::error::Invalid project identifier '$PROJECT'."
+          exit 1
+        }
+        [[ "$SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || {
+          echo "::error::Invalid service identifier '$SERVICE'."
+          exit 1
+        }
+        jq -e 'type == "array" and all(.[]; type == "string")' <<<"$ENV_FILES_JSON" >/dev/null || {
+          echo "::error::env-files-json must be a JSON array of strings."
+          exit 1
+        }
+
+        [[ -f /opt/stacks/shared/caddy/Caddyfile ]] || {
+          echo "::error::Production host filesystem is not visible to this runner (/opt/stacks/shared/caddy/Caddyfile missing)."
+          echo "::error::Run CD on a dedicated host-level runner labeled [self-hosted, linux, production], not the generic Gharp CI runner."
+          exit 1
+        }
+
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+        resolved='[]'
+
+        while IFS= read -r value; do
+          [[ -n "$value" && "$value" != /* && "$value" != *$'\n'* && "$value" != *$'\r'* ]] || {
+            echo "::error::Additional env files must be repository-relative paths."
+            exit 1
+          }
+          path="$(realpath -e "$GITHUB_WORKSPACE/$value" 2>/dev/null || true)"
+          [[ -f "$path" ]] || { echo "::error::Runtime env file '$value' does not exist."; exit 1; }
+          if [[ "$path" != "$workspace" && "$path" != "$workspace/"* ]]; then
+            echo "::error::Runtime env file '$value' must resolve inside the repository."
+            exit 1
+          fi
+          resolved="$(jq -c --arg path "$path" '. + [$path]' <<<"$resolved")"
+        done < <(jq -r '.[]' <<<"$ENV_FILES_JSON")
+
+        service_root="/opt/stacks/projects/$PROJECT/$SERVICE"
+        for path in "$service_root/deploy.env" "$service_root/secret/deploy.env"; do
+          if [[ -f "$path" ]]; then
+            resolved="$(jq -c --arg path "$path" '. + [$path]' <<<"$resolved")"
+            echo "Using host runtime env file: $path"
+          fi
+        done
+
+        resolved="$(jq -c 'unique' <<<"$resolved")"
+        keys='[]'
+        while IFS= read -r path; do
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line//
+\r'/}"
+            [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+            key="${line%%=*}"
+            key="$(printf '%s' "$key" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || {
+              echo "::error::Invalid environment variable name '$key' in $path."
+              exit 1
+            }
+            keys="$(jq -c --arg key "$key" '. + [$key]' <<<"$keys")"
+          done <"$path"
+        done < <(jq -r '.[]' <<<"$resolved")
+        keys="$(jq -c 'unique' <<<"$keys")"
+        echo "env_files_json=$resolved" >>"$GITHUB_OUTPUT"
+        echo "env_keys_json=$keys" >>"$GITHUB_OUTPUT"
