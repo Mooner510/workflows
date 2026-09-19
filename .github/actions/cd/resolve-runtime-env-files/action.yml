@@ -1,12 +1,9 @@
 name: Resolve runtime environment files
-description: Resolve the canonical host deploy.env for one production service, plus optional compatibility env files.
+description: Resolve the canonical project-level host deploy.env plus optional repository-relative compatibility env files.
 
 inputs:
   project:
     description: Repository-derived project identifier matching /opt/stacks/projects/<repository-name>.
-    required: true
-  service:
-    description: Stable service identifier matching /opt/stacks/projects/<repository-name>/<service>.
     required: true
   env-files-json:
     description: Optional additional repository-relative env files. Absolute caller paths are not accepted.
@@ -21,7 +18,7 @@ outputs:
     description: JSON array of variable names provided by the resolved env files. Values are never emitted.
     value: ${{ steps.resolve.outputs.env_keys_json }}
   deploy-domain:
-    description: DEPLOY_DOMAIN resolved from the canonical service deploy.env.
+    description: DEPLOY_DOMAIN resolved from the canonical project deploy.env.
     value: ${{ steps.resolve.outputs.deploy_domain }}
 
 runs:
@@ -32,7 +29,6 @@ runs:
       shell: bash
       env:
         PROJECT: ${{ inputs.project }}
-        SERVICE: ${{ inputs.service }}
         ENV_FILES_JSON: ${{ inputs.env-files-json }}
       run: |
         set -euo pipefail
@@ -40,10 +36,6 @@ runs:
 
         [[ "$PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || {
           echo "::error::Invalid repository-derived project identifier '$PROJECT'."
-          exit 1
-        }
-        [[ "$SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || {
-          echo "::error::Invalid service identifier '$SERVICE'."
           exit 1
         }
         jq -e 'type == "array" and all(.[]; type == "string")' <<<"$ENV_FILES_JSON" >/dev/null || {
@@ -91,18 +83,13 @@ runs:
           resolved="$(jq -c --arg path "$path" '. + [$path]' <<<"$resolved")"
         done < <(jq -r '.[]' <<<"$ENV_FILES_JSON")
 
-        service_root="/opt/stacks/projects/$PROJECT/$SERVICE"
-        canonical_env="$service_root/deploy.env"
-        legacy_secret_env="$service_root/secret/deploy.env"
-
-        if [[ -f "$canonical_env" ]]; then
-          resolved="$(jq -c --arg path "$canonical_env" '. + [$path]' <<<"$resolved")"
-          echo "Using canonical host deploy env: $canonical_env"
-        fi
-        if [[ -f "$legacy_secret_env" ]]; then
-          resolved="$(jq -c --arg path "$legacy_secret_env" '. + [$path]' <<<"$resolved")"
-          echo "::warning::$legacy_secret_env is a compatibility file. Prefer a single canonical $canonical_env."
-        fi
+        canonical_env="/opt/stacks/projects/$PROJECT/deploy.env"
+        [[ -f "$canonical_env" ]] || {
+          echo "::error::Canonical project deploy env '$canonical_env' does not exist."
+          exit 1
+        }
+        resolved="$(jq -c --arg path "$canonical_env" '. + [$path]' <<<"$resolved")"
+        echo "Using canonical project deploy env: $canonical_env"
 
         resolved="$(jq -c 'unique' <<<"$resolved")"
         keys='[]'
