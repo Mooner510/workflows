@@ -59,9 +59,9 @@ outputs:
     value: ${{ steps.deploy.outputs.previous_image }}
   previous-image-id:
     value: ${{ steps.deploy.outputs.previous_image_id }}
-  host-port:
-    description: Docker-assigned loopback host port for the running container.
-    value: ${{ steps.deploy.outputs.host_port }}
+  published-port:
+    description: Docker-assigned loopback published port for the running container.
+    value: ${{ steps.deploy.outputs.published_port }}
 
 runs:
   using: composite
@@ -228,5 +228,5 @@ runs:
           echo "previous_existed=$previous_existed"
           echo "previous_image=$previous_image"
           echo "previous_image_id=$previous_image_id"
-          echo "host_port=$host_port"
+          echo "published_port=$host_port"
         } >>"$GITHUB_OUTPUT"
