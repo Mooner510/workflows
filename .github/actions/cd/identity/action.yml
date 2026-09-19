@@ -32,9 +32,10 @@ runs:
           exit 1
         }
 
-        project="${REPOSITORY#*/}"
-        [[ "$project" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || {
-          echo "::error::Repository name '$project' cannot be used as the canonical project identifier."
+        repository_name="${REPOSITORY#*/}"
+        project="$(printf '%s' "$repository_name" | tr '[:upper:]' '[:lower:]')"
+        [[ "$project" =~ ^[a-z0-9][a-z0-9._-]{0,99}$ ]] || {
+          echo "::error::Repository name '$repository_name' cannot be normalized to a canonical project identifier."
           exit 1
         }
 
