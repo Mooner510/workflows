@@ -114,6 +114,7 @@ runs:
       uses: $/.github/actions/cd/resolve-db-credentials
       with:
         project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
         migration-engine: none
         env-names-json: ${{ inputs.database == 'true' && '["DATABASE_URL"]' || '[]' }}
 

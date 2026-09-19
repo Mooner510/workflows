@@ -188,6 +188,7 @@ runs:
       uses: $/.github/actions/cd/resolve-db-credentials
       with:
         project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
         credential-source: ${{ inputs.db-credential-source }}
         migration-engine: ${{ inputs.migration-engine }}
         env-names-json: ${{ inputs.env-names-json }}
