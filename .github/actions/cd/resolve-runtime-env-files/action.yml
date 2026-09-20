@@ -92,11 +92,7 @@ runs:
         done < <(jq -r '.[]' <<<"$ENV_FILES_JSON")
 
         project_env="/opt/stacks/projects/$PROJECT/deploy.env"
-        [[ -f "$project_env" ]] || {
-          echo "::error::Canonical project deploy env '$project_env' does not exist."
-          exit 1
-        }
-        resolved="$(jq -c --arg path "$project_env" '. + [$path]' <<<"$resolved")"
+        [[ ! -f "$project_env" ]] || resolved="$(jq -c --arg path "$project_env" '. + [$path]' <<<"$resolved")"
 
         if [[ -n "$SERVICE" ]]; then
           service_config="$SERVICE"
@@ -116,6 +112,12 @@ runs:
           service_secret="/opt/stacks/projects/$PROJECT/$service_config/secret/deploy.env"
           [[ ! -f "$service_env" ]] || resolved="$(jq -c --arg path "$service_env" '. + [$path]' <<<"$resolved")"
           [[ ! -f "$service_secret" ]] || resolved="$(jq -c --arg path "$service_secret" '. + [$path]' <<<"$resolved")"
+        fi
+
+        if [[ "$(jq 'length' <<<"$resolved")" -eq 0 ]]; then
+          echo "::error::No runtime env file is available for project '$PROJECT' and service '$SERVICE'."
+          echo "::error::Provide /opt/stacks/projects/$PROJECT/deploy.env or a service deploy.env/secret/deploy.env."
+          exit 1
         fi
 
         keys='[]'
