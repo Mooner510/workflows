@@ -103,7 +103,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Resolve production operation
+    - name: Resolve HTTP deployment operation
       id: contract
       shell: bash
       env:
@@ -159,7 +159,7 @@ runs:
         persist-credentials: false
         ref: ${{ steps.contract.outputs.checkout_ref }}
 
-    - name: Deploy service
+    - name: Deploy HTTP service
       if: steps.contract.outputs.operation == 'deploy'
       uses: $/.github/actions/cd/docker-service
       with:
@@ -189,7 +189,7 @@ runs:
         cap-drop-json: ${{ inputs.cap-drop-json }}
         stop-timeout: ${{ inputs.stop-timeout }}
 
-    - name: Roll back service
+    - name: Roll back HTTP service
       if: steps.contract.outputs.operation == 'rollback'
       uses: $/.github/actions/cd/docker-service-rollback
       with:
