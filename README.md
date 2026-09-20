@@ -236,7 +236,7 @@ Canonical production configuration은 project 공통값과 선택적 service ove
    └─ secret/deploy.env
 ```
 
-중앙 CD는 project `deploy.env`를 먼저 읽고, service `deploy.env`, service `secret/deploy.env`가 존재하면 순서대로 overlay합니다. `service-name`이 `<project>-<service>` 형식이고 exact service directory가 없으면 `<service>` short directory를 자동 fallback으로 탐색합니다. 따라서 caller workflow가 runtime secret 이름이나 service domain/volume을 반복 선언할 필요가 없습니다.
+중앙 CD는 project `deploy.env`가 존재하면 공통값으로 먼저 읽고, service `deploy.env`, service `secret/deploy.env`가 존재하면 순서대로 overlay합니다. Project root env는 선택적이며, 최종적으로 project/service runtime env가 하나도 없을 때만 실패합니다. `service-name`이 `<project>-<service>` 형식이고 exact service directory가 없으면 `<service>` short directory를 자동 fallback으로 탐색합니다. 따라서 caller workflow가 runtime secret 이름이나 service domain/volume을 반복 선언할 필요가 없습니다.
 
 `deploy.env`에는 runtime config/secret과 deployment metadata를 함께 둘 수 있습니다.
 
