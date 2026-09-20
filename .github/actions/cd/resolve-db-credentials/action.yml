@@ -98,7 +98,16 @@ runs:
         db_env="/opt/stacks/projects/$PROJECT/db.env"
         if [[ -n "$SERVICE" ]]; then
           [[ "$SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || { echo "::error::Invalid service identifier '$SERVICE'."; exit 1; }
-          service_db_env="/opt/stacks/projects/$PROJECT/$SERVICE/db.env"
+          service_config="$SERVICE"
+          service_db_env="/opt/stacks/projects/$PROJECT/$service_config/db.env"
+          if [[ ! -f "$service_db_env" && "$SERVICE" == "$PROJECT-"* ]]; then
+            short_service="${SERVICE#"$PROJECT-"}"
+            if [[ -n "$short_service" && -f "/opt/stacks/projects/$PROJECT/$short_service/db.env" ]]; then
+              service_config="$short_service"
+              service_db_env="/opt/stacks/projects/$PROJECT/$service_config/db.env"
+              echo "Resolved service database alias: $SERVICE -> $service_config"
+            fi
+          fi
           [[ ! -f "$service_db_env" ]] || db_env="$service_db_env"
         fi
         [[ -f "$db_env" ]] || {

@@ -99,8 +99,21 @@ runs:
         resolved="$(jq -c --arg path "$project_env" '. + [$path]' <<<"$resolved")"
 
         if [[ -n "$SERVICE" ]]; then
-          service_env="/opt/stacks/projects/$PROJECT/$SERVICE/deploy.env"
-          service_secret="/opt/stacks/projects/$PROJECT/$SERVICE/secret/deploy.env"
+          service_config="$SERVICE"
+          exact_root="/opt/stacks/projects/$PROJECT/$service_config"
+          if [[ ! -f "$exact_root/deploy.env" && ! -f "$exact_root/secret/deploy.env" && "$SERVICE" == "$PROJECT-"* ]]; then
+            short_service="${SERVICE#"$PROJECT-"}"
+            if [[ -n "$short_service" ]]; then
+              short_root="/opt/stacks/projects/$PROJECT/$short_service"
+              if [[ -f "$short_root/deploy.env" || -f "$short_root/secret/deploy.env" ]]; then
+                service_config="$short_service"
+                echo "Resolved service config alias: $SERVICE -> $service_config"
+              fi
+            fi
+          fi
+
+          service_env="/opt/stacks/projects/$PROJECT/$service_config/deploy.env"
+          service_secret="/opt/stacks/projects/$PROJECT/$service_config/secret/deploy.env"
           [[ ! -f "$service_env" ]] || resolved="$(jq -c --arg path "$service_env" '. + [$path]' <<<"$resolved")"
           [[ ! -f "$service_secret" ]] || resolved="$(jq -c --arg path "$service_secret" '. + [$path]' <<<"$resolved")"
         fi

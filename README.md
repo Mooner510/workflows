@@ -236,7 +236,7 @@ Canonical production configuration은 project 공통값과 선택적 service ove
    └─ secret/deploy.env
 ```
 
-중앙 CD는 project `deploy.env`를 먼저 읽고, service `deploy.env`, service `secret/deploy.env`가 존재하면 순서대로 overlay합니다. 따라서 caller workflow가 runtime secret 이름이나 service domain/volume을 반복 선언할 필요가 없습니다.
+중앙 CD는 project `deploy.env`를 먼저 읽고, service `deploy.env`, service `secret/deploy.env`가 존재하면 순서대로 overlay합니다. `service-name`이 `<project>-<service>` 형식이고 exact service directory가 없으면 `<service>` short directory를 자동 fallback으로 탐색합니다. 따라서 caller workflow가 runtime secret 이름이나 service domain/volume을 반복 선언할 필요가 없습니다.
 
 `deploy.env`에는 runtime config/secret과 deployment metadata를 함께 둘 수 있습니다.
 
@@ -250,7 +250,7 @@ SESSION_SECRET=...
 
 서비스별 deploy.env/secret/deploy.env는 더 이상 canonical 경로가 아닙니다. 프로젝트당 루트 `deploy.env` 하나를 모든 generic HTTP service가 공유하고, `db.env`만 DB lifecycle/credential 분리를 위해 별도로 유지합니다.
 
-DB credential source 기본값은 `host`입니다. Service-specific DB credential file이 있으면 중앙 resolver가 자동 우선하고 없으면 project DB로 fallback합니다.
+DB credential source 기본값은 `host`입니다. Service-specific DB credential file이 있으면 중앙 resolver가 자동 우선하고 없으면 project DB로 fallback합니다. Runtime config와 동일하게 `<project>-<service>` service-name은 exact directory가 없을 때 `<service>` short directory alias를 자동 탐색합니다.
 
 ```text
 /opt/stacks/projects/<repository-name>/<service>/db.env
