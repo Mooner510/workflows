@@ -64,7 +64,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Resolve production operation
+    - name: Resolve process deployment operation
       id: contract
       shell: bash
       env:
@@ -100,12 +100,12 @@ runs:
         persist-credentials: false
         ref: ${{ steps.contract.outputs.checkout_ref }}
 
-    - name: Validate production source
+    - name: Validate process deployment source
       uses: $/.github/actions/cd/guard
       with:
         production-branch: ${{ steps.contract.outputs.branch }}
 
-    - name: Resolve project identity
+    - name: Resolve deployment identity
       id: identity
       uses: $/.github/actions/cd/identity
 
@@ -118,14 +118,14 @@ runs:
         migration-engine: none
         env-names-json: ${{ inputs.database == 'true' && '["DATABASE_URL"]' || '[]' }}
 
-    - name: Resolve runtime config
+    - name: Resolve process runtime config
       id: runtime
       uses: $/.github/actions/cd/resolve-runtime-env-files
       with:
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
 
-    - name: Read current deployment
+    - name: Read current process deployment
       id: current
       uses: $/.github/actions/cd/state
       with:
@@ -133,7 +133,7 @@ runs:
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
 
-    - name: Read rollback target
+    - name: Read process rollback target
       id: previous
       if: steps.contract.outputs.operation == 'rollback'
       uses: $/.github/actions/cd/state
@@ -142,7 +142,7 @@ runs:
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
 
-    - name: Build production image
+    - name: Build process image
       id: build
       if: steps.contract.outputs.operation == 'deploy'
       uses: $/.github/actions/cd/docker/build
@@ -152,7 +152,7 @@ runs:
         image-name: ${{ steps.contract.outputs.image_name }}
         target: ${{ inputs.target }}
 
-    - name: Replace process
+    - name: Deploy process service
       id: deploy
       shell: bash
       env:
@@ -249,7 +249,7 @@ runs:
           exit 1
         fi
 
-    - name: Record deployment
+    - name: Record process deployment
       if: steps.contract.outputs.operation == 'deploy'
       uses: $/.github/actions/cd/state
       with:
@@ -261,7 +261,7 @@ runs:
         image-id: ${{ steps.build.outputs.image-id }}
         event: deploy
 
-    - name: Record rollback
+    - name: Record process rollback
       if: steps.contract.outputs.operation == 'rollback'
       uses: $/.github/actions/cd/state
       with:
