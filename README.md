@@ -279,6 +279,14 @@ stop-timeout
 
 `init=true`, `security-opts-json=["no-new-privileges:true"]`, `cap-drop-json=["ALL"]`, `stop-timeout=20`. 특수 service가 실제로 필요할 때만 caller에서 override합니다.
 
+GitHub Actions UI readability contract:
+
+- project caller의 모든 `steps[*].uses` 호출은 사람이 읽을 수 있는 명시적 `name:`을 가진다.
+- reusable workflow 호출 job은 의미 있는 `jobs.<id>.name`을 가진다.
+- shared action 내부 nested `uses` step도 의미 있는 `name:`을 유지한다.
+- full commit SHA pin은 보안을 위해 유지하며, SHA를 숨기기 위해 action nesting을 풀거나 project별 wrapper action을 만들지 않는다.
+- GitHub가 composite action 내부에 자동으로 표시하는 `Run <owner>/<repo>/...@<sha>` 라인은 플랫폼 표기이므로 제거 대상으로 보지 않는다. 그 상위 step 이름이 의미를 설명해야 한다.
+
 Project workflow에는 GitHub가 caller repository에서만 올바르게 소유할 수 있는 job boundary와 진짜 service-specific 값만 남깁니다.
 
 ```text
