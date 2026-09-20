@@ -37,7 +37,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Resolve Android release contract
+    - name: Resolve Android release operation
       id: contract
       shell: bash
       env:
@@ -86,7 +86,7 @@ runs:
         persist-credentials: false
         ref: ${{ steps.contract.outputs.checkout_ref }}
 
-    - name: Load Android runtime and signing configuration
+    - name: Load Android release configuration
       shell: bash
       env:
         SERVICE: ${{ inputs.service-name }}
@@ -153,7 +153,7 @@ runs:
           } >>"$GITHUB_ENV"
         fi
 
-    - name: Build and publish Android release
+    - name: Build, sign, and publish Android release
       uses: $/.github/actions/cd/android/release
       env:
         GH_TOKEN: ${{ github.token }}
