@@ -1,0 +1,160 @@
+name: Resolve service metadata
+description: Resolve environment-specific address and CORS metadata outside deploy.env.
+
+inputs:
+  environment:
+    description: Deployment environment, prod or dev.
+    required: false
+    default: prod
+  project:
+    description: Canonical project identifier.
+    required: true
+  service:
+    description: Optional logical service identifier.
+    required: false
+    default: ''
+
+outputs:
+  address:
+    description: Effective Caddy site origin. Empty means no automatic Caddy route.
+    value: ${{ steps.resolve.outputs.address }}
+  address-source:
+    description: explicit, derived, or none.
+    value: ${{ steps.resolve.outputs.address_source }}
+  cors-origins:
+    description: Comma-separated CORS origins for CORS_ORIGINS. Empty means unset.
+    value: ${{ steps.resolve.outputs.cors_origins }}
+  has-cors:
+    description: true when CORS_ORIGINS was resolved.
+    value: ${{ steps.resolve.outputs.has_cors }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve address and CORS metadata
+      id: resolve
+      shell: bash
+      env:
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+        PROJECT: ${{ inputs.project }}
+        SERVICE: ${{ inputs.service }}
+      run: |
+        set -euo pipefail
+
+        case "$DEPLOY_ENVIRONMENT" in prod|dev) ;; *) echo "::error::environment must be prod or dev."; exit 1 ;; esac
+        [[ "$PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || { echo "::error::Invalid project '$PROJECT'."; exit 1; }
+        if [[ -n "$SERVICE" && ! "$SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then
+          echo "::error::Invalid service '$SERVICE'."
+          exit 1
+        fi
+
+        root="/opt/stacks/projects/$PROJECT"
+        [[ -d "$root" ]] || { echo "::error::Project config directory does not exist: $root"; exit 1; }
+
+        service_config="$SERVICE"
+        if [[ -n "$SERVICE" && ! -d "$root/$SERVICE" && "$SERVICE" == "$PROJECT-"* ]]; then
+          short_service="${SERVICE#"$PROJECT-"}"
+          [[ -z "$short_service" || ! -d "$root/$short_service" ]] || service_config="$short_service"
+        fi
+
+        trim() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+
+        validate_origin() {
+          local value="$1"
+          [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || return 1
+          [[ "$value" =~ ^https?://(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+)(:[0-9]{1,5})?$ ]]
+        }
+
+        read_addr() {
+          local path="$1"
+          [[ -f "$path" ]] || return 1
+          local value extra
+          value="$(sed -n '1p' "$path" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          extra="$(sed -n '2,$p' "$path" | sed '/^[[:space:]]*$/d' || true)"
+          [[ -n "$value" && -z "$extra" ]] || { echo "::error::$path must contain exactly one origin."; exit 1; }
+          validate_origin "$value" || { echo "::error::Invalid origin in $path: $value"; exit 1; }
+          printf '%s' "$value"
+        }
+
+        resolve_explicit_addr() {
+          local suffix="$1"
+          local value
+          if [[ -n "$service_config" ]]; then
+            value="$(read_addr "$root/$service_config/addr${suffix}.env" || true)"
+            [[ -z "$value" ]] || { printf '%s' "$value"; return 0; }
+          fi
+          value="$(read_addr "$root/addr${suffix}.env" || true)"
+          [[ -z "$value" ]] || { printf '%s' "$value"; return 0; }
+          return 1
+        }
+
+        address=""
+        address_source="none"
+        if [[ "$DEPLOY_ENVIRONMENT" == "prod" ]]; then
+          address="$(resolve_explicit_addr "" || true)"
+          [[ -z "$address" ]] || address_source="explicit"
+        else
+          address="$(resolve_explicit_addr ".dev" || true)"
+          if [[ -n "$address" ]]; then
+            address_source="explicit"
+          else
+            prod_address="$(resolve_explicit_addr "" || true)"
+            if [[ -n "$prod_address" ]]; then
+              if [[ "$prod_address" =~ ^(https?://)([A-Za-z0-9.-]+)(:[0-9]{1,5})?$ ]]; then
+                host="${BASH_REMATCH[2]}"
+                if [[ "$host" =~ ^[0-9.]+$ ]]; then
+                  echo "::error::Cannot derive a development address from IP origin '$prod_address'. Configure addr.dev.env explicitly."
+                  exit 1
+                fi
+                address="${BASH_REMATCH[1]}dev-${host}${BASH_REMATCH[3]}"
+                address_source="derived"
+              else
+                echo "::error::Cannot derive development address from '$prod_address'. Configure addr.dev.env explicitly."
+                exit 1
+              fi
+            fi
+          fi
+        fi
+
+        cors_file="cors.env"
+        [[ "$DEPLOY_ENVIRONMENT" != "dev" ]] || cors_file="cors.dev.env"
+        cors_tmp="$(mktemp)"
+        trap 'rm -f "$cors_tmp"' EXIT
+
+        append_cors_file() {
+          local path="$1"
+          [[ -f "$path" ]] || return 0
+          while IFS= read -r raw || [[ -n "$raw" ]]; do
+            raw="${raw//$'\r'/}"
+            value="$(trim "$raw")"
+            [[ -n "$value" ]] || continue
+            validate_origin "$value" || { echo "::error::Invalid CORS origin in $path: $value"; exit 1; }
+            printf '%s\n' "$value" >>"$cors_tmp"
+          done <"$path"
+        }
+
+        append_cors_file "$root/$cors_file"
+        if [[ -n "$service_config" ]]; then
+          append_cors_file "$root/$service_config/$cors_file"
+        fi
+
+        cors_origins=""
+        if [[ -s "$cors_tmp" ]]; then
+          cors_origins="$(LC_ALL=C sort -u "$cors_tmp" | paste -sd, -)"
+          echo "CORS_ORIGINS=$cors_origins" >>"$GITHUB_ENV"
+        fi
+
+        if [[ -z "$address" ]]; then
+          echo "::warning::No address configured for $PROJECT${SERVICE:+/$SERVICE}; automatic Caddy routing will be skipped."
+        elif [[ "$address_source" == "derived" ]]; then
+          echo "Resolved development address from production: $address"
+        else
+          echo "Resolved address: $address"
+        fi
+
+        {
+          echo "address=$address"
+          echo "address_source=$address_source"
+          echo "cors_origins=$cors_origins"
+          if [[ -n "$cors_origins" ]]; then echo "has_cors=true"; else echo "has_cors=false"; fi
+        } >>"$GITHUB_OUTPUT"
