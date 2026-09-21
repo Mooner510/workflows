@@ -1,0 +1,149 @@
+name: Go Format
+
+run-name: Go Format · ${{ github.ref_name }} · ${{ inputs.path }}
+
+on:
+  workflow_call:
+    inputs:
+      path:
+        description: Repository-relative directory to format. / formats the whole repository.
+        required: false
+        type: string
+        default: /
+  workflow_dispatch:
+    inputs:
+      path:
+        description: Repository-relative directory to format. / formats the whole repository.
+        required: false
+        type: string
+        default: /
+
+permissions:
+  contents: write
+
+concurrency:
+  group: go-format-${{ github.repository }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  format:
+    name: Format Go files
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 15
+
+    steps:
+      - name: Validate target branch
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$TARGET_BRANCH" || "$TARGET_BRANCH" == "HEAD" ]]; then
+            echo "::error::Run this workflow from a branch."
+            exit 1
+          fi
+          git check-ref-format --branch "$TARGET_BRANCH" >/dev/null
+
+      - name: Checkout selected branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Format, commit, and push
+        shell: bash
+        env:
+          FORMAT_PATH: ${{ inputs.path }}
+          TARGET_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          command -v gofmt >/dev/null || { echo "::error::gofmt is required."; exit 1; }
+          command -v realpath >/dev/null || { echo "::error::realpath is required on the self-hosted runner."; exit 1; }
+
+          workspace="$(realpath -e "$GITHUB_WORKSPACE")"
+          raw_path="${FORMAT_PATH:-/}"
+
+          if [[ "$raw_path" == "/" ]]; then
+            relative_path="."
+          else
+            relative_path="${raw_path#/}"
+            relative_path="${relative_path%/}"
+            [[ -n "$relative_path" ]] || relative_path="."
+          fi
+
+          target="$(realpath -e "$workspace/$relative_path" 2>/dev/null || true)"
+          if [[ -z "$target" || ! -d "$target" ]]; then
+            echo "::error::Format path does not exist or is not a directory: $raw_path"
+            exit 1
+          fi
+
+          if [[ "$target" != "$workspace" && "$target" != "$workspace/"* ]]; then
+            echo "::error::Format path must resolve inside the repository: $raw_path"
+            exit 1
+          fi
+
+          target_relative="$(realpath --relative-to="$workspace" "$target")"
+          if [[ "$target_relative" == "." ]]; then
+            display_path="/"
+          else
+            display_path="/$target_relative"
+          fi
+
+          mapfile -d '' go_files < <(find "$target" -type f -name '*.go' -print0 | sort -z)
+
+          if (( ${#go_files[@]} == 0 )); then
+            echo "No Go files found under $display_path."
+            {
+              echo "### Go Format"
+              echo
+              echo "- Branch: \`$TARGET_BRANCH\`"
+              echo "- Path: \`$display_path\`"
+              echo "- Result: no Go files found"
+            } >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          printf '%s\0' "${go_files[@]}" | xargs -0 -r -n 100 gofmt -w
+
+          git add -A -- "$target_relative"
+
+          if git diff --cached --quiet; then
+            echo "All Go files under $display_path are already formatted."
+            {
+              echo "### Go Format"
+              echo
+              echo "- Branch: \`$TARGET_BRANCH\`"
+              echo "- Path: \`$display_path\`"
+              echo "- Files scanned: \`${#go_files[@]}\`"
+              echo "- Result: no changes"
+            } >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          changed_count="$(git diff --cached --name-only | wc -l | tr -d ' ')"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "style: apply gofmt"
+          commit_sha="$(git rev-parse HEAD)"
+
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+
+          {
+            echo "### Go Format"
+            echo
+            echo "- Branch: \`$TARGET_BRANCH\`"
+            echo "- Path: \`$display_path\`"
+            echo "- Files scanned: \`${#go_files[@]}\`"
+            echo "- Files changed: \`$changed_count\`"
+            echo "- Commit: \`$commit_sha\`"
+          } >>"$GITHUB_STEP_SUMMARY"
