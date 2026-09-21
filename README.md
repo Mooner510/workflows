@@ -183,7 +183,7 @@ permissions:
 jobs:
   format:
     name: Format Go files
-    uses: Mooner510/workflows/.github/workflows/go-format.yml@v1
+    uses: Mooner510/workflows/.github/workflows/go-format.yml@4228ac0e572406ca131bcf6c9706924cf4f13e1f
     with:
       path: ${{ inputs.path }}
 ```
