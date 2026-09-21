@@ -133,7 +133,14 @@ runs:
         persist-credentials: false
         ref: ${{ steps.contract.outputs.checkout_ref }}
 
+    - name: Check development deployment flag
+      id: development_gate
+      uses: $/.github/actions/cd/development-enabled
+      with:
+        service: ${{ inputs.service-name }}
+
     - name: Deploy HTTP service
+      if: steps.development_gate.outputs.enabled == 'true'
       uses: $/.github/actions/cd/docker-service
       with:
         environment: dev
