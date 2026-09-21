@@ -1,9 +1,21 @@
 name: Resolve repository deployment identity
-description: Derive the canonical project identity from the caller repository and resolve its Docker network.
+description: Derive canonical project, environment-specific Docker network, container service name, and image name.
 
 inputs:
+  environment:
+    description: Deployment environment, prod or dev.
+    required: false
+    default: prod
   network:
-    description: Optional Docker network override. Empty uses project-<repository-name>.
+    description: Optional Docker network override. Empty uses project-<repository-name> for prod and project-<repository-name>-dev for dev.
+    required: false
+    default: ''
+  service:
+    description: Optional logical service name.
+    required: false
+    default: ''
+  image:
+    description: Optional logical image repository name. Empty uses service.
     required: false
     default: ''
 
@@ -11,9 +23,18 @@ outputs:
   project:
     description: Canonical project identifier derived from the caller repository name.
     value: ${{ steps.identity.outputs.project }}
+  environment:
+    description: Resolved deployment environment.
+    value: ${{ steps.identity.outputs.environment }}
   network:
     description: Resolved Docker network name.
     value: ${{ steps.identity.outputs.network }}
+  service:
+    description: Environment-specific physical Docker service/container name.
+    value: ${{ steps.identity.outputs.service }}
+  image:
+    description: Environment-specific local Docker image repository name.
+    value: ${{ steps.identity.outputs.image }}
 
 runs:
   using: composite
@@ -23,7 +44,10 @@ runs:
       shell: bash
       env:
         REPOSITORY: ${{ github.repository }}
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
         NETWORK_INPUT: ${{ inputs.network }}
+        SERVICE_INPUT: ${{ inputs.service }}
+        IMAGE_INPUT: ${{ inputs.image }}
       run: |
         set -euo pipefail
 
@@ -31,6 +55,7 @@ runs:
           echo "::error::github.repository must use owner/repository form."
           exit 1
         }
+        case "$DEPLOY_ENVIRONMENT" in prod|dev) ;; *) echo "::error::environment must be prod or dev."; exit 1 ;; esac
 
         repository_name="${REPOSITORY#*/}"
         project="$(printf '%s' "$repository_name" | tr '[:upper:]' '[:lower:]')"
@@ -40,13 +65,34 @@ runs:
         }
 
         network="$NETWORK_INPUT"
-        [[ -n "$network" ]] || network="project-$project"
+        if [[ -z "$network" ]]; then
+          network="project-$project"
+          [[ "$DEPLOY_ENVIRONMENT" != "dev" ]] || network="$network-dev"
+        fi
         [[ "$network" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || {
           echo "::error::Invalid Docker network '$network'."
           exit 1
         }
 
+        service="$SERVICE_INPUT"
+        image="$IMAGE_INPUT"
+        if [[ -n "$service" ]]; then
+          [[ "$service" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid service '$service'."; exit 1; }
+          [[ -n "$image" ]] || image="$service"
+          [[ "$image" =~ ^[A-Za-z0-9][A-Za-z0-9_./-]*$ ]] || { echo "::error::Invalid image '$image'."; exit 1; }
+          if [[ "$DEPLOY_ENVIRONMENT" == "dev" ]]; then
+            service="$service-dev"
+            image="$image-dev"
+          fi
+        elif [[ -n "$image" ]]; then
+          echo "::error::image requires service."
+          exit 1
+        fi
+
         {
           echo "project=$project"
+          echo "environment=$DEPLOY_ENVIRONMENT"
           echo "network=$network"
+          echo "service=$service"
+          echo "image=$image"
         } >>"$GITHUB_OUTPUT"
