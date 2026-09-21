@@ -25,12 +25,16 @@ inputs:
     description: Artifact glob relative to working-directory.
     required: false
     default: app/build/outputs/apk/release/*.apk
+  version:
+    description: Optional semantic version for manual production release builds, without a leading v.
+    required: false
+    default: ''
   version-env-prefix:
     description: Optional prefix for <PREFIX>_VERSION_NAME and <PREFIX>_VERSION_CODE.
     required: false
     default: ''
   upload-to-release:
-    description: Upload artifact to stable GitHub Release.
+    description: Legacy compatibility switch. workflow_dispatch builds do not automatically upload to a GitHub Release.
     required: false
     default: 'true'
 
@@ -46,6 +50,9 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
         SERVICE: ${{ inputs.service-name }}
         VERSION_PREFIX: ${{ inputs.version-env-prefix }}
+        VERSION_INPUT: ${{ inputs.version }}
+        ACTOR: ${{ github.actor }}
+        TRIGGERING_ACTOR: ${{ github.triggering_actor }}
       run: |
         set -euo pipefail
         branch="$BRANCH_INPUT"; [[ -n "$branch" ]] || branch="$DEFAULT_BRANCH"
@@ -54,12 +61,16 @@ runs:
           echo "::error::Android production release supports only workflow_dispatch."
           exit 1
         }
-        [[ "${GITHUB_ACTOR:-}" == "Mooner510" && "${GITHUB_TRIGGERING_ACTOR:-}" == "Mooner510" ]] || {
+        [[ "$ACTOR" == "Mooner510" && "$TRIGGERING_ACTOR" == "Mooner510" ]] || {
           echo "::error::Android production deployment is restricted to Mooner510."
           exit 1
         }
         checkout_ref="$branch"
-        version=""
+        version="$VERSION_INPUT"
+        if [[ -n "$version" && ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error::version must match MAJOR.MINOR.PATCH."
+          exit 1
+        fi
         project="${GITHUB_REPOSITORY#*/}"
         root="/opt/stacks/projects/$project/$SERVICE"
         signing_env="$root/secret/android/signing.env"
