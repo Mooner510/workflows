@@ -111,7 +111,6 @@ runs:
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         EVENT_NAME: ${{ github.event_name }}
         EVENT_OPERATION: ${{ github.event.inputs.operation }}
-        RELEASE_TAG: ${{ github.event.release.tag_name }}
         IMAGE_NAME_INPUT: ${{ inputs.image-name }}
         SERVICE_NAME: ${{ inputs.service-name }}
       run: |
@@ -121,26 +120,17 @@ runs:
         [[ -n "$branch" ]] || branch="$DEFAULT_BRANCH"
         [[ -n "$branch" ]] || { echo "::error::Unable to resolve the caller repository default branch."; exit 1; }
 
-        case "$EVENT_NAME" in
-          release)
-            operation=deploy
-            checkout_ref="$RELEASE_TAG"
-            ;;
-          workflow_dispatch)
-            operation="${EVENT_OPERATION:-deploy}"
-            checkout_ref="$branch"
-            ;;
-          *)
-            echo "::error::Production Docker service supports only workflow_dispatch or release events."
-            exit 1
-            ;;
-        esac
-
-        case "$operation" in deploy|rollback) ;; *) echo "::error::operation must be deploy or rollback."; exit 1 ;; esac
-        if [[ "$EVENT_NAME" == "release" && "$operation" != "deploy" ]]; then
-          echo "::error::Release events can only deploy."
+        [[ "$EVENT_NAME" == "workflow_dispatch" ]] || {
+          echo "::error::Production Docker service supports only workflow_dispatch."
           exit 1
-        fi
+        }
+        [[ "${GITHUB_ACTOR:-}" == "Mooner510" && "${GITHUB_TRIGGERING_ACTOR:-}" == "Mooner510" ]] || {
+          echo "::error::Production deployment is restricted to Mooner510."
+          exit 1
+        }
+        operation="${EVENT_OPERATION:-deploy}"
+        checkout_ref="$branch"
+        case "$operation" in deploy|rollback) ;; *) echo "::error::operation must be deploy or rollback."; exit 1 ;; esac
 
         image_name="$IMAGE_NAME_INPUT"
         [[ -n "$image_name" ]] || image_name="$SERVICE_NAME"
@@ -163,6 +153,7 @@ runs:
       if: steps.contract.outputs.operation == 'deploy'
       uses: $/.github/actions/cd/docker-service
       with:
+        environment: prod
         production-branch: ${{ steps.contract.outputs.production_branch }}
         working-directory: ${{ inputs.working-directory }}
         service-name: ${{ inputs.service-name }}
