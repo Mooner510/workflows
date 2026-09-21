@@ -44,27 +44,22 @@ runs:
         BRANCH_INPUT: ${{ inputs.production-branch }}
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         EVENT_NAME: ${{ github.event_name }}
-        RELEASE_TAG: ${{ github.event.release.tag_name }}
         SERVICE: ${{ inputs.service-name }}
         VERSION_PREFIX: ${{ inputs.version-env-prefix }}
       run: |
         set -euo pipefail
         branch="$BRANCH_INPUT"; [[ -n "$branch" ]] || branch="$DEFAULT_BRANCH"
         [[ -n "$branch" ]] || { echo "::error::Unable to resolve production branch."; exit 1; }
-        case "$EVENT_NAME" in
-          release)
-            checkout_ref="$RELEASE_TAG"
-            version="${RELEASE_TAG#v}"
-            ;;
-          workflow_dispatch)
-            checkout_ref="$branch"
-            version=""
-            ;;
-          *)
-            echo "::error::Android production release supports only release or workflow_dispatch."
-            exit 1
-            ;;
-        esac
+        [[ "$EVENT_NAME" == "workflow_dispatch" ]] || {
+          echo "::error::Android production release supports only workflow_dispatch."
+          exit 1
+        }
+        [[ "${GITHUB_ACTOR:-}" == "Mooner510" && "${GITHUB_TRIGGERING_ACTOR:-}" == "Mooner510" ]] || {
+          echo "::error::Android production deployment is restricted to Mooner510."
+          exit 1
+        }
+        checkout_ref="$branch"
+        version=""
         project="${GITHUB_REPOSITORY#*/}"
         root="/opt/stacks/projects/$project/$SERVICE"
         signing_env="$root/secret/android/signing.env"
