@@ -10,6 +10,15 @@ on:
         required: false
         type: string
         default: /
+      go_private_patterns:
+        description: Optional GOPRIVATE pattern for private Go modules.
+        required: false
+        type: string
+        default: ''
+    secrets:
+      CI_PRIVATE_REPO_TOKEN:
+        description: Optional GitHub token with read access to private Go module repositories.
+        required: false
   workflow_dispatch:
     inputs:
       path:
@@ -17,6 +26,11 @@ on:
         required: false
         type: string
         default: /
+      go_private_patterns:
+        description: Optional GOPRIVATE pattern for private Go modules.
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -27,10 +41,10 @@ concurrency:
 
 jobs:
   format:
-    name: Format Go files
+    name: Format, push, and verify Go
     if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, linux]
-    timeout-minutes: 15
+    timeout-minutes: 45
 
     steps:
       - name: Validate target branch
@@ -52,13 +66,14 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Set up Go
+      - name: Set up Go for formatting
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: false
 
-      - name: Format, commit, and push
+      - name: Apply gofmt
+        id: format
         shell: bash
         env:
           FORMAT_PATH: ${{ inputs.path }}
@@ -100,50 +115,174 @@ jobs:
 
           mapfile -d '' go_files < <(find "$target" -type f -name '*.go' -print0 | sort -z)
 
+          {
+            echo "display_path=$display_path"
+            echo "files_scanned=${#go_files[@]}"
+          } >>"$GITHUB_OUTPUT"
+
           if (( ${#go_files[@]} == 0 )); then
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+            echo "changed_count=0" >>"$GITHUB_OUTPUT"
             echo "No Go files found under $display_path."
             {
               echo "### Go Format"
               echo
-              echo "- Branch: \`$TARGET_BRANCH\`"
-              echo "- Path: \`$display_path\`"
+              echo "- Branch: `$TARGET_BRANCH`"
+              echo "- Path: `$display_path`"
               echo "- Result: no Go files found"
             } >>"$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
           printf '%s\0' "${go_files[@]}" | xargs -0 -r -n 100 gofmt -w
-
           git add -A -- "$target_relative"
 
           if git diff --cached --quiet; then
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+            echo "changed_count=0" >>"$GITHUB_OUTPUT"
             echo "All Go files under $display_path are already formatted."
             {
               echo "### Go Format"
               echo
-              echo "- Branch: \`$TARGET_BRANCH\`"
-              echo "- Path: \`$display_path\`"
-              echo "- Files scanned: \`${#go_files[@]}\`"
+              echo "- Branch: `$TARGET_BRANCH`"
+              echo "- Path: `$display_path`"
+              echo "- Files scanned: `${#go_files[@]}`"
               echo "- Result: no changes"
             } >>"$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
           changed_count="$(git diff --cached --name-only | wc -l | tr -d ' ')"
+          echo "changed=true" >>"$GITHUB_OUTPUT"
+          echo "changed_count=$changed_count" >>"$GITHUB_OUTPUT"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Commit and push formatting
+        id: push
+        if: steps.format.outputs.changed == 'true'
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ github.ref_name }}
+          COMMITTER_NAME: ${{ github.actor }}
+          COMMITTER_EMAIL: ${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com
+        run: |
+          set -euo pipefail
+
+          git config user.name "$COMMITTER_NAME"
+          git config user.email "$COMMITTER_EMAIL"
           git commit -m "style: apply gofmt"
           commit_sha="$(git rev-parse HEAD)"
 
           git push origin "HEAD:refs/heads/$TARGET_BRANCH"
 
+          echo "commit_sha=$commit_sha" >>"$GITHUB_OUTPUT"
+          echo "Pushed formatted commit $commit_sha to $TARGET_BRANCH."
+
+      - name: Prepare pushed Go CI
+        id: go-ci
+        if: steps.format.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+
+          workspace="$(realpath -e "$GITHUB_WORKSPACE")"
+          pushed_sha="${{ steps.push.outputs.commit_sha }}"
+          [[ "$(git rev-parse HEAD)" == "$pushed_sha" ]] || {
+            echo "::error::Workspace HEAD does not match the pushed formatting commit."
+            exit 1
+          }
+
+          declare -A modules=()
+
+          while IFS= read -r changed; do
+            [[ "$changed" == *.go ]] || continue
+
+            file="$workspace/$changed"
+            cursor="$(dirname "$file")"
+            module=""
+
+            while :; do
+              if [[ -f "$cursor/go.mod" ]]; then
+                module="$cursor"
+                break
+              fi
+              [[ "$cursor" == "$workspace" ]] && break
+              cursor="$(dirname "$cursor")"
+            done
+
+            if [[ -z "$module" ]]; then
+              echo "::error::No go.mod found for formatted file '$changed'."
+              exit 1
+            fi
+            modules["$module"]=1
+          done < <(git diff-tree --no-commit-id --name-only -r "$pushed_sha")
+
+          if (( ${#modules[@]} == 0 )); then
+            echo "::error::The pushed formatting commit contains no resolvable Go module."
+            exit 1
+          fi
+
+          components='[]'
+          common_version=""
+          index=0
+
+          while IFS= read -r module; do
+            module_file="$module/go.mod"
+            toolchain="$(awk '$1 == "toolchain" && $2 ~ /^go[0-9]/ { sub(/^go/, "", $2); print $2; exit }' "$module_file")"
+            version="$toolchain"
+            if [[ -z "$version" ]]; then
+              version="$(awk '$1 == "go" { print $2; exit }' "$module_file")"
+            fi
+
+            if [[ -z "$version" || ! "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?([-.][0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::Unable to resolve a valid Go version from '$module_file'."
+              exit 1
+            fi
+
+            if [[ -z "$common_version" ]]; then
+              common_version="$version"
+            elif [[ "$common_version" != "$version" ]]; then
+              echo "::error::The formatted commit spans Go modules with different Go versions ($common_version and $version). Run Go Format separately for each module path."
+              exit 1
+            fi
+
+            relative="$(realpath --relative-to="$workspace" "$module")"
+            index=$((index + 1))
+            components="$(jq -c               --arg name "formatted-module-$index"               --arg path "$relative"               '. + [{name: $name, path: $path}]' <<<"$components")"
+          done < <(printf '%s\n' "${!modules[@]}" | sort)
+
+          echo "components=$components" >>"$GITHUB_OUTPUT"
+          echo "version=$common_version" >>"$GITHUB_OUTPUT"
+
+      - name: Verify pushed Go commit
+        if: steps.format.outputs.changed == 'true'
+        uses: $/.github/actions/ci/go
+        with:
+          components: ${{ steps.go-ci.outputs.components }}
+          version: ${{ steps.go-ci.outputs.version }}
+          go_private_patterns: ${{ inputs.go_private_patterns }}
+          private_repo_token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
+
+      - name: Report result
+        if: steps.format.outputs.changed == 'true' && success()
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ github.ref_name }}
+          DISPLAY_PATH: ${{ steps.format.outputs.display_path }}
+          FILES_SCANNED: ${{ steps.format.outputs.files_scanned }}
+          CHANGED_COUNT: ${{ steps.format.outputs.changed_count }}
+          COMMIT_SHA: ${{ steps.push.outputs.commit_sha }}
+          COMMITTER_NAME: ${{ github.actor }}
+        run: |
           {
             echo "### Go Format"
             echo
-            echo "- Branch: \`$TARGET_BRANCH\`"
-            echo "- Path: \`$display_path\`"
-            echo "- Files scanned: \`${#go_files[@]}\`"
-            echo "- Files changed: \`$changed_count\`"
-            echo "- Commit: \`$commit_sha\`"
+            echo "- Branch: `$TARGET_BRANCH`"
+            echo "- Path: `$DISPLAY_PATH`"
+            echo "- Files scanned: `$FILES_SCANNED`"
+            echo "- Files changed: `$CHANGED_COUNT`"
+            echo "- Commit: `$COMMIT_SHA`"
+            echo "- Committer: `$COMMITTER_NAME`"
+            echo "- Go CI: passed"
           } >>"$GITHUB_STEP_SUMMARY"

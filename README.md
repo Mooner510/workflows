@@ -194,11 +194,13 @@ jobs:
 selected branch checkout
 → path가 repository 내부 directory인지 검증
 → path 하위 모든 *.go에 gofmt -w
-→ 변경이 있을 때만 "style: apply gofmt" commit
+→ 변경이 있을 때 workflow 실행 사용자 명의로 "style: apply gofmt" commit
 → 선택한 branch로 fast-forward push
+→ 방금 push한 commit 기준으로 공용 Go CI(gofmt / mod verify / vet / test / build) 실행
+→ 결과를 workflow summary에 표시
 ```
 
-Go 파일이 없거나 이미 포맷되어 있으면 commit을 만들지 않습니다. Caller의 `contents: write` 권한이 필요하며, branch protection이 GitHub Actions push를 막는 branch에는 직접 push할 수 없습니다.
+Go 파일이 없거나 이미 포맷되어 있으면 commit을 만들지 않습니다. Push는 기본 `GITHUB_TOKEN`을 사용하므로 이 포맷 커밋 자체가 별도의 `on: push` CI를 다시 트리거하지 않습니다. 대신 같은 Go Format run 안에서 push된 commit을 바로 검증합니다. Caller의 `contents: write` 권한이 필요하며, branch protection이 GitHub Actions push를 막는 branch에는 직접 push할 수 없습니다.
 
 ## CD
 
