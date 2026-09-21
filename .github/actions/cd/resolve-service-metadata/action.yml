@@ -58,9 +58,19 @@ runs:
         [[ -d "$root" ]] || { echo "::error::Project config directory does not exist: $root"; exit 1; }
 
         service_config="$SERVICE"
-        if [[ -n "$SERVICE" && ! -d "$root/$SERVICE" && "$SERVICE" == "$PROJECT-"* ]]; then
+        if [[ -n "$SERVICE" && "$SERVICE" == "$PROJECT-"* ]]; then
+          exact_root="$root/$SERVICE"
           short_service="${SERVICE#"$PROJECT-"}"
-          [[ -z "$short_service" || ! -d "$root/$short_service" ]] || service_config="$short_service"
+          short_root="$root/$short_service"
+          exact_has_metadata=false
+          short_has_metadata=false
+          for file in addr.env addr.dev.env cors.env cors.dev.env; do
+            [[ ! -f "$exact_root/$file" ]] || exact_has_metadata=true
+            [[ ! -f "$short_root/$file" ]] || short_has_metadata=true
+          done
+          if [[ "$exact_has_metadata" == "false" && "$short_has_metadata" == "true" ]]; then
+            service_config="$short_service"
+          fi
         fi
 
         trim() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
@@ -68,56 +78,67 @@ runs:
         validate_origin() {
           local value="$1"
           [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || return 1
-          [[ "$value" =~ ^https?://(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+)(:[0-9]{1,5})?$ ]]
+          [[ "$value" =~ ^https?://(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+)(:([0-9]{1,5}))?$ ]] || return 1
+          if [[ -n "${BASH_REMATCH[3]:-}" ]]; then
+            local port="${BASH_REMATCH[3]}"
+            (( 10#$port >= 1 && 10#$port <= 65535 )) || return 1
+          fi
+          return 0
         }
 
-        read_addr() {
+        ADDR_VALUE=""
+        read_addr_file() {
           local path="$1"
+          ADDR_VALUE=""
           [[ -f "$path" ]] || return 1
           local value extra
           value="$(sed -n '1p' "$path" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
           extra="$(sed -n '2,$p' "$path" | sed '/^[[:space:]]*$/d' || true)"
           [[ -n "$value" && -z "$extra" ]] || { echo "::error::$path must contain exactly one origin."; exit 1; }
           validate_origin "$value" || { echo "::error::Invalid origin in $path: $value"; exit 1; }
-          printf '%s' "$value"
+          ADDR_VALUE="$value"
+          return 0
         }
 
+        RESOLVED_ADDR=""
         resolve_explicit_addr() {
           local suffix="$1"
-          local value
-          if [[ -n "$service_config" ]]; then
-            value="$(read_addr "$root/$service_config/addr${suffix}.env" || true)"
-            [[ -z "$value" ]] || { printf '%s' "$value"; return 0; }
+          RESOLVED_ADDR=""
+          if [[ -n "$service_config" ]] && read_addr_file "$root/$service_config/addr${suffix}.env"; then
+            RESOLVED_ADDR="$ADDR_VALUE"
+            return 0
           fi
-          value="$(read_addr "$root/addr${suffix}.env" || true)"
-          [[ -z "$value" ]] || { printf '%s' "$value"; return 0; }
+          if read_addr_file "$root/addr${suffix}.env"; then
+            RESOLVED_ADDR="$ADDR_VALUE"
+            return 0
+          fi
           return 1
         }
 
         address=""
         address_source="none"
         if [[ "$RESOLVE_ROUTING" == "true" && "$DEPLOY_ENVIRONMENT" == "prod" ]]; then
-          address="$(resolve_explicit_addr "" || true)"
-          [[ -z "$address" ]] || address_source="explicit"
-        elif [[ "$RESOLVE_ROUTING" == "true" ]]; then
-          address="$(resolve_explicit_addr ".dev" || true)"
-          if [[ -n "$address" ]]; then
+          if resolve_explicit_addr ""; then
+            address="$RESOLVED_ADDR"
             address_source="explicit"
-          else
-            prod_address="$(resolve_explicit_addr "" || true)"
-            if [[ -n "$prod_address" ]]; then
-              if [[ "$prod_address" =~ ^(https?://)([A-Za-z0-9.-]+)(:[0-9]{1,5})?$ ]]; then
-                host="${BASH_REMATCH[2]}"
-                if [[ "$host" =~ ^[0-9.]+$ ]]; then
-                  echo "::error::Cannot derive a development address from IP origin '$prod_address'. Configure addr.dev.env explicitly."
-                  exit 1
-                fi
-                address="${BASH_REMATCH[1]}dev-${host}${BASH_REMATCH[3]:-}"
-                address_source="derived"
-              else
-                echo "::error::Cannot derive development address from '$prod_address'. Configure addr.dev.env explicitly."
+          fi
+        elif [[ "$RESOLVE_ROUTING" == "true" ]]; then
+          if resolve_explicit_addr ".dev"; then
+            address="$RESOLVED_ADDR"
+            address_source="explicit"
+          elif resolve_explicit_addr ""; then
+            prod_address="$RESOLVED_ADDR"
+            if [[ "$prod_address" =~ ^(https?://)([A-Za-z0-9.-]+)(:([0-9]{1,5}))?$ ]]; then
+              host="${BASH_REMATCH[2]}"
+              if [[ "$host" =~ ^[0-9.]+$ ]]; then
+                echo "::error::Cannot derive a development address from IP origin '$prod_address'. Configure addr.dev.env explicitly."
                 exit 1
               fi
+              address="${BASH_REMATCH[1]}dev-$host${BASH_REMATCH[3]:-}"
+              address_source="derived"
+            else
+              echo "::error::Cannot derive development address from '$prod_address'. Configure addr.dev.env explicitly."
+              exit 1
             fi
           fi
         fi
@@ -154,7 +175,7 @@ runs:
           echo "::warning::No address configured for $PROJECT${SERVICE:+/$SERVICE}; automatic Caddy routing will be skipped."
         elif [[ "$address_source" == "derived" ]]; then
           echo "Resolved development address from production: $address"
-        else
+        elif [[ -n "$address" ]]; then
           echo "Resolved address: $address"
         fi
 
