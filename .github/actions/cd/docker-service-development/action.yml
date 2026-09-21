@@ -1,0 +1,164 @@
+name: Docker service development
+description: Canonical development entrypoint for one generic HTTP Docker service. Deploys pushes to the dev branch with isolated runtime config, database, Docker identity, Caddy route, and state.
+
+inputs:
+  development-branch:
+    description: Development branch. Canonical default is dev.
+    required: false
+    default: dev
+  working-directory:
+    description: Service root relative to the caller repository.
+    required: true
+  service-name:
+    description: Stable Docker container, state, and Caddy site name.
+    required: true
+  image-name:
+    description: Local Docker image repository name. Empty uses service-name.
+    required: false
+    default: ''
+  dockerfile:
+    description: Dockerfile relative to working-directory.
+    required: false
+    default: Dockerfile
+  target:
+    description: Optional Docker build target.
+    required: false
+    default: ''
+  build-arg-env-names-json:
+    description: Non-secret runtime config variables forwarded to Docker build as build args.
+    required: false
+    default: '[]'
+  container-port:
+    description: Internal application port.
+    required: true
+  health-path:
+    description: HTTP readiness path.
+    required: false
+    default: /health
+  migration-engine:
+    description: none, goose, prisma, drizzle, or flyway.
+    required: false
+    default: none
+  migration-working-directory:
+    description: Migration component path. Empty uses working-directory.
+    required: false
+    default: ''
+  migration-path:
+    description: Migration path. Empty uses the migration engine convention.
+    required: false
+    default: ''
+  migration-config:
+    description: Drizzle config path.
+    required: false
+    default: drizzle.config.ts
+  migration-package:
+    description: Go package for migration-engine=go-command.
+    required: false
+    default: './cmd/migrate'
+  migration-package-manager:
+    description: Prisma/Drizzle package manager.
+    required: false
+    default: ''
+  migration-build-tool:
+    description: Flyway build tool.
+    required: false
+    default: gradle
+  goose-version:
+    description: Optional explicit Goose version.
+    required: false
+    default: ''
+  volumes-json:
+    description: Docker volume specifications.
+    required: false
+    default: '[]'
+  env-files-json:
+    description: Additional repository-relative env files.
+    required: false
+    default: '[]'
+  database:
+    description: Resolve and inject DATABASE_URL for runtime even when migration-engine is none.
+    required: false
+    default: 'false'
+  env-names-json:
+    description: Caller environment variable names explicitly forwarded to the container.
+    required: false
+    default: '[]'
+  init:
+    description: Run Docker init. Canonical default is enabled.
+    required: false
+    default: 'true'
+  security-opts-json:
+    description: Docker security options. Canonical generic-service default prevents privilege escalation.
+    required: false
+    default: '["no-new-privileges:true"]'
+  cap-drop-json:
+    description: Linux capabilities to drop. Canonical generic-service default drops all capabilities.
+    required: false
+    default: '["ALL"]'
+  stop-timeout:
+    description: Graceful stop timeout in seconds.
+    required: false
+    default: '20'
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve development HTTP deployment
+      id: contract
+      shell: bash
+      env:
+        DEVELOPMENT_BRANCH_INPUT: ${{ inputs.development-branch }}
+        EVENT_NAME: ${{ github.event_name }}
+        IMAGE_NAME_INPUT: ${{ inputs.image-name }}
+        SERVICE_NAME: ${{ inputs.service-name }}
+      run: |
+        set -euo pipefail
+        branch="$DEVELOPMENT_BRANCH_INPUT"
+        [[ -n "$branch" ]] || branch=dev
+        [[ "$EVENT_NAME" == "push" ]] || { echo "::error::Development Docker service supports only push events."; exit 1; }
+        [[ "$GITHUB_REF" == "refs/heads/$branch" ]] || { echo "::error::Development Docker service only deploys '$branch'."; exit 1; }
+
+        image_name="$IMAGE_NAME_INPUT"
+        [[ -n "$image_name" ]] || image_name="$SERVICE_NAME"
+        {
+          echo "development_branch=$branch"
+          echo "checkout_ref=$GITHUB_SHA"
+          echo "image_name=$image_name"
+        } >>"$GITHUB_OUTPUT"
+
+    - name: Checkout development revision
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+        ref: ${{ steps.contract.outputs.checkout_ref }}
+
+    - name: Deploy HTTP service
+      uses: $/.github/actions/cd/docker-service
+      with:
+        environment: dev
+        development-branch: ${{ steps.contract.outputs.development_branch }}
+        working-directory: ${{ inputs.working-directory }}
+        service-name: ${{ inputs.service-name }}
+        image-name: ${{ steps.contract.outputs.image_name }}
+        dockerfile: ${{ inputs.dockerfile }}
+        target: ${{ inputs.target }}
+        build-arg-env-names-json: ${{ inputs.build-arg-env-names-json }}
+        container-port: ${{ inputs.container-port }}
+        health-path: ${{ inputs.health-path }}
+        migration-engine: ${{ inputs.migration-engine }}
+        migration-working-directory: ${{ inputs.migration-working-directory }}
+        migration-path: ${{ inputs.migration-path }}
+        migration-config: ${{ inputs.migration-config }}
+        migration-package: ${{ inputs.migration-package }}
+        migration-package-manager: ${{ inputs.migration-package-manager }}
+        migration-build-tool: ${{ inputs.migration-build-tool }}
+        goose-version: ${{ inputs.goose-version }}
+        volumes-json: ${{ inputs.volumes-json }}
+        env-files-json: ${{ inputs.env-files-json }}
+        database: ${{ inputs.database }}
+        env-names-json: ${{ inputs.env-names-json }}
+        init: ${{ inputs.init }}
+        security-opts-json: ${{ inputs.security-opts-json }}
+        cap-drop-json: ${{ inputs.cap-drop-json }}
+        stop-timeout: ${{ inputs.stop-timeout }}
