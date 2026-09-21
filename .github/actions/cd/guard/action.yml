@@ -1,63 +1,87 @@
-name: Production deploy guard
-description: Validate that a deployment is allowed to reach production.
+name: Deployment guard
+description: Validate canonical production or development deployment sources before host mutation.
 
 inputs:
+  environment:
+    description: Deployment environment, prod or dev.
+    required: false
+    default: prod
   production-branch:
     description: Branch whose history is allowed to reach production.
-    required: true
+    required: false
+    default: ''
+  development-branch:
+    description: Branch whose pushes are allowed to reach development.
+    required: false
+    default: dev
 
 runs:
   using: composite
   steps:
-    - name: Validate production source
+    - name: Validate deployment source
       shell: bash
       env:
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
         PRODUCTION_BRANCH: ${{ inputs.production-branch }}
+        DEVELOPMENT_BRANCH: ${{ inputs.development-branch }}
       run: |
         set -euo pipefail
         command -v git >/dev/null || { echo "::error::git is required on the deployment runner."; exit 1; }
-        command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
 
-        git check-ref-format --branch "$PRODUCTION_BRANCH" >/dev/null 2>&1 || {
-          echo "::error::Invalid production branch '$PRODUCTION_BRANCH'."
-          exit 1
-        }
-
-        case "$GITHUB_EVENT_NAME" in
-          workflow_dispatch)
-            if [[ "$GITHUB_REF" != "refs/heads/$PRODUCTION_BRANCH" ]]; then
-              echo "::error::Manual production deployment must be dispatched from '$PRODUCTION_BRANCH'."
-              exit 1
-            fi
-            ;;
-          release)
-            action="$(jq -r '.action // empty' "$GITHUB_EVENT_PATH")"
-            draft="$(jq -r '.release.draft // true' "$GITHUB_EVENT_PATH")"
-            prerelease="$(jq -r '.release.prerelease // true' "$GITHUB_EVENT_PATH")"
-            tag="$(jq -r '.release.tag_name // empty' "$GITHUB_EVENT_PATH")"
-            if [[ "$action" != "published" || "$draft" != "false" || "$prerelease" != "false" ]]; then
-              echo "::error::Production release deployment requires a published, non-draft, non-prerelease release."
-              exit 1
-            fi
-            [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-              echo "::error::Production release tag must match vMAJOR.MINOR.PATCH."
+        case "$DEPLOY_ENVIRONMENT" in
+          prod)
+            [[ -n "$PRODUCTION_BRANCH" ]] || { echo "::error::production-branch is required for production deployment."; exit 1; }
+            git check-ref-format --branch "$PRODUCTION_BRANCH" >/dev/null 2>&1 || {
+              echo "::error::Invalid production branch '$PRODUCTION_BRANCH'."
               exit 1
             }
+            [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]] || {
+              echo "::error::Production deployment is allowed only from workflow_dispatch."
+              exit 1
+            }
+            [[ "${GITHUB_ACTOR:-}" == "Mooner510" && "${GITHUB_TRIGGERING_ACTOR:-}" == "Mooner510" ]] || {
+              echo "::error::Production deployment is restricted to Mooner510."
+              exit 1
+            }
+            [[ "$GITHUB_REF" == "refs/heads/$PRODUCTION_BRANCH" ]] || {
+              echo "::error::Production workflow must be dispatched from '$PRODUCTION_BRANCH'."
+              exit 1
+            }
+            allowed_branch="$PRODUCTION_BRANCH"
+            ;;
+          dev)
+            git check-ref-format --branch "$DEVELOPMENT_BRANCH" >/dev/null 2>&1 || {
+              echo "::error::Invalid development branch '$DEVELOPMENT_BRANCH'."
+              exit 1
+            }
+            [[ "$GITHUB_EVENT_NAME" == "push" ]] || {
+              echo "::error::Development deployment is allowed only from a push to '$DEVELOPMENT_BRANCH'."
+              exit 1
+            }
+            [[ "$GITHUB_REF" == "refs/heads/$DEVELOPMENT_BRANCH" ]] || {
+              echo "::error::Development deployment requires refs/heads/$DEVELOPMENT_BRANCH."
+              exit 1
+            }
+            [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA:-}" ]] || {
+              echo "::error::Checked-out development revision does not match github.sha."
+              exit 1
+            }
+            allowed_branch="$DEVELOPMENT_BRANCH"
             ;;
           *)
-            echo "::error::Production deployment is allowed only from workflow_dispatch or a stable published release."
+            echo "::error::environment must be prod or dev."
             exit 1
             ;;
         esac
 
-        production_ref="refs/remotes/origin/$PRODUCTION_BRANCH"
-        git show-ref --verify --quiet "$production_ref" || {
-          echo "::error::Production branch '$PRODUCTION_BRANCH' is unavailable locally. Checkout with fetch-depth: 0."
+        remote_ref="refs/remotes/origin/$allowed_branch"
+        git show-ref --verify --quiet "$remote_ref" || {
+          echo "::error::Deployment branch '$allowed_branch' is unavailable locally. Checkout with fetch-depth: 0."
           exit 1
         }
 
         deployment_sha="$(git rev-parse HEAD)"
-        git merge-base --is-ancestor "$deployment_sha" "$production_ref" || {
-          echo "::error::Checked-out commit '$deployment_sha' is not contained in production branch '$PRODUCTION_BRANCH'."
+        git merge-base --is-ancestor "$deployment_sha" "$remote_ref" || {
+          echo "::error::Checked-out commit '$deployment_sha' is not contained in '$allowed_branch'."
           exit 1
         }
