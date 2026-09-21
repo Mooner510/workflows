@@ -26,6 +26,7 @@
 └─ cd/
    ├─ guard/
    ├─ development-enabled/
+   ├─ resolve-service-metadata/
    ├─ docker-service-production/
    ├─ docker-service-development/
    ├─ docker-process-production/
@@ -325,7 +326,53 @@ prod: project deploy.env -> service deploy.env -> service secret/deploy.env
 dev:  project deploy.dev.env -> service deploy.dev.env -> service secret/deploy.dev.env
 ```
 
-`DEPLOY_DOMAIN`도 선택된 환경 파일에서만 읽으며 dev domain을 prod에서 자동 파생하지 않습니다. `DEPLOY_VOLUMES_JSON`도 동일합니다. Mutable persistent volume은 dev가 prod와 같은 host path/volume을 지정하지 않는 것이 원칙이며 중앙 workflow는 임의 path를 자동 변환하지 않습니다.
+`DEPLOY_DOMAIN`은 더 이상 automatic Caddy routing source가 아닙니다. Routing은 `addr.env` / `addr.dev.env` metadata에서만 결정합니다. `DEPLOY_VOLUMES_JSON`은 선택된 runtime env 파일을 계속 사용합니다. Mutable persistent volume은 dev가 prod와 같은 host path/volume을 지정하지 않는 것이 원칙이며 중앙 workflow는 임의 path를 자동 변환하지 않습니다.
+
+### Address / CORS metadata
+
+Address와 CORS는 `deploy.env`에서 분리된 host metadata입니다.
+
+```text
+Production
+/opt/stacks/projects/<project>/addr.env
+/opt/stacks/projects/<project>/<service>/addr.env
+/opt/stacks/projects/<project>/cors.env
+/opt/stacks/projects/<project>/<service>/cors.env
+
+Development
+/opt/stacks/projects/<project>/addr.dev.env
+/opt/stacks/projects/<project>/<service>/addr.dev.env
+/opt/stacks/projects/<project>/cors.dev.env
+/opt/stacks/projects/<project>/<service>/cors.dev.env
+```
+
+Address resolution:
+
+```text
+prod:
+  service addr.env
+  -> project addr.env
+  -> none
+
+dev:
+  service addr.dev.env
+  -> project addr.dev.env
+  -> derive from effective production address by prefixing hostname with dev-
+  -> none
+```
+
+Derived development address preserves scheme and explicit port. Production address가 없으면 development도 자동 생성하지 않습니다.
+
+Effective address가 없으면 Docker deployment와 health check는 정상 진행하고 Caddy registration만 warning과 함께 skip합니다. 기존 Caddy configuration을 자동 제거하지 않습니다. `project addr ... set/rm`이 실행 중 managed HTTP service의 generated Caddy route를 즉시 갱신/제거합니다.
+
+CORS는 environment 간 자동 상속이나 derivation을 하지 않습니다.
+
+```text
+prod CORS = project cors.env + service cors.env
+dev CORS  = project cors.dev.env + service cors.dev.env
+```
+
+각 파일은 origin 하나당 한 줄이며 중복 제거 후 `CORS_ORIGINS` comma-separated environment variable로 container에 주입됩니다. HTTP/non-HTTP service 종류와 관계없이 동일하게 적용하며 파일이 없으면 변수를 주입하지 않습니다. CORS 파일 변경은 실행 중 container에 즉시 반영하지 않으므로 redeploy가 필요합니다.
 
 ### Development enable flag
 
@@ -347,6 +394,8 @@ com.mooner510.stacks.managed=true
 com.mooner510.stacks.project=<project>
 com.mooner510.stacks.service=<logical-service>
 com.mooner510.stacks.environment=prod|dev
+com.mooner510.stacks.kind=http|process
+com.mooner510.stacks.container-port=<port>  # HTTP only
 ```
 
 기존 `com.mooner510.workflows.service`와 OCI revision label도 유지합니다. Caddy site filename은 physical service 이름을 사용하므로 dev는 `<service>-dev.caddy`가 됩니다.
