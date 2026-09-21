@@ -210,6 +210,8 @@ runs:
           [[ -z "$PROJECT" ]] || args+=(--label "com.mooner510.stacks.project=$PROJECT")
           [[ -z "$LOGICAL_SERVICE" ]] || args+=(--label "com.mooner510.stacks.service=$LOGICAL_SERVICE")
           args+=(--label "com.mooner510.stacks.environment=$DEPLOY_ENVIRONMENT")
+          args+=(--label "com.mooner510.stacks.kind=http")
+          args+=(--label "com.mooner510.stacks.container-port=$CONTAINER_PORT")
           [[ -z "${GITHUB_SHA:-}" ]] || args+=(--label "org.opencontainers.image.revision=$GITHUB_SHA")
           args+=("$image")
           "${args[@]}" >/dev/null
