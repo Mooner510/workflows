@@ -101,6 +101,7 @@ runs:
     - name: Validate production rollback
       uses: $/.github/actions/cd/guard
       with:
+        environment: prod
         production-branch: ${{ inputs.production-branch }}
 
     - name: Resolve repository deployment identity
@@ -239,6 +240,9 @@ runs:
       id: rollback
       uses: $/.github/actions/cd/docker/deploy
       with:
+        project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
+        environment: prod
         container-name: ${{ inputs.service-name }}
         image: ${{ steps.target.outputs['image-id'] }}
         container-port: ${{ inputs.container-port }}
@@ -288,6 +292,9 @@ runs:
       if: failure() && steps.rollback.outcome == 'success' && steps.current.outputs.exists == 'true'
       uses: $/.github/actions/cd/docker/deploy
       with:
+        project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
+        environment: prod
         container-name: ${{ inputs.service-name }}
         image: ${{ steps.current.outputs['image-id'] }}
         container-port: ${{ inputs.container-port }}
