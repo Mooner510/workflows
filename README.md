@@ -152,6 +152,53 @@ Gitleaks current + history
 Trivy misconfiguration
 ```
 
+## Manual Go formatting
+
+Go repository에서 필요할 때만 수동으로 `gofmt`를 적용하는 reusable workflow입니다.
+
+```text
+.github/workflows/go-format.yml
+```
+
+Caller repository의 수동 실행 화면에서 **branch를 선택**하고 `path`만 입력합니다. `path` 기본값은 `/`이며 repository 전체의 모든 `*.go` 파일을 포맷합니다. 하위 디렉터리만 처리하려면 `services/api`처럼 repository-relative directory를 입력합니다.
+
+Caller 예시:
+
+```yaml
+name: Go Format
+
+on:
+  workflow_dispatch:
+    inputs:
+      path:
+        description: Repository-relative directory. / formats the whole repository.
+        required: false
+        type: string
+        default: /
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    name: Format Go files
+    uses: Mooner510/workflows/.github/workflows/go-format.yml@v1
+    with:
+      path: ${{ inputs.path }}
+```
+
+동작:
+
+```text
+selected branch checkout
+→ path가 repository 내부 directory인지 검증
+→ path 하위 모든 *.go에 gofmt -w
+→ 변경이 있을 때만 "style: apply gofmt" commit
+→ 선택한 branch로 fast-forward push
+```
+
+Go 파일이 없거나 이미 포맷되어 있으면 commit을 만들지 않습니다. Caller의 `contents: write` 권한이 필요하며, branch protection이 GitHub Actions push를 막는 branch에는 직접 push할 수 없습니다.
+
 ## CD
 
 Generic HTTP Docker service의 canonical caller entrypoint:
