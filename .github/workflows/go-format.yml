@@ -1,15 +1,10 @@
 name: Go Format
 
-run-name: Go Format · ${{ inputs.branch || github.ref_name }} · ${{ inputs.path }}
+run-name: Go Format · ${{ github.ref_name }} · ${{ inputs.path }}
 
 on:
   workflow_call:
     inputs:
-      branch:
-        description: Target branch. Empty uses the branch selected by the caller.
-        required: false
-        type: string
-        default: ''
       path:
         description: Repository-relative directory to format. / formats the whole repository.
         required: false
@@ -17,11 +12,6 @@ on:
         default: /
   workflow_dispatch:
     inputs:
-      branch:
-        description: Target branch. Empty uses the branch selected in the workflow UI.
-        required: false
-        type: string
-        default: ''
       path:
         description: Repository-relative directory to format. / formats the whole repository.
         required: false
@@ -32,7 +22,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: go-format-${{ github.repository }}-${{ inputs.branch || github.ref_name }}
+  group: go-format-${{ github.repository }}-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -43,34 +33,22 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Resolve target branch
-        id: target
+      - name: Validate target branch
         shell: bash
         env:
-          REQUESTED_BRANCH: ${{ inputs.branch }}
-          EVENT_BRANCH: ${{ github.ref_name }}
+          TARGET_BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-
-          branch="${REQUESTED_BRANCH:-$EVENT_BRANCH}"
-          branch="${branch#refs/heads/}"
-
-          if [[ -z "$branch" || "$branch" == "HEAD" ]]; then
-            echo "::error::A valid target branch is required."
+          if [[ -z "$TARGET_BRANCH" || "$TARGET_BRANCH" == "HEAD" ]]; then
+            echo "::error::Run this workflow from a branch."
             exit 1
           fi
+          git check-ref-format --branch "$TARGET_BRANCH" >/dev/null
 
-          if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
-            echo "::error::Invalid branch name: $branch"
-            exit 1
-          fi
-
-          echo "branch=$branch" >>"$GITHUB_OUTPUT"
-
-      - name: Checkout target branch
+      - name: Checkout selected branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.target.outputs.branch }}
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
           persist-credentials: true
 
@@ -84,7 +62,7 @@ jobs:
         shell: bash
         env:
           FORMAT_PATH: ${{ inputs.path }}
-          TARGET_BRANCH: ${{ steps.target.outputs.branch }}
+          TARGET_BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
@@ -136,9 +114,7 @@ jobs:
 
           printf '%s\0' "${go_files[@]}" | xargs -0 -r -n 100 gofmt -w
 
-          for file in "${go_files[@]}"; do
-            git add -- "$file"
-          done
+          git add -A -- "$target_relative"
 
           if git diff --cached --quiet; then
             echo "All Go files under $display_path are already formatted."
