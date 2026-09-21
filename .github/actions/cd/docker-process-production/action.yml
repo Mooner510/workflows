@@ -71,6 +71,8 @@ runs:
         BRANCH_INPUT: ${{ inputs.production-branch }}
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         EVENT_NAME: ${{ github.event_name }}
+        ACTOR: ${{ github.actor }}
+        TRIGGERING_ACTOR: ${{ github.triggering_actor }}
         EVENT_OPERATION: ${{ github.event.inputs.operation }}
         IMAGE_INPUT: ${{ inputs.image-name }}
         SERVICE: ${{ inputs.service-name }}
@@ -79,7 +81,7 @@ runs:
         branch="$BRANCH_INPUT"; [[ -n "$branch" ]] || branch="$DEFAULT_BRANCH"
         [[ -n "$branch" ]] || { echo "::error::Unable to resolve production branch."; exit 1; }
         [[ "$EVENT_NAME" == "workflow_dispatch" ]] || { echo "::error::Production process deployment supports only workflow_dispatch."; exit 1; }
-        [[ "${GITHUB_ACTOR:-}" == "Mooner510" && "${GITHUB_TRIGGERING_ACTOR:-}" == "Mooner510" ]] || {
+        [[ "$ACTOR" == "Mooner510" && "$TRIGGERING_ACTOR" == "Mooner510" ]] || {
           echo "::error::Production deployment is restricted to Mooner510."
           exit 1
         }
