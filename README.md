@@ -4,7 +4,7 @@
 
 - default branch: `master`
 - stable caller ref: movable `v1`
-- `master` 변경은 실제 caller 검증 후에만 `v1`으로 승격
+- `master`에 공용 workflow/action 변경이 merge되면 같은 작업에서 `v1`을 해당 `master` commit으로 즉시 이동
 
 ## 구조
 
@@ -183,7 +183,7 @@ permissions:
 jobs:
   format:
     name: Format Go files
-    uses: Mooner510/workflows/.github/workflows/go-format.yml@4228ac0e572406ca131bcf6c9706924cf4f13e1f
+    uses: Mooner510/workflows/.github/workflows/go-format.yml@v1
     with:
       path: ${{ inputs.path }}
 ```
@@ -439,6 +439,6 @@ master -> current development implementation
 v1     -> verified movable stable implementation
 ```
 
-`v1`은 caller canary와 action path/state/rollback 검증이 끝나기 전에는 이동하지 않습니다.
+`Mooner510/workflows`의 공용 workflow/action 변경은 `master` merge와 같은 작업에서 `v1`을 동일 commit으로 이동합니다. Caller는 항상 `@v1`을 사용하며 `@master`나 특정 workflows commit SHA를 실행 ref로 사용하지 않습니다.
 
-현재 `master`에 구현이 존재하더라도 실제 caller 검증 전에는 stable로 간주하지 않습니다.
+외부 third-party GitHub Action의 full commit SHA pinning 정책은 이 규칙과 별개이며 그대로 유지합니다.
