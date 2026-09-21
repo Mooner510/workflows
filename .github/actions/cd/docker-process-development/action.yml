@@ -71,7 +71,7 @@ runs:
         BRANCH_INPUT: ${{ inputs.development-branch }}
         EVENT_NAME: ${{ github.event_name }}
         IMAGE_INPUT: ${{ inputs.image-name }}
-        SERVICE: ${{ steps.identity.outputs.service }}
+        SERVICE: ${{ inputs.service-name }}
       run: |
         set -euo pipefail
         branch="$BRANCH_INPUT"; [[ -n "$branch" ]] || branch=dev
@@ -172,7 +172,7 @@ runs:
       shell: bash
       env:
         OPERATION: ${{ steps.contract.outputs.operation }}
-        SERVICE: ${{ inputs.service-name }}
+        SERVICE: ${{ steps.identity.outputs.service }}
         DEPLOY_IMAGE_ID: ${{ steps.build.outputs.image-id }}
         ROLLBACK_IMAGE_ID: ${{ steps.previous.outputs.image-id }}
         CURRENT_EXISTS: ${{ steps.current.outputs.exists }}
