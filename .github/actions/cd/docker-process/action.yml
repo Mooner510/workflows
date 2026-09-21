@@ -76,6 +76,20 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Validate process operation
+      shell: bash
+      env:
+        OPERATION: ${{ inputs.operation }}
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+      run: |
+        set -euo pipefail
+        case "$DEPLOY_ENVIRONMENT" in prod|dev) ;; *) echo "::error::environment must be prod or dev."; exit 1 ;; esac
+        case "$OPERATION" in deploy|rollback) ;; *) echo "::error::operation must be deploy or rollback."; exit 1 ;; esac
+        if [[ "$DEPLOY_ENVIRONMENT" == "dev" && "$OPERATION" != "deploy" ]]; then
+          echo "::error::Development process deployment supports deploy only."
+          exit 1
+        fi
+
     - name: Validate process deployment source
       uses: $/.github/actions/cd/guard
       with:
@@ -120,7 +134,7 @@ runs:
 
     - name: Read process rollback target
       id: previous
-      if: steps.contract.outputs.operation == 'rollback'
+      if: inputs.operation == 'rollback'
       uses: $/.github/actions/cd/state
       with:
         environment: ${{ inputs.environment }}
@@ -130,7 +144,7 @@ runs:
 
     - name: Build process image
       id: build
-      if: steps.contract.outputs.operation == 'deploy'
+      if: inputs.operation == 'deploy'
       uses: $/.github/actions/cd/docker/build
       with:
         working-directory: ${{ inputs.working-directory }}
@@ -243,7 +257,7 @@ runs:
         fi
 
     - name: Record process deployment
-      if: steps.contract.outputs.operation == 'deploy'
+      if: inputs.operation == 'deploy'
       uses: $/.github/actions/cd/state
       with:
         environment: ${{ inputs.environment }}
@@ -256,7 +270,7 @@ runs:
         event: deploy
 
     - name: Record process rollback
-      if: steps.contract.outputs.operation == 'rollback'
+      if: inputs.operation == 'rollback'
       uses: $/.github/actions/cd/state
       with:
         environment: ${{ inputs.environment }}
