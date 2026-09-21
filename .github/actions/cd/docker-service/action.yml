@@ -602,7 +602,7 @@ runs:
       uses: $/.github/actions/cd/caddy
       with:
         operation: remove
-        service-name: ${{ inputs.service-name }}
+        service-name: ${{ steps.identity.outputs.service }}
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
 
