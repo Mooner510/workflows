@@ -24,6 +24,8 @@ runs:
         DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
         PRODUCTION_BRANCH: ${{ inputs.production-branch }}
         DEVELOPMENT_BRANCH: ${{ inputs.development-branch }}
+        ACTOR: ${{ github.actor }}
+        TRIGGERING_ACTOR: ${{ github.triggering_actor }}
       run: |
         set -euo pipefail
         command -v git >/dev/null || { echo "::error::git is required on the deployment runner."; exit 1; }
@@ -39,7 +41,7 @@ runs:
               echo "::error::Production deployment is allowed only from workflow_dispatch."
               exit 1
             }
-            [[ "${GITHUB_ACTOR:-}" == "Mooner510" && "${GITHUB_TRIGGERING_ACTOR:-}" == "Mooner510" ]] || {
+            [[ "$ACTOR" == "Mooner510" && "$TRIGGERING_ACTOR" == "Mooner510" ]] || {
               echo "::error::Production deployment is restricted to Mooner510."
               exit 1
             }
