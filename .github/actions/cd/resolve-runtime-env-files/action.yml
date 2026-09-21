@@ -2,6 +2,10 @@ name: Resolve runtime environment files
 description: Resolve canonical project config plus optional service-scoped runtime config and secret overlays.
 
 inputs:
+  environment:
+    description: Deployment environment, prod or dev.
+    required: false
+    default: prod
   project:
     description: Repository-derived project identifier matching /opt/stacks/projects/<repository-name>.
     required: true
@@ -35,12 +39,14 @@ runs:
       id: resolve
       shell: bash
       env:
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
         PROJECT: ${{ inputs.project }}
         SERVICE: ${{ inputs.service }}
         ENV_FILES_JSON: ${{ inputs.env-files-json }}
       run: |
         set -euo pipefail
-        command -v jq >/dev/null || { echo "::error::jq is required on the production runner."; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
+        case "$DEPLOY_ENVIRONMENT" in prod|dev) ;; *) echo "::error::environment must be prod or dev."; exit 1 ;; esac
 
         [[ "$PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || {
           echo "::error::Invalid repository-derived project identifier '$PROJECT'."
@@ -91,32 +97,34 @@ runs:
           resolved="$(jq -c --arg path "$path" '. + [$path]' <<<"$resolved")"
         done < <(jq -r '.[]' <<<"$ENV_FILES_JSON")
 
-        project_env="/opt/stacks/projects/$PROJECT/deploy.env"
+        env_file="deploy.env"
+        [[ "$DEPLOY_ENVIRONMENT" != "dev" ]] || env_file="deploy.dev.env"
+        project_env="/opt/stacks/projects/$PROJECT/$env_file"
         [[ ! -f "$project_env" ]] || resolved="$(jq -c --arg path "$project_env" '. + [$path]' <<<"$resolved")"
 
         if [[ -n "$SERVICE" ]]; then
           service_config="$SERVICE"
           exact_root="/opt/stacks/projects/$PROJECT/$service_config"
-          if [[ ! -f "$exact_root/deploy.env" && ! -f "$exact_root/secret/deploy.env" && "$SERVICE" == "$PROJECT-"* ]]; then
+          if [[ ! -f "$exact_root/$env_file" && ! -f "$exact_root/secret/$env_file" && "$SERVICE" == "$PROJECT-"* ]]; then
             short_service="${SERVICE#"$PROJECT-"}"
             if [[ -n "$short_service" ]]; then
               short_root="/opt/stacks/projects/$PROJECT/$short_service"
-              if [[ -f "$short_root/deploy.env" || -f "$short_root/secret/deploy.env" ]]; then
+              if [[ -f "$short_root/$env_file" || -f "$short_root/secret/$env_file" ]]; then
                 service_config="$short_service"
                 echo "Resolved service config alias: $SERVICE -> $service_config"
               fi
             fi
           fi
 
-          service_env="/opt/stacks/projects/$PROJECT/$service_config/deploy.env"
-          service_secret="/opt/stacks/projects/$PROJECT/$service_config/secret/deploy.env"
+          service_env="/opt/stacks/projects/$PROJECT/$service_config/$env_file"
+          service_secret="/opt/stacks/projects/$PROJECT/$service_config/secret/$env_file"
           [[ ! -f "$service_env" ]] || resolved="$(jq -c --arg path "$service_env" '. + [$path]' <<<"$resolved")"
           [[ ! -f "$service_secret" ]] || resolved="$(jq -c --arg path "$service_secret" '. + [$path]' <<<"$resolved")"
         fi
 
         if [[ "$(jq 'length' <<<"$resolved")" -eq 0 ]]; then
           echo "::error::No runtime env file is available for project '$PROJECT' and service '$SERVICE'."
-          echo "::error::Provide /opt/stacks/projects/$PROJECT/deploy.env or a service deploy.env/secret/deploy.env."
+          echo "::error::Provide the selected environment's $env_file at project or service scope. Development never falls back to production env files."
           exit 1
         fi
 
