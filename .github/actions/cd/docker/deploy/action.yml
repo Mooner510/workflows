@@ -2,6 +2,18 @@ name: Docker deploy
 description: Replace one local Docker service container, publish a loopback health port, and attach it to the shared Caddy proxy network.
 
 inputs:
+  project:
+    description: Canonical project identifier used for management labels.
+    required: false
+    default: ''
+  service:
+    description: Logical service identifier used for management labels.
+    required: false
+    default: ''
+  environment:
+    description: Deployment environment, prod or dev.
+    required: false
+    default: prod
   container-name:
     description: Docker container name.
     required: true
@@ -74,6 +86,9 @@ runs:
       id: deploy
       shell: bash
       env:
+        PROJECT: ${{ inputs.project }}
+        LOGICAL_SERVICE: ${{ inputs.service }}
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
         CONTAINER_NAME: ${{ inputs.container-name }}
         IMAGE: ${{ inputs.image }}
         CONTAINER_PORT: ${{ inputs.container-port }}
@@ -94,6 +109,9 @@ runs:
         command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
         command -v base64 >/dev/null || { echo "::error::base64 is required on the self-hosted runner."; exit 1; }
 
+        case "$DEPLOY_ENVIRONMENT" in prod|dev) ;; *) echo "::error::environment must be prod or dev."; exit 1 ;; esac
+        [[ -z "$PROJECT" || "$PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid project '$PROJECT'."; exit 1; }
+        [[ -z "$LOGICAL_SERVICE" || "$LOGICAL_SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid service '$LOGICAL_SERVICE'."; exit 1; }
         [[ "$CONTAINER_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid container-name '$CONTAINER_NAME'."; exit 1; }
         [[ -n "$IMAGE" && "$IMAGE" != *$'\n'* && "$IMAGE" != *$'\r'* ]] || { echo "::error::Invalid image reference."; exit 1; }
         [[ "$CONTAINER_PORT" =~ ^[0-9]+$ ]] && (( CONTAINER_PORT >= 1 && CONTAINER_PORT <= 65535 )) || {
@@ -188,6 +206,10 @@ runs:
           args+=("${hardening_args[@]}")
           [[ -z "$NETWORK" ]] || args+=(--network "$NETWORK")
           args+=(--label "com.mooner510.workflows.service=$CONTAINER_NAME")
+          args+=(--label "com.mooner510.stacks.managed=true")
+          [[ -z "$PROJECT" ]] || args+=(--label "com.mooner510.stacks.project=$PROJECT")
+          [[ -z "$LOGICAL_SERVICE" ]] || args+=(--label "com.mooner510.stacks.service=$LOGICAL_SERVICE")
+          args+=(--label "com.mooner510.stacks.environment=$DEPLOY_ENVIRONMENT")
           [[ -z "${GITHUB_SHA:-}" ]] || args+=(--label "org.opencontainers.image.revision=$GITHUB_SHA")
           args+=("$image")
           "${args[@]}" >/dev/null
