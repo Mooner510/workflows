@@ -339,7 +339,7 @@ runs:
       env:
         ENV_NAMES_JSON: ${{ inputs.env-names-json }}
         RESOLVED_ENV_NAMES_JSON: ${{ steps.credentials.outputs.resolved-env-names-json }}
-        HAS_CORS: ${{ steps.service_metadata.outputs.has-cors }}
+        HAS_CORS: ${{ steps.service_metadata.outputs['has-cors'] }}
       run: |
         set -euo pipefail
         command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
