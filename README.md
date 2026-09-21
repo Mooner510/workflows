@@ -224,7 +224,7 @@ push to dev
 → development resources
 ```
 
-Production은 stable GitHub Release로 자동 배포하지 않습니다. ```release``` event는 production mutation source가 아닙니다.
+Production은 stable GitHub Release로 자동 배포하지 않습니다. `release` event는 production mutation source가 아닙니다.
 
 Generic HTTP Docker service entrypoints:
 
@@ -240,11 +240,11 @@ Non-HTTP process entrypoints:
 .github/actions/cd/docker-process-development
 ```
 
-Android production release는 ```.github/actions/cd/android-production```을 사용하며 역시 ```workflow_dispatch``` 전용입니다. ```version-env-prefix```를 쓰는 caller는 manual dispatch input을 ```version```으로 전달합니다.
+Android production release는 `.github/actions/cd/android-production`을 사용하며 역시 `workflow_dispatch` 전용입니다. `version-env-prefix`를 쓰는 caller는 manual dispatch input을 `version`으로 전달합니다.
 
 ### Caller trigger contract
 
-Development caller는 반드시 ```dev``` branch push에서 실행하고 CI 성공 이후 deploy job이 실행되도록 ```needs```를 둡니다. 중앙 development action도 event/ref를 다시 검증합니다.
+Development caller는 반드시 `dev` branch push에서 실행하고 CI 성공 이후 deploy job이 실행되도록 `needs`를 둡니다. 중앙 development action도 event/ref를 다시 검증합니다.
 
 ```yaml
 on:
@@ -258,6 +258,9 @@ on:
         default: deploy
 
 jobs:
+  ci:
+    # shared pipeline caller
+
   deploy-dev:
     name: Deploy development
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
@@ -266,6 +269,10 @@ jobs:
     steps:
       - name: Deploy development API
         uses: Mooner510/workflows/.github/actions/cd/docker-service-development@v1
+        with:
+          working-directory: services/api
+          service-name: my-project-api
+          container-port: '8080'
 
   deploy-prod:
     name: Deploy production
@@ -274,9 +281,13 @@ jobs:
     steps:
       - name: Deploy production API
         uses: Mooner510/workflows/.github/actions/cd/docker-service-production@v1
+        with:
+          working-directory: services/api
+          service-name: my-project-api
+          container-port: '8080'
 ```
 
-Production caller의 ```if```는 간단한 UI/run-level 차단입니다. 중앙 production guard도 같은 actor/event 조건을 다시 검증합니다. Workflow 자체를 수정할 수 있는 write 권한자를 상대로 한 강한 보안 경계로 취급하지 않습니다.
+Production caller의 `if`는 간단한 UI/run-level 차단입니다. 중앙 production guard도 같은 actor/event 조건을 다시 검증합니다. Workflow 자체를 수정할 수 있는 write 권한자를 상대로 한 강한 보안 경계로 취급하지 않습니다.
 
 ### Environment isolation
 
@@ -284,27 +295,27 @@ Production의 기존 host path와 resource 이름은 호환성을 위해 변경�
 
 ```text
 Production
-db.env
-deploy.env
-<service>/deploy.env
-<service>/secret/deploy.env
+/opt/stacks/projects/<project>/db.env
+/opt/stacks/projects/<project>/deploy.env
+/opt/stacks/projects/<project>/<service>/deploy.env
+/opt/stacks/projects/<project>/<service>/secret/deploy.env
 network: project-<project>
 service: <service>
 image: <image>
 state: /var/lib/stacks/projects/<project>/<service>/deploy/
 
 Development
-db.dev.env
-deploy.dev.env
-<service>/deploy.dev.env
-<service>/secret/deploy.dev.env
+/opt/stacks/projects/<project>/db.dev.env
+/opt/stacks/projects/<project>/deploy.dev.env
+/opt/stacks/projects/<project>/<service>/deploy.dev.env
+/opt/stacks/projects/<project>/<service>/secret/deploy.dev.env
 network: project-<project>-dev
 service: <service>-dev
 image: <image>-dev
 state: /var/lib/stacks/projects/<project>/<service>/dev/deploy/
 ```
 
-Development resolver는 production ```db.env```, ```deploy.env```, ```secret/deploy.env```로 fallback하지 않습니다. Dev config가 없으면 명시적으로 실패합니다. DB instance는 shared PostgreSQL을 공유하되 prod/dev database와 role은 별도입니다.
+Development resolver는 production `db.env`, `deploy.env`, `secret/deploy.env`로 fallback하지 않습니다. Dev config가 없으면 명시적으로 실패합니다. DB instance는 shared PostgreSQL을 공유하되 prod/dev database와 role은 별도입니다.
 
 Runtime overlay는 환경 안에서만 적용합니다.
 
@@ -313,7 +324,7 @@ prod: project deploy.env -> service deploy.env -> service secret/deploy.env
 dev:  project deploy.dev.env -> service deploy.dev.env -> service secret/deploy.dev.env
 ```
 
-```DEPLOY_DOMAIN```도 선택된 환경 파일에서만 읽으며 dev domain을 prod에서 자동 파생하지 않습니다. ```DEPLOY_VOLUMES_JSON```도 동일합니다. Mutable persistent volume은 dev가 prod와 같은 host path/volume을 지정하지 않는 것이 원칙이며 중앙 workflow는 임의 path를 자동 변환하지 않습니다.
+`DEPLOY_DOMAIN`도 선택된 환경 파일에서만 읽으며 dev domain을 prod에서 자동 파생하지 않습니다. `DEPLOY_VOLUMES_JSON`도 동일합니다. Mutable persistent volume은 dev가 prod와 같은 host path/volume을 지정하지 않는 것이 원칙이며 중앙 workflow는 임의 path를 자동 변환하지 않습니다.
 
 ### Development enable flag
 
@@ -337,7 +348,7 @@ com.mooner510.stacks.service=<logical-service>
 com.mooner510.stacks.environment=prod|dev
 ```
 
-기존 ```com.mooner510.workflows.service```와 OCI revision label도 유지합니다. Caddy site filename은 physical service 이름을 사용하므로 dev는 ```<service>-dev.caddy```가 됩니다.
+기존 `com.mooner510.workflows.service`와 OCI revision label도 유지합니다. Caddy site filename은 physical service 이름을 사용하므로 dev는 `<service>-dev.caddy`가 됩니다.
 
 ### Rollback and state
 
@@ -348,7 +359,7 @@ prod: /var/lib/stacks/projects/<project>/<service>/deploy/
 dev:  /var/lib/stacks/projects/<project>/<service>/dev/deploy/
 ```
 
-새 state record에는 ```environment``` field가 저장됩니다. 기존 production record에 이 field가 없어도 읽기 호환성을 유지합니다. Production 기존 path는 migration하지 않습니다.
+새 state record에는 `environment` field가 저장됩니다. 기존 production record에 이 field가 없어도 읽기 호환성을 유지합니다. Production 기존 path는 migration하지 않습니다.
 
 ## Migration CD
 
