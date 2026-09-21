@@ -13,6 +13,10 @@ inputs:
     description: Optional logical service identifier.
     required: false
     default: ''
+  routing:
+    description: Resolve address metadata and emit Caddy routing warnings.
+    required: false
+    default: 'true'
 
 outputs:
   address:
@@ -38,10 +42,12 @@ runs:
         DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
         PROJECT: ${{ inputs.project }}
         SERVICE: ${{ inputs.service }}
+        RESOLVE_ROUTING: ${{ inputs.routing }}
       run: |
         set -euo pipefail
 
         case "$DEPLOY_ENVIRONMENT" in prod|dev) ;; *) echo "::error::environment must be prod or dev."; exit 1 ;; esac
+        case "$RESOLVE_ROUTING" in true|false) ;; *) echo "::error::routing must be true or false."; exit 1 ;; esac
         [[ "$PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || { echo "::error::Invalid project '$PROJECT'."; exit 1; }
         if [[ -n "$SERVICE" && ! "$SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then
           echo "::error::Invalid service '$SERVICE'."
@@ -90,10 +96,10 @@ runs:
 
         address=""
         address_source="none"
-        if [[ "$DEPLOY_ENVIRONMENT" == "prod" ]]; then
+        if [[ "$RESOLVE_ROUTING" == "true" && "$DEPLOY_ENVIRONMENT" == "prod" ]]; then
           address="$(resolve_explicit_addr "" || true)"
           [[ -z "$address" ]] || address_source="explicit"
-        else
+        elif [[ "$RESOLVE_ROUTING" == "true" ]]; then
           address="$(resolve_explicit_addr ".dev" || true)"
           if [[ -n "$address" ]]; then
             address_source="explicit"
@@ -106,7 +112,7 @@ runs:
                   echo "::error::Cannot derive a development address from IP origin '$prod_address'. Configure addr.dev.env explicitly."
                   exit 1
                 fi
-                address="${BASH_REMATCH[1]}dev-${host}${BASH_REMATCH[3]}"
+                address="${BASH_REMATCH[1]}dev-${host}${BASH_REMATCH[3]:-}"
                 address_source="derived"
               else
                 echo "::error::Cannot derive development address from '$prod_address'. Configure addr.dev.env explicitly."
@@ -144,7 +150,7 @@ runs:
           echo "CORS_ORIGINS=$cors_origins" >>"$GITHUB_ENV"
         fi
 
-        if [[ -z "$address" ]]; then
+        if [[ "$RESOLVE_ROUTING" == "true" && -z "$address" ]]; then
           echo "::warning::No address configured for $PROJECT${SERVICE:+/$SERVICE}; automatic Caddy routing will be skipped."
         elif [[ "$address_source" == "derived" ]]; then
           echo "Resolved development address from production: $address"
