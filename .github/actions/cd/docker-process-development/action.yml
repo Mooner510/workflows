@@ -64,35 +64,26 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Resolve process deployment operation
+    - name: Resolve development process deployment
       id: contract
       shell: bash
       env:
         BRANCH_INPUT: ${{ inputs.development-branch }}
         EVENT_NAME: ${{ github.event_name }}
-        IMAGE_INPUT: ${{ inputs.image-name }}
-        SERVICE: ${{ inputs.service-name }}
       run: |
         set -euo pipefail
-        branch="$BRANCH_INPUT"; [[ -n "$branch" ]] || branch=dev
+        branch="$BRANCH_INPUT"
+        [[ -n "$branch" ]] || branch=dev
         [[ "$EVENT_NAME" == "push" ]] || { echo "::error::Development process deployment supports only push events."; exit 1; }
         [[ "$GITHUB_REF" == "refs/heads/$branch" ]] || { echo "::error::Development process deployment only accepts '$branch'."; exit 1; }
-        operation=deploy
-        checkout_ref="$GITHUB_SHA"
-        image="$IMAGE_INPUT"; [[ -n "$image" ]] || image="$SERVICE"
-        {
-          echo "branch=$branch"
-          echo "operation=$operation"
-          echo "checkout_ref=$checkout_ref"
-          echo "image_name=$image"
-        } >>"$GITHUB_OUTPUT"
+        echo "branch=$branch" >>"$GITHUB_OUTPUT"
 
     - name: Checkout development revision
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         fetch-depth: 0
         persist-credentials: false
-        ref: ${{ steps.contract.outputs.checkout_ref }}
+        ref: ${{ github.sha }}
 
     - name: Check development deployment flag
       id: development_gate
@@ -100,198 +91,24 @@ runs:
       with:
         service: ${{ inputs.service-name }}
 
-    - name: Validate process deployment source
+    - name: Deploy development process
       if: steps.development_gate.outputs.enabled == 'true'
-      uses: $/.github/actions/cd/guard
+      uses: $/.github/actions/cd/docker-process
       with:
         environment: dev
+        operation: deploy
         development-branch: ${{ steps.contract.outputs.branch }}
-
-    - name: Resolve deployment identity
-      if: steps.development_gate.outputs.enabled == 'true'
-      id: identity
-      uses: $/.github/actions/cd/identity
-      with:
-        environment: dev
-        service: ${{ inputs.service-name }}
-        image: ${{ steps.contract.outputs.image_name }}
-
-    - name: Resolve database credentials
-      if: steps.development_gate.outputs.enabled == 'true'
-      id: credentials
-      uses: $/.github/actions/cd/resolve-db-credentials
-      with:
-        environment: dev
-        project: ${{ steps.identity.outputs.project }}
-        service: ${{ inputs.service-name }}
-        migration-engine: none
-        env-names-json: ${{ inputs.database == 'true' && '["DATABASE_URL"]' || '[]' }}
-
-    - name: Resolve process runtime config
-      if: steps.development_gate.outputs.enabled == 'true'
-      id: runtime
-      uses: $/.github/actions/cd/resolve-runtime-env-files
-      with:
-        environment: dev
-        project: ${{ steps.identity.outputs.project }}
-        service: ${{ inputs.service-name }}
-
-    - name: Read current process deployment
-      if: steps.development_gate.outputs.enabled == 'true'
-      id: current
-      uses: $/.github/actions/cd/state
-      with:
-        environment: dev
-        operation: read
-        project: ${{ steps.identity.outputs.project }}
-        service: ${{ inputs.service-name }}
-
-    - name: Read process rollback target
-      id: previous
-      if: steps.development_gate.outputs.enabled == 'true' && (steps.contract.outputs.operation == 'rollback')
-      uses: $/.github/actions/cd/state
-      with:
-        environment: dev
-        operation: previous
-        project: ${{ steps.identity.outputs.project }}
-        service: ${{ inputs.service-name }}
-
-    - name: Build process image
-      id: build
-      if: steps.development_gate.outputs.enabled == 'true' && (steps.contract.outputs.operation == 'deploy')
-      uses: $/.github/actions/cd/docker/build
-      with:
         working-directory: ${{ inputs.working-directory }}
+        service-name: ${{ inputs.service-name }}
+        image-name: ${{ inputs.image-name }}
         dockerfile: ${{ inputs.dockerfile }}
-        image-name: ${{ steps.identity.outputs.image }}
         target: ${{ inputs.target }}
-
-    - name: Deploy process service
-      if: steps.development_gate.outputs.enabled == 'true'
-      id: deploy
-      shell: bash
-      env:
-        OPERATION: ${{ steps.contract.outputs.operation }}
-        SERVICE: ${{ steps.identity.outputs.service }}
-        DEPLOY_IMAGE_ID: ${{ steps.build.outputs.image-id }}
-        ROLLBACK_IMAGE_ID: ${{ steps.previous.outputs.image-id }}
-        CURRENT_EXISTS: ${{ steps.current.outputs.exists }}
-        CURRENT_IMAGE_ID: ${{ steps.current.outputs.image-id }}
-        NETWORK: ${{ steps.identity.outputs.network }}
-        ENV_FILES: ${{ steps.runtime.outputs.env-files-json }}
-        DB_ENV_NAMES: ${{ steps.credentials.outputs.resolved-env-names-json }}
-        INPUT_VOLUMES: ${{ inputs.volumes-json }}
-        CONFIG_VOLUMES: ${{ steps.runtime.outputs.deploy-volumes-json }}
-        READY_COMMAND: ${{ inputs.readiness-command-json }}
-        READY_JQ: ${{ inputs.readiness-jq }}
-        READY_ATTEMPTS: ${{ inputs.readiness-attempts }}
-        INIT: ${{ inputs.init }}
-        SECURITY_OPTS: ${{ inputs.security-opts-json }}
-        CAP_DROP: ${{ inputs.cap-drop-json }}
-        STOP_TIMEOUT: ${{ inputs.stop-timeout }}
-      run: |
-        set -euo pipefail
-        command -v docker >/dev/null || { echo "::error::Docker is required."; exit 1; }
-        command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
-        jq -e 'type=="array" and all(.[]; type=="string")' <<<"$ENV_FILES" >/dev/null
-        jq -e 'type=="array" and all(.[]; type=="string")' <<<"$DB_ENV_NAMES" >/dev/null
-        jq -e 'type=="array" and all(.[]; type=="string")' <<<"$READY_COMMAND" >/dev/null
-        [[ "$READY_ATTEMPTS" =~ ^[0-9]+$ ]] || { echo "::error::readiness-attempts must be numeric."; exit 1; }
-
-        image="$DEPLOY_IMAGE_ID"
-        if [[ "$OPERATION" == "rollback" ]]; then
-          [[ -n "$ROLLBACK_IMAGE_ID" ]] || { echo "::error::No previous known-good deployment exists."; exit 1; }
-          docker image inspect "$ROLLBACK_IMAGE_ID" >/dev/null 2>&1 || { echo "::error::Rollback image is unavailable."; exit 1; }
-          image="$ROLLBACK_IMAGE_ID"
-        fi
-        [[ -n "$image" ]] || { echo "::error::Deployment image is unavailable."; exit 1; }
-
-        volumes="$INPUT_VOLUMES"
-        [[ "$volumes" != "[]" ]] || volumes="$CONFIG_VOLUMES"
-        jq -e 'type=="array" and all(.[]; type=="string")' <<<"$volumes" >/dev/null || { echo "::error::volumes must be a string array."; exit 1; }
-
-        create_args=(docker create --name "$SERVICE" --restart unless-stopped)
-        [[ "$INIT" != "true" ]] || create_args+=(--init)
-        while IFS= read -r opt; do create_args+=(--security-opt "$opt"); done < <(jq -r '.[]' <<<"$SECURITY_OPTS")
-        while IFS= read -r cap; do create_args+=(--cap-drop "$cap"); done < <(jq -r '.[]' <<<"$CAP_DROP")
-        while IFS= read -r file; do create_args+=(--env-file "$file"); done < <(jq -r '.[]' <<<"$ENV_FILES")
-        while IFS= read -r name; do create_args+=(-e "$name"); done < <(jq -r '.[]' <<<"$DB_ENV_NAMES")
-        while IFS= read -r volume; do create_args+=(-v "$volume"); done < <(jq -r '.[]' <<<"$volumes")
-        create_args+=(--network "$NETWORK")
-        create_args+=(--label "com.mooner510.workflows.service=$SERVICE")
-        create_args+=(--label "com.mooner510.stacks.managed=true")
-        create_args+=(--label "com.mooner510.stacks.project=${{ steps.identity.outputs.project }}")
-        create_args+=(--label "com.mooner510.stacks.service=${{ inputs.service-name }}")
-        create_args+=(--label "com.mooner510.stacks.environment=dev")
-        create_args+=(--label "org.opencontainers.image.revision=$GITHUB_SHA" "$image")
-
-        docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK" >/dev/null
-
-        restore() {
-          [[ "$CURRENT_EXISTS" == "true" && -n "$CURRENT_IMAGE_ID" ]] || return 0
-          docker rm -f "$SERVICE" >/dev/null 2>&1 || true
-          create_args[-1]="$CURRENT_IMAGE_ID"
-          "${create_args[@]}" >/dev/null
-          docker start "$SERVICE" >/dev/null
-        }
-
-        if docker container inspect "$SERVICE" >/dev/null 2>&1; then
-          docker stop -t "$STOP_TIMEOUT" "$SERVICE" >/dev/null || true
-          docker rm -f "$SERVICE" >/dev/null || true
-        fi
-        if ! "${create_args[@]}" >/dev/null || ! docker start "$SERVICE" >/dev/null; then
-          restore
-          echo "::error::Failed to start process service $SERVICE."
-          exit 1
-        fi
-
-        ready=false
-        if [[ "$(jq 'length' <<<"$READY_COMMAND")" -eq 0 ]]; then
-          sleep 2
-          [[ "$(docker inspect "$SERVICE" --format '{{.State.Running}}')" == "true" ]] && ready=true
-        else
-          mapfile -t command < <(jq -r '.[]' <<<"$READY_COMMAND")
-          for ((i=0; i<READY_ATTEMPTS; i++)); do
-            if output="$(docker exec "$SERVICE" "${command[@]}" 2>/dev/null)"; then
-              if [[ -z "$READY_JQ" ]]; then
-                ready=true
-              elif jq -e "$READY_JQ" <<<"$output" >/dev/null 2>&1; then
-                ready=true
-              fi
-            fi
-            [[ "$ready" == "true" ]] && break
-            sleep 2
-          done
-        fi
-        if [[ "$ready" != "true" ]]; then
-          docker logs "$SERVICE" >&2 || true
-          restore
-          echo "::error::Process service $SERVICE did not become ready."
-          exit 1
-        fi
-
-    - name: Record process deployment
-      if: steps.development_gate.outputs.enabled == 'true' && (steps.contract.outputs.operation == 'deploy')
-      uses: $/.github/actions/cd/state
-      with:
-        environment: dev
-        operation: record
-        project: ${{ steps.identity.outputs.project }}
-        service: ${{ inputs.service-name }}
-        revision: ${{ github.sha }}
-        image: ${{ steps.build.outputs.image }}
-        image-id: ${{ steps.build.outputs.image-id }}
-        event: deploy
-
-    - name: Record process rollback
-      if: steps.development_gate.outputs.enabled == 'true' && (steps.contract.outputs.operation == 'rollback')
-      uses: $/.github/actions/cd/state
-      with:
-        environment: dev
-        operation: record
-        project: ${{ steps.identity.outputs.project }}
-        service: ${{ inputs.service-name }}
-        revision: ${{ steps.previous.outputs.revision }}
-        image: ${{ steps.previous.outputs.image }}
-        image-id: ${{ steps.previous.outputs.image-id }}
-        event: rollback
+        database: ${{ inputs.database }}
+        volumes-json: ${{ inputs.volumes-json }}
+        readiness-command-json: ${{ inputs.readiness-command-json }}
+        readiness-jq: ${{ inputs.readiness-jq }}
+        readiness-attempts: ${{ inputs.readiness-attempts }}
+        init: ${{ inputs.init }}
+        security-opts-json: ${{ inputs.security-opts-json }}
+        cap-drop-json: ${{ inputs.cap-drop-json }}
+        stop-timeout: ${{ inputs.stop-timeout }}
