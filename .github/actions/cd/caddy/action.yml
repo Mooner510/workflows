@@ -10,7 +10,7 @@ inputs:
     description: Stable service identifier used for the generated site filename.
     required: true
   domain:
-    description: Public hostname handled by Caddy. Required for apply.
+    description: HTTP/HTTPS origin handled by Caddy, including an optional port. Required for apply.
     required: false
     default: ''
   upstream:
@@ -59,7 +59,14 @@ runs:
         case "$OPERATION" in apply|remove) ;; *) echo "::error::Caddy operation must be apply or remove."; exit 1 ;; esac
         [[ "$SERVICE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid service-name '$SERVICE_NAME'."; exit 1; }
         if [[ "$OPERATION" == "apply" ]]; then
-          [[ "$DOMAIN" =~ ^[A-Za-z0-9*.-]+$ ]] || { echo "::error::Invalid Caddy domain '$DOMAIN'."; exit 1; }
+          [[ "$DOMAIN" =~ ^https?://(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+)(:([0-9]{1,5}))?$ ]] || {
+            echo "::error::Invalid Caddy origin '$DOMAIN'. Expected http:// or https:// origin without path/query/fragment."
+            exit 1
+          }
+          if [[ -n "${BASH_REMATCH[3]:-}" ]]; then
+            port="${BASH_REMATCH[3]}"
+            (( 10#$port >= 1 && 10#$port <= 65535 )) || { echo "::error::Invalid Caddy origin port '$port'."; exit 1; }
+          fi
           [[ "$UPSTREAM" =~ ^[A-Za-z0-9._:-]+$ ]] || { echo "::error::Invalid Caddy upstream '$UPSTREAM'."; exit 1; }
         fi
         [[ -f "$CADDYFILE" ]] || { echo "::error::Main Caddyfile '$CADDYFILE' does not exist."; exit 1; }

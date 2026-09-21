@@ -16,7 +16,7 @@ inputs:
     description: Internal application port.
     required: true
   domain:
-    description: Optional compatibility override. Empty reads DEPLOY_DOMAIN from canonical host deploy.env.
+    description: Deprecated compatibility input. Automatic Caddy routing is resolved only from addr.env.
     required: false
     default: ''
   db-credential-source:
@@ -142,26 +142,24 @@ runs:
         service: ${{ inputs.service-name }}
         env-files-json: ${{ inputs.env-files-json }}
 
+    - name: Resolve service address and CORS metadata
+      id: service_metadata
+      uses: $/.github/actions/cd/resolve-service-metadata
+      with:
+        environment: prod
+        project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
+
     - name: Resolve rollback contract
       id: contract
       shell: bash
       env:
-        DOMAIN_INPUT: ${{ inputs.domain }}
-        DEPLOY_DOMAIN: ${{ steps.runtime_env.outputs['deploy-domain'] }}
         HEALTH_PATH: ${{ inputs.health-path }}
         ENV_NAMES_JSON: ${{ inputs.env-names-json }}
         HOST_ENV_KEYS_JSON: ${{ steps.runtime_env.outputs.env-keys-json }}
       run: |
         set -euo pipefail
         [[ "$HEALTH_PATH" == /* ]] || { echo "::error::health-path must start with '/'."; exit 1; }
-
-        domain="$DOMAIN_INPUT"
-        [[ -n "$domain" ]] || domain="$DEPLOY_DOMAIN"
-
-        [[ "$domain" =~ ^[A-Za-z0-9*.-]+$ ]] || {
-          echo "::error::DEPLOY_DOMAIN is required in the canonical deploy.env and must be a valid hostname."
-          exit 1
-        }
 
         if [[ -n "$ENV_NAMES_JSON" && "$ENV_NAMES_JSON" != "[]" ]]; then
           command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
@@ -186,7 +184,7 @@ runs:
           done < <(jq -r '.[]' <<<"$ENV_NAMES_JSON")
         fi
 
-        echo "domain=$domain" >>"$GITHUB_OUTPUT"
+
 
     - name: Merge container environment names
       id: container_env
@@ -194,6 +192,7 @@ runs:
       env:
         ENV_NAMES_JSON: ${{ inputs.env-names-json }}
         RESOLVED_ENV_NAMES_JSON: ${{ steps.credentials.outputs.resolved-env-names-json }}
+        HAS_CORS: ${{ steps.service_metadata.outputs['has-cors'] }}
       run: |
         set -euo pipefail
         command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
@@ -204,6 +203,9 @@ runs:
           fi
         done < <(jq -r '.[]' <<<"$ENV_NAMES_JSON")
         merged="$(jq -cn --argjson caller "$caller_set" --argjson resolved "$RESOLVED_ENV_NAMES_JSON" '$caller + $resolved | unique')"
+        if [[ "$HAS_CORS" == "true" ]]; then
+          merged="$(jq -c '. + ["CORS_ORIGINS"] | unique' <<<"$merged")"
+        fi
         echo "env_names_json=$merged" >>"$GITHUB_OUTPUT"
 
     - name: Read current known-good deployment
@@ -266,10 +268,11 @@ runs:
 
     - name: Register Caddy route
       id: caddy
+      if: steps.service_metadata.outputs.address != ''
       uses: $/.github/actions/cd/caddy
       with:
         service-name: ${{ inputs.service-name }}
-        domain: ${{ steps.contract.outputs.domain }}
+        domain: ${{ steps.service_metadata.outputs.address }}
         upstream: ${{ inputs.service-name }}:${{ inputs.container-port }}
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
@@ -319,17 +322,17 @@ runs:
 
     - name: Restore original Caddy route
       id: restore_caddy
-      if: failure() && steps.restore_health.outcome == 'success'
+      if: failure() && steps.restore_health.outcome == 'success' && steps.service_metadata.outputs.address != ''
       uses: $/.github/actions/cd/caddy
       with:
         service-name: ${{ inputs.service-name }}
-        domain: ${{ steps.contract.outputs.domain }}
+        domain: ${{ steps.service_metadata.outputs.address }}
         upstream: ${{ inputs.service-name }}:${{ inputs.container-port }}
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
 
     - name: Restore original deployment state
-      if: failure() && steps.restore_health.outcome == 'success' && steps.restore_caddy.outcome == 'success'
+      if: failure() && steps.restore_health.outcome == 'success' && (steps.service_metadata.outputs.address == '' || steps.restore_caddy.outcome == 'success')
       uses: $/.github/actions/cd/state
       with:
         operation: record

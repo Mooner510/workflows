@@ -26,7 +26,7 @@ outputs:
     description: JSON array of variable names provided by the resolved env files. Values are never emitted.
     value: ${{ steps.resolve.outputs.env_keys_json }}
   deploy-domain:
-    description: DEPLOY_DOMAIN resolved with service config overriding project config.
+    description: Deprecated compatibility output. Automatic Caddy routing uses addr.env/addr.dev.env instead.
     value: ${{ steps.resolve.outputs.deploy_domain }}
   deploy-volumes-json:
     description: DEPLOY_VOLUMES_JSON resolved with service config overriding project config.

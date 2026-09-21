@@ -123,6 +123,34 @@ runs:
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
 
+    - name: Resolve process CORS metadata
+      id: service_metadata
+      uses: $/.github/actions/cd/resolve-service-metadata
+      with:
+        environment: ${{ inputs.environment }}
+        project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
+        routing: 'false'
+
+    - name: Merge process environment names
+      id: process_env
+      shell: bash
+      env:
+        RESOLVED_ENV_NAMES: ${{ steps.credentials.outputs.resolved-env-names-json }}
+        HAS_CORS: ${{ steps.service_metadata.outputs['has-cors'] }}
+      run: |
+        set -euo pipefail
+        command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
+        jq -e 'type=="array" and all(.[]; type=="string")' <<<"$RESOLVED_ENV_NAMES" >/dev/null || {
+          echo "::error::resolved process env names must be a string array."
+          exit 1
+        }
+        merged="$(jq -c '.' <<<"$RESOLVED_ENV_NAMES")"
+        if [[ "$HAS_CORS" == "true" ]]; then
+          merged="$(jq -c '. + ["CORS_ORIGINS"] | unique' <<<"$merged")"
+        fi
+        echo "env_names_json=$merged" >>"$GITHUB_OUTPUT"
+
     - name: Read current process deployment
       id: current
       uses: $/.github/actions/cd/state
@@ -165,7 +193,7 @@ runs:
         CURRENT_IMAGE_ID: ${{ steps.current.outputs.image-id }}
         NETWORK: ${{ steps.identity.outputs.network }}
         ENV_FILES: ${{ steps.runtime.outputs.env-files-json }}
-        DB_ENV_NAMES: ${{ steps.credentials.outputs.resolved-env-names-json }}
+        DB_ENV_NAMES: ${{ steps.process_env.outputs.env_names_json }}
         INPUT_VOLUMES: ${{ inputs.volumes-json }}
         CONFIG_VOLUMES: ${{ steps.runtime.outputs.deploy-volumes-json }}
         READY_COMMAND: ${{ inputs.readiness-command-json }}
@@ -209,6 +237,7 @@ runs:
         create_args+=(--label "com.mooner510.stacks.project=${{ steps.identity.outputs.project }}")
         create_args+=(--label "com.mooner510.stacks.service=${{ inputs.service-name }}")
         create_args+=(--label "com.mooner510.stacks.environment=$DEPLOY_ENVIRONMENT")
+        create_args+=(--label "com.mooner510.stacks.kind=process")
         create_args+=(--label "org.opencontainers.image.revision=$GITHUB_SHA" "$image")
 
         docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK" >/dev/null
