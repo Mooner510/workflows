@@ -2,6 +2,14 @@ name: Docker service deployment
 description: Build, migrate, deploy, health-check, persist state, and register one API or Web Docker service with Caddy.
 
 inputs:
+  environment:
+    description: Deployment environment, prod or dev.
+    required: false
+    default: prod
+  development-branch:
+    description: Development branch used when environment=dev.
+    required: false
+    default: dev
   production-branch:
     description: Branch whose history is allowed to reach production.
     required: true
@@ -176,16 +184,21 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Validate production deployment
+    - name: Validate deployment source
       uses: $/.github/actions/cd/guard
       with:
+        environment: ${{ inputs.environment }}
         production-branch: ${{ inputs.production-branch }}
+        development-branch: ${{ inputs.development-branch }}
 
     - name: Resolve repository deployment identity
       id: identity
       uses: $/.github/actions/cd/identity
       with:
+        environment: ${{ inputs.environment }}
         network: ${{ inputs.network }}
+        service: ${{ inputs.service-name }}
+        image: ${{ inputs.image-name }}
 
     - name: Resolve requested database environment
       id: requested_env
@@ -205,6 +218,7 @@ runs:
       id: credentials
       uses: $/.github/actions/cd/resolve-db-credentials
       with:
+        environment: ${{ inputs.environment }}
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
         credential-source: ${{ inputs.db-credential-source }}
@@ -215,6 +229,7 @@ runs:
       id: runtime_env
       uses: $/.github/actions/cd/resolve-runtime-env-files
       with:
+        environment: ${{ inputs.environment }}
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
         env-files-json: ${{ inputs.env-files-json }}
@@ -282,7 +297,7 @@ runs:
             if jq -e --arg name "$name" 'index($name) != null' <<<"$HOST_ENV_KEYS_JSON" >/dev/null; then
               continue
             fi
-            echo "::error::Environment variable '$name' is neither set on the caller deploy step nor present in the canonical project deploy.env."
+            echo "::error::Environment variable '$name' is neither set on the caller deploy step nor present in the selected environment runtime config."
             exit 1
           done < <(jq -r '.[]' <<<"$ENV_NAMES_JSON")
         fi
@@ -376,18 +391,19 @@ runs:
       id: previous
       uses: $/.github/actions/cd/state
       with:
+        environment: ${{ inputs.environment }}
         operation: read
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
         root: ${{ inputs.state-root }}
 
-    - name: Build production image
+    - name: Build deployment image
       id: build
       uses: $/.github/actions/cd/docker/build
       with:
         working-directory: ${{ inputs.working-directory }}
         dockerfile: ${{ inputs.dockerfile }}
-        image-name: ${{ inputs.image-name }}
+        image-name: ${{ steps.identity.outputs.image }}
         target: ${{ inputs.target }}
         build-args-json: ${{ steps.build_args.outputs.build_args_json }}
         secret-env-names-json: ${{ inputs.build-secret-env-names-json }}
@@ -441,7 +457,10 @@ runs:
       id: deploy
       uses: $/.github/actions/cd/docker/deploy
       with:
-        container-name: ${{ inputs.service-name }}
+        project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
+        environment: ${{ inputs.environment }}
+        container-name: ${{ steps.identity.outputs.service }}
         image: ${{ steps.build.outputs['image-id'] }}
         container-port: ${{ inputs.container-port }}
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
@@ -504,15 +523,16 @@ runs:
       id: caddy
       uses: $/.github/actions/cd/caddy
       with:
-        service-name: ${{ inputs.service-name }}
+        service-name: ${{ steps.identity.outputs.service }}
         domain: ${{ steps.contract.outputs.domain }}
-        upstream: ${{ inputs.service-name }}:${{ inputs.container-port }}
+        upstream: ${{ steps.identity.outputs.service }}:${{ inputs.container-port }}
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
 
     - name: Record successful deployment
       uses: $/.github/actions/cd/state
       with:
+        environment: ${{ inputs.environment }}
         operation: record
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
@@ -527,7 +547,10 @@ runs:
       if: failure() && steps.deploy.outcome == 'success' && steps.rollback_source.outputs.exists == 'true'
       uses: $/.github/actions/cd/docker/deploy
       with:
-        container-name: ${{ inputs.service-name }}
+        project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
+        environment: ${{ inputs.environment }}
+        container-name: ${{ steps.identity.outputs.service }}
         image: ${{ steps.rollback_source.outputs.image_id }}
         container-port: ${{ inputs.container-port }}
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
@@ -554,9 +577,9 @@ runs:
       if: failure() && steps.rollback_health.outcome == 'success'
       uses: $/.github/actions/cd/caddy
       with:
-        service-name: ${{ inputs.service-name }}
+        service-name: ${{ steps.identity.outputs.service }}
         domain: ${{ steps.contract.outputs.domain }}
-        upstream: ${{ inputs.service-name }}:${{ inputs.container-port }}
+        upstream: ${{ steps.identity.outputs.service }}:${{ inputs.container-port }}
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
 
@@ -564,6 +587,7 @@ runs:
       if: failure() && steps.rollback_health.outcome == 'success' && steps.rollback_caddy.outcome == 'success' && steps.rollback_source.outputs.persistent == 'true'
       uses: $/.github/actions/cd/state
       with:
+        environment: ${{ inputs.environment }}
         operation: record
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
@@ -578,7 +602,7 @@ runs:
       uses: $/.github/actions/cd/caddy
       with:
         operation: remove
-        service-name: ${{ inputs.service-name }}
+        service-name: ${{ steps.identity.outputs.service }}
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
 
@@ -586,5 +610,5 @@ runs:
       if: failure() && steps.deploy.outcome == 'success' && steps.rollback_source.outputs.exists != 'true'
       shell: bash
       env:
-        SERVICE_NAME: ${{ inputs.service-name }}
+        SERVICE_NAME: ${{ steps.identity.outputs.service }}
       run: docker rm -f "$SERVICE_NAME" >/dev/null 2>&1 || true

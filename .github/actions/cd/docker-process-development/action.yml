@@ -1,11 +1,11 @@
-name: Docker process production
-description: Canonical production entrypoint for workers, key services, and other non-HTTP Docker processes with shared state and rollback.
+name: Docker process development
+description: Canonical development entrypoint for workers and non-HTTP Docker processes deployed from pushes to the dev branch with isolated resources.
 
 inputs:
-  production-branch:
-    description: Production branch. Empty uses the caller repository default branch.
+  development-branch:
+    description: Development branch. Canonical default is dev.
     required: false
-    default: ''
+    default: dev
   working-directory:
     description: Docker build context relative to caller repository.
     required: true
@@ -64,46 +64,40 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Resolve production process deployment
+    - name: Resolve development process deployment
       id: contract
       shell: bash
       env:
-        BRANCH_INPUT: ${{ inputs.production-branch }}
-        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        BRANCH_INPUT: ${{ inputs.development-branch }}
         EVENT_NAME: ${{ github.event_name }}
-        EVENT_OPERATION: ${{ github.event.inputs.operation }}
-        ACTOR: ${{ github.actor }}
-        TRIGGERING_ACTOR: ${{ github.triggering_actor }}
       run: |
         set -euo pipefail
         branch="$BRANCH_INPUT"
-        [[ -n "$branch" ]] || branch="$DEFAULT_BRANCH"
-        [[ -n "$branch" ]] || { echo "::error::Unable to resolve production branch."; exit 1; }
-        [[ "$EVENT_NAME" == "workflow_dispatch" ]] || { echo "::error::Production process deployment supports only workflow_dispatch."; exit 1; }
-        [[ "$ACTOR" == "Mooner510" && "$TRIGGERING_ACTOR" == "Mooner510" ]] || {
-          echo "::error::Production deployment is restricted to Mooner510."
-          exit 1
-        }
-        operation="${EVENT_OPERATION:-deploy}"
-        case "$operation" in deploy|rollback) ;; *) echo "::error::operation must be deploy or rollback."; exit 1 ;; esac
-        {
-          echo "branch=$branch"
-          echo "operation=$operation"
-        } >>"$GITHUB_OUTPUT"
+        [[ -n "$branch" ]] || branch=dev
+        [[ "$EVENT_NAME" == "push" ]] || { echo "::error::Development process deployment supports only push events."; exit 1; }
+        [[ "$GITHUB_REF" == "refs/heads/$branch" ]] || { echo "::error::Development process deployment only accepts '$branch'."; exit 1; }
+        echo "branch=$branch" >>"$GITHUB_OUTPUT"
 
-    - name: Checkout production revision
+    - name: Checkout development revision
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         fetch-depth: 0
         persist-credentials: false
-        ref: ${{ steps.contract.outputs.branch }}
+        ref: ${{ github.sha }}
 
-    - name: Deploy production process
+    - name: Check development deployment flag
+      id: development_gate
+      uses: $/.github/actions/cd/development-enabled
+      with:
+        service: ${{ inputs.service-name }}
+
+    - name: Deploy development process
+      if: steps.development_gate.outputs.enabled == 'true'
       uses: $/.github/actions/cd/docker-process
       with:
-        environment: prod
-        operation: ${{ steps.contract.outputs.operation }}
-        production-branch: ${{ steps.contract.outputs.branch }}
+        environment: dev
+        operation: deploy
+        development-branch: ${{ steps.contract.outputs.branch }}
         working-directory: ${{ inputs.working-directory }}
         service-name: ${{ inputs.service-name }}
         image-name: ${{ inputs.image-name }}

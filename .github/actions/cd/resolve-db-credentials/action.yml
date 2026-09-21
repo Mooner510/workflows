@@ -1,12 +1,16 @@
 name: Resolve database credentials
-description: Resolve production runtime database credentials plus host-loopback migration credentials from the dedicated production host.
+description: Resolve environment-specific runtime database credentials plus host-loopback migration credentials from the canonical host.
 
 inputs:
+  environment:
+    description: Deployment environment, prod or dev.
+    required: false
+    default: prod
   project:
-    description: Stable project identifier matching /opt/stacks/projects/<repository-name>/db.env.
+    description: Stable project identifier matching /opt/stacks/projects/<repository-name>.
     required: true
   service:
-    description: Optional service identifier. When <service>/db.env exists it overrides project db.env.
+    description: Optional service identifier. Service db.env or db.dev.env overrides the project file for the selected environment.
     required: false
     default: ''
   credential-source:
@@ -34,6 +38,7 @@ runs:
       id: resolve
       shell: bash
       env:
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
         PROJECT: ${{ inputs.project }}
         SERVICE: ${{ inputs.service }}
         CREDENTIAL_SOURCE: ${{ inputs.credential-source }}
@@ -47,6 +52,11 @@ runs:
           exit 1
         }
 
+        case "$DEPLOY_ENVIRONMENT" in prod|dev) ;; *)
+          echo "::error::environment must be prod or dev."
+          exit 1
+        ;;
+        esac
         case "$CREDENTIAL_SOURCE" in auto|github|host) ;; *)
           echo "::error::credential-source must be auto, github, or host."
           exit 1
@@ -95,16 +105,18 @@ runs:
           exit 1
         }
 
-        db_env="/opt/stacks/projects/$PROJECT/db.env"
+        db_file="db.env"
+        [[ "$DEPLOY_ENVIRONMENT" != "dev" ]] || db_file="db.dev.env"
+        db_env="/opt/stacks/projects/$PROJECT/$db_file"
         if [[ -n "$SERVICE" ]]; then
           [[ "$SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || { echo "::error::Invalid service identifier '$SERVICE'."; exit 1; }
           service_config="$SERVICE"
-          service_db_env="/opt/stacks/projects/$PROJECT/$service_config/db.env"
+          service_db_env="/opt/stacks/projects/$PROJECT/$service_config/$db_file"
           if [[ ! -f "$service_db_env" && "$SERVICE" == "$PROJECT-"* ]]; then
             short_service="${SERVICE#"$PROJECT-"}"
-            if [[ -n "$short_service" && -f "/opt/stacks/projects/$PROJECT/$short_service/db.env" ]]; then
+            if [[ -n "$short_service" && -f "/opt/stacks/projects/$PROJECT/$short_service/$db_file" ]]; then
               service_config="$short_service"
-              service_db_env="/opt/stacks/projects/$PROJECT/$service_config/db.env"
+              service_db_env="/opt/stacks/projects/$PROJECT/$service_config/$db_file"
               echo "Resolved service database alias: $SERVICE -> $service_config"
             fi
           fi

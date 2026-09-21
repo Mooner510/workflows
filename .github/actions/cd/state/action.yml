@@ -2,6 +2,10 @@ name: Deployment state
 description: Read, resolve the previous known-good deployment, or record persistent state for one project service.
 
 inputs:
+  environment:
+    description: Deployment environment, prod or dev. Production keeps the legacy state path.
+    required: false
+    default: prod
   operation:
     description: read, previous, or record.
     required: true
@@ -56,6 +60,7 @@ runs:
       id: state
       shell: bash
       env:
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
         OPERATION: ${{ inputs.operation }}
         PROJECT: ${{ inputs.project }}
         SERVICE: ${{ inputs.service }}
@@ -68,6 +73,7 @@ runs:
         set -euo pipefail
 
         command -v jq >/dev/null || { echo "::error::jq is required on the deployment runner."; exit 1; }
+        case "$DEPLOY_ENVIRONMENT" in prod|dev) ;; *) echo "::error::environment must be prod or dev."; exit 1 ;; esac
         case "$OPERATION" in read|previous|record) ;; *) echo "::error::operation must be read, previous, or record."; exit 1 ;; esac
         [[ "$PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid project '$PROJECT'."; exit 1; }
         [[ "$SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid service '$SERVICE'."; exit 1; }
@@ -75,6 +81,7 @@ runs:
         [[ "$STATE_ROOT" == /* ]] || { echo "::error::root must be an absolute path."; exit 1; }
 
         state_dir="$STATE_ROOT/projects/$PROJECT/$SERVICE/deploy"
+        [[ "$DEPLOY_ENVIRONMENT" != "dev" ]] || state_dir="$STATE_ROOT/projects/$PROJECT/$SERVICE/dev/deploy"
         current="$state_dir/current.json"
         history="$state_dir/history.jsonl"
         mkdir -p "$state_dir"
@@ -149,7 +156,8 @@ runs:
           --arg imageId "$IMAGE_ID" \
           --arg deployedAt "$now" \
           --arg event "$EVENT" \
-          '{project:$project,service:$service,revision:$revision,image:$image,imageId:$imageId,deployedAt:$deployedAt,event:$event}')"
+          --arg environment "$DEPLOY_ENVIRONMENT" \
+          '{project:$project,service:$service,environment:$environment,revision:$revision,image:$image,imageId:$imageId,deployedAt:$deployedAt,event:$event}')"
 
         current_tmp="$(mktemp "$state_dir/.current.XXXXXX")"
         history_tmp="$(mktemp "$state_dir/.history.XXXXXX")"

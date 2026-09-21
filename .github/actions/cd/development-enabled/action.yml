@@ -1,0 +1,50 @@
+name: Development deployment gate
+description: Resolve whether development deployment is enabled for the repository project and optional service.
+
+inputs:
+  service:
+    description: Optional logical service identifier.
+    required: false
+    default: ''
+
+outputs:
+  enabled:
+    description: true when development deployment is enabled.
+    value: ${{ steps.gate.outputs.enabled }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check development deployment flag
+      id: gate
+      shell: bash
+      env:
+        REPOSITORY: ${{ github.repository }}
+        SERVICE: ${{ inputs.service }}
+      run: |
+        set -euo pipefail
+        [[ "$REPOSITORY" == */* ]] || { echo "::error::github.repository must use owner/repository form."; exit 1; }
+        project="$(printf '%s' "${REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+        root="/opt/stacks/projects/$project"
+
+        if [[ -f "$root/.dev-disabled" ]]; then
+          echo "Development deployment is disabled for project '$project'; skipping."
+          echo "enabled=false" >>"$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        if [[ -n "$SERVICE" ]]; then
+          [[ "$SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || { echo "::error::Invalid service '$SERVICE'."; exit 1; }
+          service_root="$root/$SERVICE"
+          if [[ ! -d "$service_root" && "$SERVICE" == "$project-"* ]]; then
+            short_service="${SERVICE#"$project-"}"
+            [[ -z "$short_service" || ! -d "$root/$short_service" ]] || service_root="$root/$short_service"
+          fi
+          if [[ -f "$service_root/.dev-disabled" ]]; then
+            echo "Development deployment is disabled for service '$SERVICE'; skipping."
+            echo "enabled=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+        fi
+
+        echo "enabled=true" >>"$GITHUB_OUTPUT"

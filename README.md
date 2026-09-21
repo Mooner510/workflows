@@ -25,8 +25,12 @@
 │  └─ migration/{goose,go-command,prisma,drizzle,flyway}/
 └─ cd/
    ├─ guard/
+   ├─ development-enabled/
    ├─ docker-service-production/
+   ├─ docker-service-development/
    ├─ docker-process-production/
+   ├─ docker-process-development/
+   ├─ docker-process/
    ├─ android-production/
    ├─ docker-service/
    ├─ docker-service-rollback/
@@ -43,7 +47,7 @@ Canonical runner selector는 CI/CD 모두 다음을 사용합니다.
 runs-on: [self-hosted, linux]
 ```
 
-Personal repository는 Gharp, Organization repository는 Organization scoped self-hosted runner를 사용합니다. 현재 운영 제약상 같은 runner가 CI/CD를 수행하며, production CD는 explicit workflow event와 최소 GitHub permissions로 제한합니다.
+Personal repository는 Gharp, Organization repository는 Organization scoped self-hosted runner를 사용합니다. 현재 운영 제약상 같은 runner가 CI/CD를 수행합니다. Production은 `workflow_dispatch`와 실행자 검증으로 제한하고, development는 `dev` branch push에서만 허용합니다.
 
 ## CI
 
@@ -204,201 +208,163 @@ Go 파일이 없거나 이미 포맷되어 있으면 commit을 만들지 않습�
 
 ## CD
 
-Generic HTTP Docker service의 canonical caller entrypoint:
+Docker CD는 production과 development를 명시적으로 분리합니다.
+
+```text
+Production
+workflow_dispatch
++ github.actor == Mooner510
++ github.triggering_actor == Mooner510
++ caller repository default production branch
+→ production resources
+
+Development
+push to dev
+→ caller CI success
+→ development entrypoint
+→ development resources
+```
+
+Production은 stable GitHub Release로 자동 배포하지 않습니다. `release` event는 production mutation source가 아닙니다.
+
+Generic HTTP Docker service entrypoints:
 
 ```text
 .github/actions/cd/docker-service-production
+.github/actions/cd/docker-service-development
 ```
 
-이 action이 caller repository의 default branch, release/manual checkout, deploy/rollback 선택, 공통 runtime hardening을 해석한 뒤 내부적으로 `cd/docker-service` 또는 `cd/docker-service-rollback`을 호출합니다.
-
-Project identity는 caller가 지정하지 않습니다. 중앙 CD가 `github.repository`의 repository name을 소문자로 정규화해 사용합니다.
-
-```text
-owner/ANMC -> project = anmc\nowner/niki-babo -> project = niki-babo
-default Docker network = project-niki-babo
-```
-
-`service-name`은 각 하위 서비스가 별도로 지정합니다. Migration owner가 아니지만 runtime DB가 필요한 HTTP/process service는 `database: true`만 선언하면 중앙 resolver가 canonical `db.env`에서 `DATABASE_URL`을 주입합니다.
-
-Flow:
-
-```text
-Guard
-→ read previous known-good state
-→ Docker build
-→ migration when configured
-→ Docker simple replace + automatic loopback health port
-→ attach service to caddy-shared
-→ resolved host port HTTP health
-→ shared-caddy route update + validate/reload
-→ state/history record
-```
-
-Example:
-
-```yaml
-- name: Deploy API
-  uses: Mooner510/workflows/.github/actions/cd/docker-service@v1
-  env:
-    SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
-  with:
-    production-branch: main
-    working-directory: services/api
-    service-name: api
-    image-name: my-project-api
-    container-port: '8080'
-    migration-engine: goose
-    migration-path: db/migrations
-    env-names-json: '["SESSION_SECRET"]'
-```
-
-### Non-HTTP process service
-
-Worker, key daemon, exclusive process처럼 Caddy/HTTP port가 없는 service는 다음 공용 entrypoint를 사용합니다.
+Non-HTTP process entrypoints:
 
 ```text
 .github/actions/cd/docker-process-production
+.github/actions/cd/docker-process-development
 ```
 
-Source checkout/build, project identity, runtime config, optional DATABASE_URL, process replace, readiness command, shared state/history, deploy/rollback을 중앙 action이 소유합니다.
+Android production release는 `.github/actions/cd/android-production`을 사용하며 역시 `workflow_dispatch` 전용입니다. `version-env-prefix`를 쓰는 caller는 manual dispatch input을 `version`으로 전달합니다.
 
-### Android production
+### Caller trigger contract
 
-Android release caller는 다음 공용 entrypoint를 사용합니다.
-
-```text
-.github/actions/cd/android-production
-```
-
-`andr`가 관리하는 host signing material과 Android service `deploy.env`를 자동으로 읽고, release checkout/version/signing/upload를 중앙에서 처리합니다. APK가 Gradle 단계에서 unsigned이면 중앙 action이 `apksigner` fallback으로 서명합니다.
-
-### Production deploy.env
-
-Canonical production configuration은 project 공통값과 선택적 service override/secret 계층으로 구성합니다.
-
-```text
-/opt/stacks/projects/<repository-name>/
-├─ db.env
-├─ deploy.env
-└─ <service>/
-   ├─ deploy.env
-   └─ secret/deploy.env
-```
-
-중앙 CD는 project `deploy.env`가 존재하면 공통값으로 먼저 읽고, service `deploy.env`, service `secret/deploy.env`가 존재하면 순서대로 overlay합니다. Project root env는 선택적이며, 최종적으로 project/service runtime env가 하나도 없을 때만 실패합니다. `service-name`이 `<project>-<service>` 형식이고 exact service directory가 없으면 `<service>` short directory를 자동 fallback으로 탐색합니다. 따라서 caller workflow가 runtime secret 이름이나 service domain/volume을 반복 선언할 필요가 없습니다.
-
-`deploy.env`에는 runtime config/secret과 deployment metadata를 함께 둘 수 있습니다.
-
-```env
-DEPLOY_DOMAIN=api.example.com
-APP_ENV=production
-SESSION_SECRET=...
-```
-
-`DEPLOY_DOMAIN`은 중앙 CD가 Caddy route에 사용합니다. Generic HTTP service의 loopback host port는 Docker가 자동 할당하며 runner의 health check에만 사용합니다. Caddy는 공용 `caddy-shared` Docker network에서 `<service-name>:<container-port>`로 service에 연결합니다. 사용자가 host port를 지정하거나 관리하지 않습니다.
-
-서비스별 deploy.env/secret/deploy.env는 더 이상 canonical 경로가 아닙니다. 프로젝트당 루트 `deploy.env` 하나를 모든 generic HTTP service가 공유하고, `db.env`만 DB lifecycle/credential 분리를 위해 별도로 유지합니다.
-
-DB credential source 기본값은 `host`입니다. Service-specific DB credential file이 있으면 중앙 resolver가 자동 우선하고 없으면 project DB로 fallback합니다. Runtime config와 동일하게 `<project>-<service>` service-name은 exact directory가 없을 때 `<service>` short directory alias를 자동 탐색합니다.
-
-```text
-/opt/stacks/projects/<repository-name>/<service>/db.env
-→ fallback /opt/stacks/projects/<repository-name>/db.env
-→ CD step에서 DATABASE_URL 생성
-→ migration에 사용
-→ docker run -e DATABASE_URL
-```
-
-Docker image build에는 production credential을 전달하지 않습니다.
-
-GitHub Environment는 approval/protection boundary 용도로 유지할 수 있지만 canonical service 설정 저장소로 사용하지 않습니다. 기존 GitHub Secret 기반 deployment가 필요한 repository만 compatibility mode로 `db-credential-source: github`와 caller env를 사용할 수 있습니다.
-
-추가 `env-files-json`은 repository-relative 파일만 허용하며, canonical project root `deploy.env`는 중앙 action이 자동으로 추가합니다.
-
-공용 reverse proxy는 `shared-caddy` container + `caddy-shared` network를 사용합니다. Generic HTTP service는 project network와 `caddy-shared`에 함께 연결되며, generated site는 `/opt/stacks/shared/caddy/sites/<service>.caddy`에 기록됩니다. `shared-caddy`는 host `sites`를 `/etc/caddy/sites:ro`로 mount하고 main Caddyfile에서 `import /etc/caddy/sites/*.caddy` 해야 합니다.
-
-Canonical production entrypoint는 generic HTTP service에 다음 hardening을 기본 적용합니다.
-
-```text
-init
-security-opts-json
-cap-drop-json
-stop-timeout
-```
-
-`init=true`, `security-opts-json=["no-new-privileges:true"]`, `cap-drop-json=["ALL"]`, `stop-timeout=20`. 특수 service가 실제로 필요할 때만 caller에서 override합니다.
-
-GitHub Actions UI readability contract:
-
-- project caller의 모든 `steps[*].uses` 호출은 사람이 읽을 수 있는 명시적 `name:`을 가진다.
-- reusable workflow 호출 job은 의미 있는 `jobs.<id>.name`을 가진다.
-- shared action 내부 nested `uses` step도 의미 있는 `name:`을 유지한다.
-- full commit SHA pin은 보안을 위해 유지하며, SHA를 숨기기 위해 action nesting을 풀거나 project별 wrapper action을 만들지 않는다.
-- GitHub가 composite action 내부에 자동으로 표시하는 `Run <owner>/<repo>/...@<sha>` 라인은 플랫폼 표기이므로 제거 대상으로 보지 않는다. 그 상위 step 이름이 의미를 설명해야 한다.
-
-Project workflow에는 GitHub가 caller repository에서만 올바르게 소유할 수 있는 job boundary와 진짜 service-specific 값만 남깁니다.
-
-```text
-trigger
-permissions
-concurrency
-environment
-runs-on
-service working-directory/name/port
-non-default health or migration path
-central production action call
-```
-
-Checkout, default production branch resolution, deploy/rollback branching, project identity, runtime config/db.env resolution, Docker hardening, migration, health, Caddy, state/history는 중앙 action이 소유합니다.
-
-같은 service의 deploy와 manual rollback은 **동일한 concurrency group**을 사용해야 합니다. 중앙 composite action 자체는 job-level `concurrency`를 선언할 수 없으므로 caller가 직렬화를 소유합니다.
+Development caller는 반드시 `dev` branch push에서 실행하고 CI 성공 이후 deploy job이 실행되도록 `needs`를 둡니다. 중앙 development action도 event/ref를 다시 검증합니다.
 
 ```yaml
-concurrency:
-  group: production-my-project-api
-  cancel-in-progress: false
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+    inputs:
+      operation:
+        type: choice
+        options: [deploy, rollback]
+        default: deploy
+
+jobs:
+  ci:
+    # shared pipeline caller
+
+  deploy-dev:
+    name: Deploy development
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    needs: ci
+    runs-on: [self-hosted, linux]
+    steps:
+      - name: Deploy development API
+        uses: Mooner510/workflows/.github/actions/cd/docker-service-development@v1
+        with:
+          working-directory: services/api
+          service-name: my-project-api
+          container-port: '8080'
+
+  deploy-prod:
+    name: Deploy production
+    if: github.event_name == 'workflow_dispatch' && github.actor == 'Mooner510' && github.triggering_actor == 'Mooner510'
+    runs-on: [self-hosted, linux]
+    steps:
+      - name: Deploy production API
+        uses: Mooner510/workflows/.github/actions/cd/docker-service-production@v1
+        with:
+          working-directory: services/api
+          service-name: my-project-api
+          container-port: '8080'
 ```
 
-동일 service를 병렬로 mutate하면 container/state/history가 서로 경합할 수 있으므로 production caller에서 concurrency를 생략하지 않습니다.
+Production caller의 `if`는 간단한 UI/run-level 차단입니다. 중앙 production guard도 같은 actor/event 조건을 다시 검증합니다. Workflow 자체를 수정할 수 있는 write 권한자를 상대로 한 강한 보안 경계로 취급하지 않습니다.
 
-## Deployment state / rollback
+### Environment isolation
 
-Canonical storage:
+Production의 기존 host path와 resource 이름은 호환성을 위해 변경하지 않습니다. Development만 새 suffix/path를 사용합니다.
 
 ```text
-/var/lib/stacks/projects/<repository-name>/<service>/deploy/
-├─ current.json
-└─ history.jsonl
+Production
+/opt/stacks/projects/<project>/db.env
+/opt/stacks/projects/<project>/deploy.env
+/opt/stacks/projects/<project>/<service>/deploy.env
+/opt/stacks/projects/<project>/<service>/secret/deploy.env
+network: project-<project>
+service: <service>
+image: <image>
+state: /var/lib/stacks/projects/<project>/<service>/deploy/
+
+Development
+/opt/stacks/projects/<project>/db.dev.env
+/opt/stacks/projects/<project>/deploy.dev.env
+/opt/stacks/projects/<project>/<service>/deploy.dev.env
+/opt/stacks/projects/<project>/<service>/secret/deploy.dev.env
+network: project-<project>-dev
+service: <service>-dev
+image: <image>-dev
+state: /var/lib/stacks/projects/<project>/<service>/dev/deploy/
 ```
 
-`current.json`은 마지막 verified known-good deployment입니다. `history.jsonl`에는 성공한 `deploy`/`rollback`과 rollback 실패 후 정상 원상복구(`rollback-restore`)만 기록합니다. State 갱신은 임시 파일을 사용해 current/history 불일치를 최소화합니다.
+Development resolver는 production `db.env`, `deploy.env`, `secret/deploy.env`로 fallback하지 않습니다. Dev config가 없으면 명시적으로 실패합니다. DB instance는 shared PostgreSQL을 공유하되 prod/dev database와 role은 별도입니다.
 
-자동 rollback:
+Runtime overlay는 환경 안에서만 적용합니다.
 
 ```text
-새 container replace 이후 health/Caddy/state 실패
-→ 직전 known-good image ID 복구
-→ rollback health 확인
+prod: project deploy.env -> service deploy.env -> service secret/deploy.env
+dev:  project deploy.dev.env -> service deploy.dev.env -> service secret/deploy.dev.env
 ```
 
-명시적 수동 rollback:
+`DEPLOY_DOMAIN`도 선택된 환경 파일에서만 읽으며 dev domain을 prod에서 자동 파생하지 않습니다. `DEPLOY_VOLUMES_JSON`도 동일합니다. Mutable persistent volume은 dev가 prod와 같은 host path/volume을 지정하지 않는 것이 원칙이며 중앙 workflow는 임의 path를 자동 변환하지 않습니다.
+
+### Development enable flag
+
+Development deployment는 기본 enabled입니다. 다음 marker 중 하나가 있으면 자동 dev deployment를 성공적으로 skip합니다.
 
 ```text
-.github/actions/cd/docker-service-rollback
+/opt/stacks/projects/<project>/.dev-disabled
+/opt/stacks/projects/<project>/<service>/.dev-disabled
 ```
 
-이 action은 `history.jsonl`에서 현재 image와 다른 가장 최근 known-good deployment를 선택하고, 해당 image ID가 host에 남아 있는지 확인한 뒤 복구합니다. rollback 자체가 실패하면 원래 current deployment를 다시 복구합니다. DB migration은 down하지 않습니다.
+Project marker가 service marker보다 우선합니다. Marker는 dev 설정 파일 편집이나 DB 관리 자체를 막지 않고 자동 dev service 실행만 막습니다.
 
-따라서 image pruning은 최소한 현재 image와 직전 rollback 후보를 보존해야 합니다.
+### Deployment identity and labels
 
-최초 중앙 배포가 health/Caddy 이후 state 기록 단계에서 실패하면 새 container뿐 아니라 새로 적용한 Caddy route도 제거하여 dangling route를 남기지 않습니다.
+Canonical labels:
 
-기존 `deploy` CLI의 state/history/rollback 책임은 중앙 CD가 직접 소유합니다.
+```text
+com.mooner510.stacks.managed=true
+com.mooner510.stacks.project=<project>
+com.mooner510.stacks.service=<logical-service>
+com.mooner510.stacks.environment=prod|dev
+```
+
+기존 `com.mooner510.workflows.service`와 OCI revision label도 유지합니다. Caddy site filename은 physical service 이름을 사용하므로 dev는 `<service>-dev.caddy`가 됩니다.
+
+### Rollback and state
+
+Production manual rollback은 기존 dispatch operation을 사용합니다. Development는 push deployment 전용이며 manual rollback dispatch entrypoint를 제공하지 않습니다. HTTP deploy 실패 시 environment별 previous known-good image를 이용한 자동 rollback은 유지됩니다.
+
+```text
+prod: /var/lib/stacks/projects/<project>/<service>/deploy/
+dev:  /var/lib/stacks/projects/<project>/<service>/dev/deploy/
+```
+
+새 state record에는 `environment` field가 저장됩니다. 기존 production record에 이 field가 없어도 읽기 호환성을 유지합니다. Production 기존 path는 migration하지 않습니다.
 
 ## Migration CD
 
-DB가 있는 service는 deploy마다 migrator를 호출합니다. Production migrator는 self-hosted runner host에서 실행되므로 shared PostgreSQL의 loopback publish(`127.0.0.1:<DB_PORT>`)를 사용하고, application container runtime은 `db.env`의 Docker DNS host를 그대로 사용합니다.
+DB가 있는 service는 deploy마다 선택된 environment database에 migrator를 호출합니다. Production/development migrator는 self-hosted runner host에서 실행되므로 shared PostgreSQL의 loopback publish(`127.0.0.1:<DB_PORT>`)를 사용하고, application container runtime은 선택된 `db.env` 또는 `db.dev.env`의 Docker DNS host를 사용합니다.
 
 ```text
 Goose   -> DATABASE_URL
