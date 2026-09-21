@@ -11,7 +11,8 @@
 ```text
 .github/workflows/
 ├─ pipeline.yml
-└─ security.yml
+├─ security.yml
+└─ go-format.yml
 
 .github/actions/
 ├─ ci/
