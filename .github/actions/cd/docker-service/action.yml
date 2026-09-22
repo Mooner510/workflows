@@ -1,5 +1,5 @@
 name: Docker service deployment
-description: Build, migrate, deploy, health-check, persist state, and ask the project CLI to reconcile routing for one HTTP Docker service.
+description: Build, migrate, deploy, health-check, and persist state for one HTTP Docker service. Routing is managed independently by the project CLI.
 
 inputs:
   environment:
@@ -523,19 +523,6 @@ runs:
         url: http://127.0.0.1:${{ steps.deploy.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
-    - name: Reconcile route through project CLI
-      id: route
-      shell: bash
-      env:
-        PROJECT: ${{ steps.identity.outputs.project }}
-        SERVICE: ${{ inputs.service-name }}
-        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
-      run: |
-        set -euo pipefail
-        wrapper=/opt/stacks/cli/bin/project-addr-sync
-        [[ -x "$wrapper" ]] || { echo "::error::Restricted project addr sync wrapper is not installed: $wrapper"; exit 1; }
-        sudo -n "$wrapper" "$PROJECT/$SERVICE" "$DEPLOY_ENVIRONMENT"
-
     - name: Record successful deployment
       uses: $/.github/actions/cd/state
       with:
@@ -579,20 +566,8 @@ runs:
         url: http://127.0.0.1:${{ steps.rollback.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
-    - name: Reconcile route after rollback
-      id: rollback_route
-      if: failure() && steps.rollback_health.outcome == 'success'
-      shell: bash
-      env:
-        PROJECT: ${{ steps.identity.outputs.project }}
-        SERVICE: ${{ inputs.service-name }}
-        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
-      run: |
-        set -euo pipefail
-        sudo -n /opt/stacks/cli/bin/project-addr-sync "$PROJECT/$SERVICE" "$DEPLOY_ENVIRONMENT"
-
     - name: Record successful rollback
-      if: failure() && steps.rollback_health.outcome == 'success' && steps.rollback_route.outcome == 'success' && steps.rollback_source.outputs.persistent == 'true'
+      if: failure() && steps.rollback_health.outcome == 'success' && steps.rollback_source.outputs.persistent == 'true'
       uses: $/.github/actions/cd/state
       with:
         environment: ${{ inputs.environment }}
@@ -612,11 +587,3 @@ runs:
         SERVICE_NAME: ${{ steps.identity.outputs.service }}
       run: docker rm -f "$SERVICE_NAME" >/dev/null 2>&1 || true
 
-    - name: Remove failed first route through project CLI
-      if: failure() && steps.deploy.outcome == 'success' && steps.rollback_source.outputs.exists != 'true'
-      shell: bash
-      env:
-        PROJECT: ${{ steps.identity.outputs.project }}
-        SERVICE: ${{ inputs.service-name }}
-        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
-      run: sudo -n /opt/stacks/cli/bin/project-addr-sync "$PROJECT/$SERVICE" "$DEPLOY_ENVIRONMENT"
