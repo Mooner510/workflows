@@ -333,19 +333,19 @@ HTTP address는 runtime env metadata가 아닙니다. `addr.env` / `addr.dev.env
 
 ```text
 Production
-/opt/stacks/shared/caddy/sites/<project>/<service>.caddy
+/opt/stacks/shared/caddy/sites/<project>.<service>.caddy
 
 Development
-/opt/stacks/shared/caddy/sites/<project>/<service>-dev.caddy
+/opt/stacks/shared/caddy/sites/<project>.<service>-dev.caddy
 ```
 
-Main Caddyfile은 project별 nested fragment를 직접 import해야 합니다.
+Main Caddyfile은 flat fragment만 import합니다.
 
 ```caddy
-import /etc/caddy/sites/*/*.caddy
+import /etc/caddy/sites/*.caddy
 ```
 
-Central workflows는 Caddy route를 생성/삭제/동기화하지 않습니다. HTTP service는 addr 유무와 관계없이 existing `caddy-shared` network에 연결됩니다. 첫 deployment가 health까지 성공한 뒤 운영자가 `project addr <project>/<service> set <origin> [-dev]`를 실행하면 project CLI가 running managed container의 canonical `com.mooner510.stacks.container-port` label을 읽어 upstream을 자동 결정하고 즉시 Caddy validate/reload를 수행합니다.
+Central workflows는 Caddy route를 생성/삭제/동기화하지 않습니다. HTTP service는 addr 유무와 관계없이 existing `caddy-shared` network에 연결됩니다. 첫 deployment가 health까지 성공한 뒤 운영자가 `project addr <project>/<service> set <origin> [-dev]`를 실행하면 project CLI가 running managed container의 canonical `kr.mooner510.stacks.container-port` label을 읽어 upstream을 자동 결정하고 즉시 Caddy validate/reload를 수행합니다.
 
 Production/development address는 서로 독립적입니다. 자동 derivation/fallback은 없습니다. 해당 environment의 Caddy fragment가 없으면 외부 route도 없습니다. 주소 변경과 제거는 배포와 무관하게 즉시 적용됩니다.
 
@@ -387,15 +387,15 @@ Project marker가 service marker보다 우선합니다. Marker는 dev 설정 파
 Canonical labels:
 
 ```text
-com.mooner510.stacks.managed=true
-com.mooner510.stacks.project=<project>
-com.mooner510.stacks.service=<logical-service>
-com.mooner510.stacks.environment=prod|dev
-com.mooner510.stacks.kind=http|process
-com.mooner510.stacks.container-port=<port>  # HTTP only
+kr.mooner510.stacks.managed=true
+kr.mooner510.stacks.project=<project>
+kr.mooner510.stacks.service=<logical-service>
+kr.mooner510.stacks.environment=prod|dev
+kr.mooner510.stacks.kind=http|process
+kr.mooner510.stacks.container-port=<port>  # HTTP only
 ```
 
-기존 `com.mooner510.workflows.service`와 OCI revision label도 유지합니다. Logical service name은 project prefix를 반복하지 않는 짧은 role 이름(`api`, `web`, `worker`, `media`, `keyd`, `site`)을 사용합니다. Project CLI가 생성하는 Caddy site는 `sites/<project>/<service>.caddy` 또는 `sites/<project>/<service>-dev.caddy`를 사용하고 ownership marker를 기록합니다.
+새 resource에는 `kr.mooner510.stacks.*` label만 기록합니다. Logical service name은 project prefix를 반복하지 않는 짧은 role 이름(`api`, `web`, `worker`, `media`, `keyd`, `site`)을 사용합니다. Docker container name은 `<project>[.<service>][.dev]` 형식이며 production에는 suffix가 없고 development에만 `.dev`를 붙입니다. Project CLI가 생성하는 Caddy site는 `sites/<project>.<service>.caddy` 또는 `sites/<project>.<service>-dev.caddy`를 사용하고 ownership marker를 기록합니다.
 
 ### Rollback and state
 
