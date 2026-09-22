@@ -1,5 +1,5 @@
 name: Resolve repository deployment identity
-description: Derive canonical project/service identity, environment-specific Docker network, opaque physical container identity, and project/service image repository.
+description: Derive canonical project/service identity, environment-specific Docker network, readable physical container name, and project/service image repository.
 
 inputs:
   environment:
@@ -30,7 +30,7 @@ outputs:
     description: Resolved Docker network name.
     value: ${{ steps.identity.outputs.network }}
   service:
-    description: Opaque environment-specific physical Docker container name. Operators use project/service logical identity instead.
+    description: Readable Docker container name in <project>[.<service>][.dev] form.
     value: ${{ steps.identity.outputs.service }}
   image:
     description: Local Docker image repository in project/service form.
@@ -59,8 +59,8 @@ runs:
 
         repository_name="${REPOSITORY#*/}"
         project="$(printf '%s' "$repository_name" | tr '[:upper:]' '[:lower:]')"
-        [[ "$project" =~ ^[a-z0-9][a-z0-9._-]{0,99}$ ]] || {
-          echo "::error::Repository name '$repository_name' cannot be normalized to a canonical project identifier."
+        [[ "$project" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
+          echo "::error::Repository name '$repository_name' cannot be normalized to canonical project naming: ^[a-z][a-z0-9-]{0,62}$."
           exit 1
         }
 
@@ -76,20 +76,20 @@ runs:
 
         logical_service="$SERVICE_INPUT"
         logical_image="$IMAGE_INPUT"
-        service=""
+        service="$project"
         image=""
         if [[ -n "$logical_service" ]]; then
-          [[ "$logical_service" =~ ^[a-z][a-z0-9.-]{0,62}$ ]] || { echo "::error::Invalid logical service '$logical_service'."; exit 1; }
+          [[ "$logical_service" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { echo "::error::Invalid logical service '$logical_service'."; exit 1; }
           [[ -n "$logical_image" ]] || logical_image="$logical_service"
           [[ "$logical_image" =~ ^[a-z0-9][a-z0-9_./-]*$ ]] || { echo "::error::Invalid logical image '$logical_image'."; exit 1; }
 
-          identity_key="$project/$logical_service/$DEPLOY_ENVIRONMENT"
-          service="stacks-$(printf '%s' "$identity_key" | sha256sum | cut -c1-20)"
+          service="$project.$logical_service"
           image="$project/$logical_image"
         elif [[ -n "$logical_image" ]]; then
           echo "::error::image requires service."
           exit 1
         fi
+        [[ "$DEPLOY_ENVIRONMENT" != "dev" ]] || service="$service.dev"
 
         {
           echo "project=$project"
