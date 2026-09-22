@@ -183,8 +183,11 @@ runs:
           hardening_args+=(--cap-drop "$capability")
         done < <(jq -r '.[]' <<<"$CAP_DROP_JSON")
 
-        if [[ -n "$NETWORK" ]] && ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
-          docker network create "$NETWORK" >/dev/null
+        if [[ -n "$NETWORK" ]]; then
+          docker network inspect "$NETWORK" >/dev/null 2>&1 || {
+            echo "::error::Project Docker network '$NETWORK' does not exist. Create it with the project CLI before deployment."
+            exit 1
+          }
         fi
         docker network inspect "$PROXY_NETWORK" >/dev/null 2>&1 || {
           echo "::error::Shared proxy Docker network '$PROXY_NETWORK' does not exist."
