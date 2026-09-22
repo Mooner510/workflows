@@ -251,12 +251,11 @@ runs:
         while IFS= read -r name; do create_args+=(-e "$name"); done < <(jq -r '.[]' <<<"$DB_ENV_NAMES")
         while IFS= read -r volume; do create_args+=(-v "$volume"); done < <(jq -r '.[]' <<<"$volumes")
         create_args+=(--network "$NETWORK")
-        create_args+=(--label "com.mooner510.workflows.service=$SERVICE")
-        create_args+=(--label "com.mooner510.stacks.managed=true")
-        create_args+=(--label "com.mooner510.stacks.project=${{ steps.identity.outputs.project }}")
-        create_args+=(--label "com.mooner510.stacks.service=${{ inputs.service-name }}")
-        create_args+=(--label "com.mooner510.stacks.environment=$DEPLOY_ENVIRONMENT")
-        create_args+=(--label "com.mooner510.stacks.kind=process")
+        create_args+=(--label "kr.mooner510.stacks.managed=true")
+        create_args+=(--label "kr.mooner510.stacks.project=${{ steps.identity.outputs.project }}")
+        create_args+=(--label "kr.mooner510.stacks.service=${{ inputs.service-name }}")
+        create_args+=(--label "kr.mooner510.stacks.environment=$DEPLOY_ENVIRONMENT")
+        create_args+=(--label "kr.mooner510.stacks.kind=process")
         create_args+=(--label "org.opencontainers.image.revision=$GITHUB_SHA" "$image")
 
         docker network inspect "$NETWORK" >/dev/null 2>&1 || {
