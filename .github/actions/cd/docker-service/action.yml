@@ -200,7 +200,6 @@ runs:
         service: ${{ inputs.service-name }}
         image: ${{ inputs.image-name }}
 
-    - name: Resolve requested database environment
     - name: Validate project-owned runtime prerequisites
       shell: bash
       env:
@@ -221,6 +220,7 @@ runs:
           exit 1
         }
 
+    - name: Resolve requested database environment
       id: requested_env
       shell: bash
       env:
