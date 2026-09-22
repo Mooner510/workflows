@@ -145,12 +145,11 @@ runs:
 
     - name: Resolve process CORS metadata
       id: service_metadata
-      uses: $/.github/actions/cd/resolve-service-metadata
+      uses: $/.github/actions/cd/resolve-cors-metadata
       with:
         environment: ${{ inputs.environment }}
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
-        routing: 'false'
 
     - name: Merge process environment names
       id: process_env
