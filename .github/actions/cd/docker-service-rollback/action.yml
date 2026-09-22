@@ -91,7 +91,6 @@ runs:
     - name: Resolve repository deployment identity
       id: identity
       uses: $/.github/actions/cd/identity
-      with:
 
     - name: Validate project-owned runtime prerequisites
       shell: bash
