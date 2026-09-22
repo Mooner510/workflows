@@ -531,6 +531,15 @@ runs:
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
 
+    - name: Remove stale Caddy route
+      if: steps.service_metadata.outputs.address == ''
+      uses: $/.github/actions/cd/caddy
+      with:
+        operation: remove
+        service-name: ${{ steps.identity.outputs.service }}
+        caddyfile: ${{ inputs.caddyfile }}
+        sites-directory: ${{ inputs.caddy-sites-directory }}
+
     - name: Record successful deployment
       uses: $/.github/actions/cd/state
       with:
