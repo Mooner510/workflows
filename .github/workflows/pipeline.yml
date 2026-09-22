@@ -25,6 +25,9 @@ on:
       changed_components:
         description: JSON array of normalized affected components.
         value: ${{ jobs.detect.outputs.all_components }}
+      affected_services:
+        description: JSON array of logical deploy service names affected by the selected components.
+        value: ${{ jobs.detect.outputs.affected_services }}
       has_changes:
         description: Whether at least one configured component changed.
         value: ${{ jobs.detect.outputs.has_changes }}
@@ -47,6 +50,7 @@ jobs:
       all_components: ${{ steps.detect.outputs.all_components }}
       ci_targets: ${{ steps.detect.outputs.ci_targets }}
       ci_groups_by_target: ${{ steps.detect.outputs.ci_groups_by_target }}
+      affected_services: ${{ steps.detect.outputs.affected_services }}
       has_changes: ${{ steps.detect.outputs.has_changes }}
       git_log_opts: ${{ steps.detect.outputs.git_log_opts }}
 
@@ -140,6 +144,11 @@ jobs:
 
             if [[ "$(jq -r '.watch_path // true' <<<"$component")" == "false" ]] && [[ "$(jq '.watch // [] | length' <<<"$component")" -eq 0 ]]; then
               echo "::error::Component '$name' must define at least one watch entry when watch_path is false."
+              exit 1
+            fi
+
+            if ! jq -e '(.deploy_services == null) or ((.deploy_services | type) == "array" and all(.deploy_services[]; type == "string" and test("^[a-z][a-z0-9-]{0,62}$")) and ((.deploy_services | unique | length) == (.deploy_services | length)))' <<<"$component" >/dev/null; then
+              echo "::error::Component '$name' deploy_services must be a unique array of canonical logical service names."
               exit 1
             fi
 
@@ -528,12 +537,14 @@ jobs:
 
           ci_targets="$(jq -c 'map(.target)' <<<"$ci_groups")"
           ci_groups_by_target="$(jq -c 'reduce .[] as $group ({}; .[$group.target] = $group)' <<<"$ci_groups")"
+          affected_services="$(jq -c '[.[] | (.deploy_services // [])[]] | unique | sort' <<<"$normalized")"
           if [[ "$(jq 'length' <<<"$normalized")" -gt 0 ]]; then has_changes=true; else has_changes=false; fi
 
           {
             echo "all_components=$normalized"
             echo "ci_targets=$ci_targets"
             echo "ci_groups_by_target=$ci_groups_by_target"
+            echo "affected_services=$affected_services"
             echo "has_changes=$has_changes"
             echo "git_log_opts=$git_log_opts"
           } >>"$GITHUB_OUTPUT"
