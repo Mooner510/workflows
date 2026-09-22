@@ -25,9 +25,6 @@ outputs:
   env-keys-json:
     description: JSON array of variable names provided by the resolved env files. Values are never emitted.
     value: ${{ steps.resolve.outputs.env_keys_json }}
-  deploy-domain:
-    description: Deprecated compatibility output. Automatic Caddy routing uses addr.env/addr.dev.env instead.
-    value: ${{ steps.resolve.outputs.deploy_domain }}
   deploy-volumes-json:
     description: DEPLOY_VOLUMES_JSON resolved with service config overriding project config.
     value: ${{ steps.resolve.outputs.deploy_volumes_json }}
@@ -116,7 +113,6 @@ runs:
         fi
 
         keys='[]'
-        deploy_domain=""
         deploy_volumes_json='[]'
 
         while IFS= read -r path; do
@@ -133,9 +129,6 @@ runs:
             }
             keys="$(jq -c --arg key "$key" '. + [$key]' <<<"$keys")"
             case "$key" in
-              DEPLOY_DOMAIN)
-                deploy_domain="$(normalize_value "$raw")"
-                ;;
               DEPLOY_VOLUMES_JSON)
                 candidate="$(normalize_value "$raw")"
                 jq -e 'type == "array" and all(.[]; type == "string")' <<<"$candidate" >/dev/null || {
@@ -152,6 +145,5 @@ runs:
         {
           echo "env_files_json=$resolved"
           echo "env_keys_json=$keys"
-          echo "deploy_domain=$deploy_domain"
           echo "deploy_volumes_json=$deploy_volumes_json"
         } >>"$GITHUB_OUTPUT"
