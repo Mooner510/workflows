@@ -540,6 +540,10 @@ jobs:
               service_affected="$force_all"
               if [[ "$service_affected" != "true" ]]; then
                 while IFS= read -r changed; do
+                  if [[ "$changed" == ".github/workflows/"* || "$changed" == ".github/actions/"* ]]; then
+                    service_affected=true
+                    break
+                  fi
                   while IFS= read -r watch; do
                     watch="${watch%/}"
                     if [[ "$watch" == "." ]] || [[ "$changed" == "$watch" ]] || [[ "$changed" == "$watch/"* ]]; then
