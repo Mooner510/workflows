@@ -240,7 +240,10 @@ runs:
         create_args+=(--label "com.mooner510.stacks.kind=process")
         create_args+=(--label "org.opencontainers.image.revision=$GITHUB_SHA" "$image")
 
-        docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK" >/dev/null
+        docker network inspect "$NETWORK" >/dev/null 2>&1 || {
+          echo "::error::Project Docker network '$NETWORK' does not exist. Create it with the project CLI before deployment."
+          exit 1
+        }
 
         restore() {
           [[ "$CURRENT_EXISTS" == "true" && -n "$CURRENT_IMAGE_ID" ]] || return 0
