@@ -1,5 +1,5 @@
 name: Docker service development
-description: Canonical development entrypoint for one generic HTTP Docker service. Deploys pushes to the dev branch with isolated runtime config, database, Docker identity, Caddy route, and state.
+description: Canonical development entrypoint for one generic HTTP Docker service. Deploys pushes to the dev branch with isolated runtime config, database, Docker identity, project-CLI routing reconciliation, and state.
 
 inputs:
   development-branch:
@@ -10,7 +10,7 @@ inputs:
     description: Service root relative to the caller repository.
     required: true
   service-name:
-    description: Stable Docker container, state, and Caddy site name.
+    description: Stable logical Docker service name.
     required: true
   image-name:
     description: Local Docker image repository name. Empty uses service-name.

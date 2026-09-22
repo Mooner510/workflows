@@ -25,9 +25,6 @@ outputs:
   env-keys-json:
     description: JSON array of variable names provided by the resolved env files. Values are never emitted.
     value: ${{ steps.resolve.outputs.env_keys_json }}
-  deploy-domain:
-    description: Deprecated compatibility output. Automatic Caddy routing uses addr.env/addr.dev.env instead.
-    value: ${{ steps.resolve.outputs.deploy_domain }}
   deploy-volumes-json:
     description: DEPLOY_VOLUMES_JSON resolved with service config overriding project config.
     value: ${{ steps.resolve.outputs.deploy_volumes_json }}
@@ -58,11 +55,6 @@ runs:
         fi
         jq -e 'type == "array" and all(.[]; type == "string")' <<<"$ENV_FILES_JSON" >/dev/null || {
           echo "::error::env-files-json must be a JSON array of strings."
-          exit 1
-        }
-
-        [[ -f /opt/stacks/shared/caddy/Caddyfile ]] || {
-          echo "::error::Production host filesystem is not visible to this runner (/opt/stacks/shared/caddy/Caddyfile missing)."
           exit 1
         }
 
@@ -103,21 +95,13 @@ runs:
         [[ ! -f "$project_env" ]] || resolved="$(jq -c --arg path "$project_env" '. + [$path]' <<<"$resolved")"
 
         if [[ -n "$SERVICE" ]]; then
-          service_config="$SERVICE"
-          exact_root="/opt/stacks/projects/$PROJECT/$service_config"
-          if [[ ! -f "$exact_root/$env_file" && ! -f "$exact_root/secret/$env_file" && "$SERVICE" == "$PROJECT-"* ]]; then
-            short_service="${SERVICE#"$PROJECT-"}"
-            if [[ -n "$short_service" ]]; then
-              short_root="/opt/stacks/projects/$PROJECT/$short_service"
-              if [[ -f "$short_root/$env_file" || -f "$short_root/secret/$env_file" ]]; then
-                service_config="$short_service"
-                echo "Resolved service config alias: $SERVICE -> $service_config"
-              fi
-            fi
-          fi
-
-          service_env="/opt/stacks/projects/$PROJECT/$service_config/$env_file"
-          service_secret="/opt/stacks/projects/$PROJECT/$service_config/secret/$env_file"
+          service_root="/opt/stacks/projects/$PROJECT/$SERVICE"
+          [[ -d "$service_root" ]] || {
+            echo "::error::Canonical service registry does not exist: $service_root"
+            exit 1
+          }
+          service_env="$service_root/$env_file"
+          service_secret="$service_root/secret/$env_file"
           [[ ! -f "$service_env" ]] || resolved="$(jq -c --arg path "$service_env" '. + [$path]' <<<"$resolved")"
           [[ ! -f "$service_secret" ]] || resolved="$(jq -c --arg path "$service_secret" '. + [$path]' <<<"$resolved")"
         fi
@@ -129,7 +113,6 @@ runs:
         fi
 
         keys='[]'
-        deploy_domain=""
         deploy_volumes_json='[]'
 
         while IFS= read -r path; do
@@ -146,9 +129,6 @@ runs:
             }
             keys="$(jq -c --arg key "$key" '. + [$key]' <<<"$keys")"
             case "$key" in
-              DEPLOY_DOMAIN)
-                deploy_domain="$(normalize_value "$raw")"
-                ;;
               DEPLOY_VOLUMES_JSON)
                 candidate="$(normalize_value "$raw")"
                 jq -e 'type == "array" and all(.[]; type == "string")' <<<"$candidate" >/dev/null || {
@@ -165,6 +145,5 @@ runs:
         {
           echo "env_files_json=$resolved"
           echo "env_keys_json=$keys"
-          echo "deploy_domain=$deploy_domain"
           echo "deploy_volumes_json=$deploy_volumes_json"
         } >>"$GITHUB_OUTPUT"

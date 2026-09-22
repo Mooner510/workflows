@@ -10,15 +10,11 @@ inputs:
     required: false
     default: ''
   service-name:
-    description: Stable Docker container, state, and Caddy site name.
+    description: Stable logical Docker service name.
     required: true
   container-port:
     description: Internal application port.
     required: true
-  domain:
-    description: Deprecated compatibility input. Automatic Caddy routing is resolved only from addr.env.
-    required: false
-    default: ''
   db-credential-source:
     description: host reads database credentials from /opt/stacks/projects/<repository-name>/db.env. github is a compatibility mode for caller-provided credentials.
     required: false
@@ -28,7 +24,7 @@ inputs:
     required: false
     default: '[]'
   database:
-    description: Resolve and inject DATABASE_URL from canonical service/project db.env even when this service does not own migrations.
+    description: Resolve and inject DATABASE_URL from the canonical project db.env/db.dev.env even when this service does not own migrations.
     required: false
     default: 'false'
   env-names-json:
@@ -39,10 +35,6 @@ inputs:
     description: JSON array of Docker volume specifications.
     required: false
     default: '[]'
-  network:
-    description: Optional Docker network override. Empty uses project-<repository-name>.
-    required: false
-    default: ''
   restart-policy:
     description: Docker restart policy.
     required: false
@@ -75,14 +67,6 @@ inputs:
     description: Persistent deployment state root.
     required: false
     default: /var/lib/stacks
-  caddyfile:
-    description: Main Caddyfile importing generated sites.
-    required: false
-    default: /opt/stacks/shared/caddy/Caddyfile
-  caddy-sites-directory:
-    description: Directory imported by the main Caddyfile.
-    required: false
-    default: /opt/stacks/shared/caddy/sites
 
 outputs:
   revision:
@@ -108,7 +92,26 @@ runs:
       id: identity
       uses: $/.github/actions/cd/identity
       with:
-        network: ${{ inputs.network }}
+
+    - name: Validate project-owned runtime prerequisites
+      shell: bash
+      env:
+        PROJECT: ${{ steps.identity.outputs.project }}
+        SERVICE: ${{ inputs.service-name }}
+        NETWORK: ${{ steps.identity.outputs.network }}
+      run: |
+        set -euo pipefail
+        service_root="/opt/stacks/projects/$PROJECT/$SERVICE"
+        [[ -d "$service_root" ]] || {
+          echo "::error::Service registry is missing: $service_root"
+          echo "::error::Register it first with: sudo project service ensure $PROJECT/$SERVICE"
+          exit 1
+        }
+        docker network inspect "$NETWORK" >/dev/null 2>&1 || {
+          echo "::error::Project network '$NETWORK' does not exist."
+          echo "::error::Create it first with the project CLI."
+          exit 1
+        }
 
     - name: Resolve requested database environment
       id: requested_env
@@ -142,9 +145,9 @@ runs:
         service: ${{ inputs.service-name }}
         env-files-json: ${{ inputs.env-files-json }}
 
-    - name: Resolve service address and CORS metadata
+    - name: Resolve service CORS metadata
       id: service_metadata
-      uses: $/.github/actions/cd/resolve-service-metadata
+      uses: $/.github/actions/cd/resolve-cors-metadata
       with:
         environment: prod
         project: ${{ steps.identity.outputs.project }}
@@ -266,25 +269,15 @@ runs:
         url: http://127.0.0.1:${{ steps.rollback.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
-    - name: Register Caddy route
-      id: caddy
-      if: steps.service_metadata.outputs.address != ''
-      uses: $/.github/actions/cd/caddy
-      with:
-        service-name: ${{ inputs.service-name }}
-        domain: ${{ steps.service_metadata.outputs.address }}
-        upstream: ${{ inputs.service-name }}:${{ inputs.container-port }}
-        caddyfile: ${{ inputs.caddyfile }}
-        sites-directory: ${{ inputs.caddy-sites-directory }}
-
-    - name: Remove stale Caddy route
-      if: steps.service_metadata.outputs.address == ''
-      uses: $/.github/actions/cd/caddy
-      with:
-        operation: remove
-        service-name: ${{ inputs.service-name }}
-        caddyfile: ${{ inputs.caddyfile }}
-        sites-directory: ${{ inputs.caddy-sites-directory }}
+    - name: Reconcile route through project CLI
+      id: route
+      shell: bash
+      env:
+        PROJECT: ${{ steps.identity.outputs.project }}
+        SERVICE: ${{ inputs.service-name }}
+      run: |
+        set -euo pipefail
+        sudo -n /opt/stacks/cli/bin/project-addr-sync "$PROJECT/$SERVICE" prod
 
     - name: Record successful manual rollback
       id: record
@@ -329,19 +322,19 @@ runs:
         url: http://127.0.0.1:${{ steps.restore.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
-    - name: Restore original Caddy route
-      id: restore_caddy
-      if: failure() && steps.restore_health.outcome == 'success' && steps.service_metadata.outputs.address != ''
-      uses: $/.github/actions/cd/caddy
-      with:
-        service-name: ${{ inputs.service-name }}
-        domain: ${{ steps.service_metadata.outputs.address }}
-        upstream: ${{ inputs.service-name }}:${{ inputs.container-port }}
-        caddyfile: ${{ inputs.caddyfile }}
-        sites-directory: ${{ inputs.caddy-sites-directory }}
+    - name: Reconcile restored original route
+      id: restore_route
+      if: failure() && steps.restore_health.outcome == 'success'
+      shell: bash
+      env:
+        PROJECT: ${{ steps.identity.outputs.project }}
+        SERVICE: ${{ inputs.service-name }}
+      run: |
+        set -euo pipefail
+        sudo -n /opt/stacks/cli/bin/project-addr-sync "$PROJECT/$SERVICE" prod
 
     - name: Restore original deployment state
-      if: failure() && steps.restore_health.outcome == 'success' && (steps.service_metadata.outputs.address == '' || steps.restore_caddy.outcome == 'success')
+      if: failure() && steps.restore_health.outcome == 'success' && steps.restore_route.outcome == 'success'
       uses: $/.github/actions/cd/state
       with:
         operation: record

@@ -37,7 +37,6 @@
    ├─ docker-service-rollback/
    ├─ docker/{build,deploy,health}/
    ├─ migration/{goose,go-command,prisma,drizzle,flyway}/
-   ├─ caddy/
    ├─ state/
    └─ android/release/
 ```
@@ -326,11 +325,25 @@ prod: project deploy.env -> service deploy.env -> service secret/deploy.env
 dev:  project deploy.dev.env -> service deploy.dev.env -> service secret/deploy.dev.env
 ```
 
-`DEPLOY_DOMAIN`은 더 이상 automatic Caddy routing source가 아닙니다. Routing은 `addr.env` / `addr.dev.env` metadata에서만 결정합니다. `DEPLOY_VOLUMES_JSON`은 선택된 runtime env 파일을 계속 사용합니다. Mutable persistent volume은 dev가 prod와 같은 host path/volume을 지정하지 않는 것이 원칙이며 중앙 workflow는 임의 path를 자동 변환하지 않습니다.
+`DEPLOY_DOMAIN`은 routing source가 아닙니다. Routing은 `project` CLI가 소유하는 `addr.env` / `addr.dev.env`와 Caddy reconcile 로직에서만 결정합니다. Central workflows는 address를 해석하거나 Caddy 파일을 직접 쓰지 않습니다. `DEPLOY_VOLUMES_JSON`은 선택된 runtime env 파일을 계속 사용합니다. Mutable persistent volume은 dev가 prod와 같은 host path/volume을 지정하지 않는 것이 원칙이며 중앙 workflow는 임의 path를 자동 변환하지 않습니다.
 
 ### Address / CORS metadata
 
-Address와 CORS는 `deploy.env`에서 분리된 host metadata입니다.
+Address와 CORS는 `deploy.env`에서 분리된 host metadata입니다. Project/service registry와 project network는 배포 전에 이미 존재해야 하며 workflows는 이를 생성하지 않습니다.
+
+```text
+project CLI owns:
+- /opt/stacks/projects/<project>/<service>/ service registry
+- project-<project> / project-<project>-dev networks
+- addr metadata and generated Caddy routes
+
+central workflows:
+- require the registry and project network to exist
+- always attach HTTP containers to existing caddy-shared
+- inject CORS_ORIGINS from cors metadata
+- request route reconciliation only through project-addr-sync
+```
+
 
 ```text
 Production
@@ -363,7 +376,7 @@ dev:
 
 Derived development address preserves scheme and explicit port. Production address가 없으면 development도 자동 생성하지 않습니다.
 
-Effective address가 없으면 Docker deployment와 health check는 정상 진행하고 중앙 CD가 해당 service의 기존 generated Caddy route를 제거합니다. 따라서 과거 addr 설정을 제거한 뒤 redeploy/rollback해도 stale route가 남지 않습니다. `project addr ... set/rm`은 실행 중 managed HTTP service의 generated Caddy route를 즉시 갱신/제거합니다.
+HTTP deploy/rollback은 health 성공 후 제한된 `project-addr-sync` wrapper를 호출합니다. Wrapper는 `project addr <project>/<service> sync [-dev]`만 실행할 수 있으며 Caddy 파일을 직접 수정하는 코드는 `project` CLI에만 존재합니다. Effective address가 없거나 service가 실행 중이 아니면 project CLI가 자신이 관리하는 stale route를 제거합니다. `project addr ... set/rm`도 동일한 reconcile 경로를 사용합니다.
 
 CORS는 environment 간 자동 상속이나 derivation을 하지 않습니다.
 
@@ -398,7 +411,7 @@ com.mooner510.stacks.kind=http|process
 com.mooner510.stacks.container-port=<port>  # HTTP only
 ```
 
-기존 `com.mooner510.workflows.service`와 OCI revision label도 유지합니다. Caddy site filename은 physical service 이름을 사용하므로 dev는 `<service>-dev.caddy`가 됩니다.
+기존 `com.mooner510.workflows.service`와 OCI revision label도 유지합니다. Project CLI가 생성하는 Caddy site는 project/service/environment namespace를 포함한 `<project>--<service>--<prod|dev>.caddy`를 사용하고 ownership marker를 기록합니다.
 
 ### Rollback and state
 

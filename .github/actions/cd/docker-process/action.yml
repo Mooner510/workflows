@@ -105,6 +105,26 @@ runs:
         service: ${{ inputs.service-name }}
         image: ${{ inputs.image-name }}
 
+    - name: Validate project-owned runtime prerequisites
+      shell: bash
+      env:
+        PROJECT: ${{ steps.identity.outputs.project }}
+        SERVICE: ${{ inputs.service-name }}
+        NETWORK: ${{ steps.identity.outputs.network }}
+      run: |
+        set -euo pipefail
+        service_root="/opt/stacks/projects/$PROJECT/$SERVICE"
+        [[ -d "$service_root" ]] || {
+          echo "::error::Service registry is missing: $service_root"
+          echo "::error::Register it first with: sudo project service ensure $PROJECT/$SERVICE"
+          exit 1
+        }
+        docker network inspect "$NETWORK" >/dev/null 2>&1 || {
+          echo "::error::Project network '$NETWORK' does not exist."
+          echo "::error::Create it first with the project CLI."
+          exit 1
+        }
+
     - name: Resolve database credentials
       id: credentials
       uses: $/.github/actions/cd/resolve-db-credentials
@@ -125,12 +145,11 @@ runs:
 
     - name: Resolve process CORS metadata
       id: service_metadata
-      uses: $/.github/actions/cd/resolve-service-metadata
+      uses: $/.github/actions/cd/resolve-cors-metadata
       with:
         environment: ${{ inputs.environment }}
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
-        routing: 'false'
 
     - name: Merge process environment names
       id: process_env
@@ -240,7 +259,10 @@ runs:
         create_args+=(--label "com.mooner510.stacks.kind=process")
         create_args+=(--label "org.opencontainers.image.revision=$GITHUB_SHA" "$image")
 
-        docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK" >/dev/null
+        docker network inspect "$NETWORK" >/dev/null 2>&1 || {
+          echo "::error::Project Docker network '$NETWORK' does not exist. Create it with the project CLI before deployment."
+          exit 1
+        }
 
         restore() {
           [[ "$CURRENT_EXISTS" == "true" && -n "$CURRENT_IMAGE_ID" ]] || return 0
