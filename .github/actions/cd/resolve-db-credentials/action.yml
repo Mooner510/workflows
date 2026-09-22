@@ -1,5 +1,5 @@
 name: Resolve database credentials
-description: Resolve environment-specific runtime database credentials plus host-loopback migration credentials from the canonical host.
+description: Resolve environment-specific runtime database credentials plus host-loopback migration credentials from the canonical host db.env/db.dev.env.
 
 inputs:
   environment:
@@ -9,26 +9,18 @@ inputs:
   project:
     description: Stable project identifier matching /opt/stacks/projects/<repository-name>.
     required: true
-  service:
-    description: Optional service identifier. Service db.env or db.dev.env overrides the project file for the selected environment.
-    required: false
-    default: ''
-  credential-source:
-    description: host reads canonical service/project db.env and is the canonical production mode. auto keeps legacy caller-first fallback behavior. github requires caller-provided values and never reads host db.env.
-    required: false
-    default: host
   migration-engine:
     description: none, goose, go-command, prisma, drizzle, or flyway.
     required: false
     default: none
   env-names-json:
-    description: Caller-requested container environment variable names. Used to decide whether DATABASE_URL should be auto-resolved for non-migration services.
+    description: Requested container environment variable names. DATABASE_URL is resolved only from the canonical host DB credential file.
     required: false
     default: '[]'
 
 outputs:
   resolved-env-names-json:
-    description: JSON array of environment variable names resolved from host db.env during this step.
+    description: JSON array of database environment variable names resolved from the canonical host DB credential file.
     value: ${{ steps.resolve.outputs.resolved_env_names_json }}
 
 runs:
@@ -40,8 +32,6 @@ runs:
       env:
         DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
         PROJECT: ${{ inputs.project }}
-        SERVICE: ${{ inputs.service }}
-        CREDENTIAL_SOURCE: ${{ inputs.credential-source }}
         MIGRATION_ENGINE: ${{ inputs.migration-engine }}
         ENV_NAMES_JSON: ${{ inputs.env-names-json }}
       run: |
@@ -57,42 +47,27 @@ runs:
           exit 1
         ;;
         esac
-        case "$CREDENTIAL_SOURCE" in auto|github|host) ;; *)
-          echo "::error::credential-source must be auto, github, or host."
-          exit 1
-        ;;
-        esac
         case "$MIGRATION_ENGINE" in none|goose|go-command|prisma|drizzle|flyway) ;; *)
-          echo "::error::migration-engine must be none, goose, prisma, drizzle, or flyway."
+          echo "::error::migration-engine must be none, goose, go-command, prisma, drizzle, or flyway."
           exit 1
         ;;
         esac
 
-        # host is a compatibility alias for auto.
-        if [[ "$CREDENTIAL_SOURCE" == "github" ]]; then
-          echo 'resolved_env_names_json=[]' >>"$GITHUB_OUTPUT"
-          exit 0
-        fi
+        for name in DATABASE_URL MIGRATION_DATABASE_URL FLYWAY_URL FLYWAY_USER FLYWAY_PASSWORD; do
+          if [[ -n "${!name:-}" ]]; then
+            echo "::error::$name must not be provided by the caller. Database credentials are resolved only from the canonical host db.env/db.dev.env."
+            exit 1
+          fi
+        done
 
         needs_database_url=false
         needs_flyway=false
-        case "$MIGRATION_ENGINE" in goose|go-command|prisma|drizzle) needs_database_url=true ;; flyway) needs_flyway=true ;; esac
+        case "$MIGRATION_ENGINE" in
+          goose|go-command|prisma|drizzle) needs_database_url=true ;;
+          flyway) needs_flyway=true ;;
+        esac
         if jq -e 'index("DATABASE_URL") != null' <<<"$ENV_NAMES_JSON" >/dev/null; then
           needs_database_url=true
-        fi
-
-        if [[ "$needs_database_url" == "false" && "$needs_flyway" == "false" ]]; then
-          echo 'resolved_env_names_json=[]' >>"$GITHUB_OUTPUT"
-          exit 0
-        fi
-
-        if [[ "$CREDENTIAL_SOURCE" != "host" ]]; then
-          if [[ "$needs_database_url" == "true" && -n "${DATABASE_URL:-}" ]]; then
-            needs_database_url=false
-          fi
-          if [[ "$needs_flyway" == "true" && -n "${FLYWAY_URL:-}" && -n "${FLYWAY_USER:-}" && -n "${FLYWAY_PASSWORD:-}" ]]; then
-            needs_flyway=false
-          fi
         fi
 
         if [[ "$needs_database_url" == "false" && "$needs_flyway" == "false" ]]; then
@@ -109,21 +84,9 @@ runs:
         [[ "$DEPLOY_ENVIRONMENT" != "dev" ]] || db_file="db.dev.env"
         db_env="/opt/stacks/projects/$PROJECT/$db_file"
         [[ -f "$db_env" ]] || {
-          if [[ "$CREDENTIAL_SOURCE" == "host" ]]; then
-            echo "::error::Canonical host database credential file $db_env is not visible to this runner."
-            echo "::error::The active self-hosted runner must expose the production host filesystem. Verify with: sudo db info $PROJECT"
-            exit 1
-          fi
-          if [[ "$needs_database_url" == "true" ]]; then
-            echo "::error::DATABASE_URL is not set and $db_env is unavailable."
-            exit 1
-          fi
-          if [[ "$needs_flyway" == "true" ]]; then
-            echo "::error::Flyway credentials are not set and $db_env is unavailable."
-            exit 1
-          fi
-          echo 'resolved_env_names_json=[]' >>"$GITHUB_OUTPUT"
-          exit 0
+          echo "::error::Canonical host database credential file $db_env is not visible to this runner."
+          echo "::error::The active self-hosted runner must expose the production host filesystem. Verify with: sudo db info $PROJECT"
+          exit 1
         }
 
         declare -A values=()
@@ -163,35 +126,27 @@ runs:
         declare -a resolved=()
         encoded_password="$(urlencode "${values[DB_PASSWORD]}")"
 
-        if [[ "$needs_database_url" == "true" && -z "${DATABASE_URL:-}" ]]; then
+        if [[ "$needs_database_url" == "true" ]]; then
           database_url="postgresql://${values[DB_USER]}:${encoded_password}@${values[DB_HOST]}:${values[DB_PORT]}/${values[DB_NAME]}"
           write_env DATABASE_URL "$database_url"
           resolved+=("DATABASE_URL")
           echo "Resolved runtime DATABASE_URL from $db_env for project '$PROJECT'."
         fi
 
-        if [[ "$MIGRATION_ENGINE" == "goose" || "$MIGRATION_ENGINE" == "go-command" || "$MIGRATION_ENGINE" == "prisma" || "$MIGRATION_ENGINE" == "drizzle" ]]; then
-          migration_database_url="postgresql://${values[DB_USER]}:${encoded_password}@127.0.0.1:${values[DB_PORT]}/${values[DB_NAME]}"
-          write_env MIGRATION_DATABASE_URL "$migration_database_url"
-          echo "Resolved host-loopback migration DATABASE_URL from $db_env for project '$PROJECT'."
-        fi
+        case "$MIGRATION_ENGINE" in
+          goose|go-command|prisma|drizzle)
+            migration_database_url="postgresql://${values[DB_USER]}:${encoded_password}@127.0.0.1:${values[DB_PORT]}/${values[DB_NAME]}"
+            write_env MIGRATION_DATABASE_URL "$migration_database_url"
+            echo "Resolved host-loopback migration DATABASE_URL from $db_env for project '$PROJECT'."
+            ;;
+        esac
 
         if [[ "$needs_flyway" == "true" ]]; then
-          if [[ -z "${FLYWAY_URL:-}" ]]; then
-            write_env FLYWAY_URL "jdbc:postgresql://127.0.0.1:${values[DB_PORT]}/${values[DB_NAME]}"
-            resolved+=("FLYWAY_URL")
-          fi
-          if [[ -z "${FLYWAY_USER:-}" ]]; then
-            write_env FLYWAY_USER "${values[DB_USER]}"
-            resolved+=("FLYWAY_USER")
-          fi
-          if [[ -z "${FLYWAY_PASSWORD:-}" ]]; then
-            write_env FLYWAY_PASSWORD "${values[DB_PASSWORD]}"
-            resolved+=("FLYWAY_PASSWORD")
-          fi
-          if ((${#resolved[@]} > 0)); then
-            echo "Resolved Flyway credentials from $db_env for project '$PROJECT'."
-          fi
+          write_env FLYWAY_URL "jdbc:postgresql://127.0.0.1:${values[DB_PORT]}/${values[DB_NAME]}"
+          write_env FLYWAY_USER "${values[DB_USER]}"
+          write_env FLYWAY_PASSWORD "${values[DB_PASSWORD]}"
+          resolved+=("FLYWAY_URL" "FLYWAY_USER" "FLYWAY_PASSWORD")
+          echo "Resolved Flyway credentials from $db_env for project '$PROJECT'."
         fi
 
         if ((${#resolved[@]} == 0)); then

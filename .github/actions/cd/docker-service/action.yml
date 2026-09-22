@@ -49,10 +49,6 @@ inputs:
   container-port:
     description: Internal application port.
     required: true
-  db-credential-source:
-    description: host reads database credentials from /opt/stacks/projects/<repository-name>/db.env. github is a compatibility mode for caller-provided credentials.
-    required: false
-    default: host
   env-files-json:
     description: Optional JSON array of additional repository-relative Docker env files. Canonical project host deploy.env is discovered automatically.
     required: false
@@ -223,8 +219,6 @@ runs:
       with:
         environment: ${{ inputs.environment }}
         project: ${{ steps.identity.outputs.project }}
-        service: ${{ inputs.service-name }}
-        credential-source: ${{ inputs.db-credential-source }}
         migration-engine: ${{ inputs.migration-engine }}
         env-names-json: ${{ steps.requested_env.outputs.env_names_json }}
 
@@ -268,13 +262,13 @@ runs:
         case "$MIGRATION_ENGINE" in
           goose|go-command|prisma|drizzle)
             [[ -n "${DATABASE_URL:-}" ]] || {
-              echo "::error::DATABASE_URL is required for migration but was not provided by GitHub Environment secrets or /opt/stacks/projects/${{ steps.identity.outputs.project }}/db.env."
+              echo "::error::DATABASE_URL is required for migration but could not be resolved from the canonical host DB credential file."
               exit 1
             }
             ;;
           flyway)
             [[ -n "${FLYWAY_URL:-}" ]] || {
-              echo "::error::FLYWAY_URL is required for migration but was not provided by GitHub Environment secrets or /opt/stacks/projects/${{ steps.identity.outputs.project }}/db.env."
+              echo "::error::FLYWAY_URL is required for migration but could not be resolved from the canonical host DB credential file."
               exit 1
             }
             ;;

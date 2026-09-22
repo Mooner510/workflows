@@ -15,10 +15,6 @@ inputs:
   container-port:
     description: Internal application port.
     required: true
-  db-credential-source:
-    description: host reads database credentials from /opt/stacks/projects/<repository-name>/db.env. github is a compatibility mode for caller-provided credentials.
-    required: false
-    default: host
   env-files-json:
     description: Optional JSON array of additional repository-relative Docker env files. Canonical project host deploy.env is discovered automatically.
     required: false
@@ -131,8 +127,6 @@ runs:
       uses: $/.github/actions/cd/resolve-db-credentials
       with:
         project: ${{ steps.identity.outputs.project }}
-        service: ${{ inputs.service-name }}
-        credential-source: ${{ inputs.db-credential-source }}
         migration-engine: none
         env-names-json: ${{ steps.requested_env.outputs.env_names_json }}
 
