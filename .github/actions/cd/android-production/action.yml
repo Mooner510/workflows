@@ -152,7 +152,7 @@ runs:
         fi
 
     - name: Build and sign Android release
-      uses: $/.github/actions/cd/android/release
+      uses: Mooner510/workflows/.github/actions/cd/android/release@v1
       with:
         production-branch: ${{ steps.contract.outputs.branch }}
         working-directory: ${{ inputs.working-directory }}

@@ -36,7 +36,7 @@ runs:
   using: composite
   steps:
     - name: Validate production release
-      uses: $/.github/actions/cd/guard
+      uses: Mooner510/workflows/.github/actions/cd/guard@v1
       with:
         production-branch: ${{ inputs.production-branch }}
 
@@ -47,7 +47,7 @@ runs:
         java-version: ${{ inputs.java-version }}
 
     - name: Prepare Android SDK
-      uses: $/.github/actions/ci/java-kotlin/profiles/android
+      uses: Mooner510/workflows/.github/actions/ci/java-kotlin/profiles/android@v1
 
     - name: Prepare Gradle cache
       shell: bash

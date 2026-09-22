@@ -157,7 +157,7 @@ runs:
   using: composite
   steps:
     - name: Validate deployment source
-      uses: $/.github/actions/cd/guard
+      uses: Mooner510/workflows/.github/actions/cd/guard@v1
       with:
         environment: ${{ inputs.environment }}
         production-branch: ${{ inputs.production-branch }}
@@ -165,7 +165,7 @@ runs:
 
     - name: Resolve repository deployment identity
       id: identity
-      uses: $/.github/actions/cd/identity
+      uses: Mooner510/workflows/.github/actions/cd/identity@v1
       with:
         environment: ${{ inputs.environment }}
         service: ${{ inputs.service-name }}
@@ -207,7 +207,7 @@ runs:
 
     - name: Resolve database credentials
       id: credentials
-      uses: $/.github/actions/cd/resolve-db-credentials
+      uses: Mooner510/workflows/.github/actions/cd/resolve-db-credentials@v1
       with:
         environment: ${{ inputs.environment }}
         project: ${{ steps.identity.outputs.project }}
@@ -216,7 +216,7 @@ runs:
 
     - name: Resolve runtime environment files
       id: runtime_env
-      uses: $/.github/actions/cd/resolve-runtime-env-files
+      uses: Mooner510/workflows/.github/actions/cd/resolve-runtime-env-files@v1
       with:
         environment: ${{ inputs.environment }}
         project: ${{ steps.identity.outputs.project }}
@@ -225,7 +225,7 @@ runs:
 
     - name: Resolve service CORS metadata
       id: service_metadata
-      uses: $/.github/actions/cd/resolve-cors-metadata
+      uses: Mooner510/workflows/.github/actions/cd/resolve-cors-metadata@v1
       with:
         environment: ${{ inputs.environment }}
         project: ${{ steps.identity.outputs.project }}
@@ -379,7 +379,7 @@ runs:
 
     - name: Read previous known-good deployment
       id: previous
-      uses: $/.github/actions/cd/state
+      uses: Mooner510/workflows/.github/actions/cd/state@v1
       with:
         environment: ${{ inputs.environment }}
         operation: read
@@ -389,7 +389,7 @@ runs:
 
     - name: Build deployment image
       id: build
-      uses: $/.github/actions/cd/docker/build
+      uses: Mooner510/workflows/.github/actions/cd/docker/build@v1
       with:
         working-directory: ${{ inputs.working-directory }}
         dockerfile: ${{ inputs.dockerfile }}
@@ -400,7 +400,7 @@ runs:
 
     - name: Apply Goose migrations
       if: inputs.migration-engine == 'goose'
-      uses: $/.github/actions/cd/migration/goose
+      uses: Mooner510/workflows/.github/actions/cd/migration/goose@v1
       with:
         working-directory: ${{ steps.contract.outputs.migration_working_directory }}
         migrations-path: ${{ steps.contract.outputs.migration_path }}
@@ -410,14 +410,14 @@ runs:
 
     - name: Apply Go command migrations
       if: inputs.migration-engine == 'go-command'
-      uses: $/.github/actions/cd/migration/go-command
+      uses: Mooner510/workflows/.github/actions/cd/migration/go-command@v1
       with:
         working-directory: ${{ steps.contract.outputs.migration_working_directory }}
         package: ${{ inputs.migration-package }}
 
     - name: Apply Prisma migrations
       if: inputs.migration-engine == 'prisma'
-      uses: $/.github/actions/cd/migration/prisma
+      uses: Mooner510/workflows/.github/actions/cd/migration/prisma@v1
       with:
         working-directory: ${{ steps.contract.outputs.migration_working_directory }}
         schema: ${{ steps.contract.outputs.migration_path }}
@@ -426,7 +426,7 @@ runs:
 
     - name: Apply Drizzle migrations
       if: inputs.migration-engine == 'drizzle'
-      uses: $/.github/actions/cd/migration/drizzle
+      uses: Mooner510/workflows/.github/actions/cd/migration/drizzle@v1
       with:
         working-directory: ${{ steps.contract.outputs.migration_working_directory }}
         migrations-path: ${{ steps.contract.outputs.migration_path }}
@@ -436,7 +436,7 @@ runs:
 
     - name: Apply Flyway migrations
       if: inputs.migration-engine == 'flyway'
-      uses: $/.github/actions/cd/migration/flyway
+      uses: Mooner510/workflows/.github/actions/cd/migration/flyway@v1
       with:
         working-directory: ${{ steps.contract.outputs.migration_working_directory }}
         migrations-path: ${{ steps.contract.outputs.migration_path }}
@@ -445,7 +445,7 @@ runs:
 
     - name: Deploy Docker service
       id: deploy
-      uses: $/.github/actions/cd/docker/deploy
+      uses: Mooner510/workflows/.github/actions/cd/docker/deploy@v1
       with:
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
@@ -491,13 +491,13 @@ runs:
         fi
 
     - name: Verify new service
-      uses: $/.github/actions/cd/docker/health
+      uses: Mooner510/workflows/.github/actions/cd/docker/health@v1
       with:
         url: http://127.0.0.1:${{ steps.deploy.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
     - name: Record successful deployment
-      uses: $/.github/actions/cd/state
+      uses: Mooner510/workflows/.github/actions/cd/state@v1
       with:
         environment: ${{ inputs.environment }}
         operation: record
@@ -512,7 +512,7 @@ runs:
     - name: Roll back previous known-good image after deployment failure
       id: rollback
       if: failure() && steps.deploy.outcome == 'success' && steps.rollback_source.outputs.exists == 'true'
-      uses: $/.github/actions/cd/docker/deploy
+      uses: Mooner510/workflows/.github/actions/cd/docker/deploy@v1
       with:
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
@@ -534,14 +534,14 @@ runs:
     - name: Verify rollback
       id: rollback_health
       if: failure() && steps.rollback.outcome == 'success'
-      uses: $/.github/actions/cd/docker/health
+      uses: Mooner510/workflows/.github/actions/cd/docker/health@v1
       with:
         url: http://127.0.0.1:${{ steps.rollback.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
     - name: Record successful rollback
       if: failure() && steps.rollback_health.outcome == 'success'
-      uses: $/.github/actions/cd/state
+      uses: Mooner510/workflows/.github/actions/cd/state@v1
       with:
         environment: ${{ inputs.environment }}
         operation: record

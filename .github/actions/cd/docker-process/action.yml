@@ -91,7 +91,7 @@ runs:
         fi
 
     - name: Validate process deployment source
-      uses: $/.github/actions/cd/guard
+      uses: Mooner510/workflows/.github/actions/cd/guard@v1
       with:
         environment: ${{ inputs.environment }}
         production-branch: ${{ inputs.production-branch }}
@@ -99,7 +99,7 @@ runs:
 
     - name: Resolve deployment identity
       id: identity
-      uses: $/.github/actions/cd/identity
+      uses: Mooner510/workflows/.github/actions/cd/identity@v1
       with:
         environment: ${{ inputs.environment }}
         service: ${{ inputs.service-name }}
@@ -127,7 +127,7 @@ runs:
 
     - name: Resolve database credentials
       id: credentials
-      uses: $/.github/actions/cd/resolve-db-credentials
+      uses: Mooner510/workflows/.github/actions/cd/resolve-db-credentials@v1
       with:
         environment: ${{ inputs.environment }}
         project: ${{ steps.identity.outputs.project }}
@@ -136,7 +136,7 @@ runs:
 
     - name: Resolve process runtime config
       id: runtime
-      uses: $/.github/actions/cd/resolve-runtime-env-files
+      uses: Mooner510/workflows/.github/actions/cd/resolve-runtime-env-files@v1
       with:
         environment: ${{ inputs.environment }}
         project: ${{ steps.identity.outputs.project }}
@@ -144,7 +144,7 @@ runs:
 
     - name: Resolve process CORS metadata
       id: service_metadata
-      uses: $/.github/actions/cd/resolve-cors-metadata
+      uses: Mooner510/workflows/.github/actions/cd/resolve-cors-metadata@v1
       with:
         environment: ${{ inputs.environment }}
         project: ${{ steps.identity.outputs.project }}
@@ -171,7 +171,7 @@ runs:
 
     - name: Read current process deployment
       id: current
-      uses: $/.github/actions/cd/state
+      uses: Mooner510/workflows/.github/actions/cd/state@v1
       with:
         environment: ${{ inputs.environment }}
         operation: read
@@ -181,7 +181,7 @@ runs:
     - name: Read process rollback target
       id: previous
       if: inputs.operation == 'rollback'
-      uses: $/.github/actions/cd/state
+      uses: Mooner510/workflows/.github/actions/cd/state@v1
       with:
         environment: ${{ inputs.environment }}
         operation: previous
@@ -191,7 +191,7 @@ runs:
     - name: Build process image
       id: build
       if: inputs.operation == 'deploy'
-      uses: $/.github/actions/cd/docker/build
+      uses: Mooner510/workflows/.github/actions/cd/docker/build@v1
       with:
         working-directory: ${{ inputs.working-directory }}
         dockerfile: ${{ inputs.dockerfile }}
@@ -307,7 +307,7 @@ runs:
 
     - name: Record process deployment
       if: inputs.operation == 'deploy'
-      uses: $/.github/actions/cd/state
+      uses: Mooner510/workflows/.github/actions/cd/state@v1
       with:
         environment: ${{ inputs.environment }}
         operation: record
@@ -320,7 +320,7 @@ runs:
 
     - name: Record process rollback
       if: inputs.operation == 'rollback'
-      uses: $/.github/actions/cd/state
+      uses: Mooner510/workflows/.github/actions/cd/state@v1
       with:
         environment: ${{ inputs.environment }}
         operation: record

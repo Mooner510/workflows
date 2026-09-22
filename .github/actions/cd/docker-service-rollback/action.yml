@@ -75,14 +75,14 @@ runs:
   using: composite
   steps:
     - name: Validate production rollback
-      uses: $/.github/actions/cd/guard
+      uses: Mooner510/workflows/.github/actions/cd/guard@v1
       with:
         environment: prod
         production-branch: ${{ inputs.production-branch }}
 
     - name: Resolve repository deployment identity
       id: identity
-      uses: $/.github/actions/cd/identity
+      uses: Mooner510/workflows/.github/actions/cd/identity@v1
 
     - name: Validate project-owned runtime prerequisites
       shell: bash
@@ -120,7 +120,7 @@ runs:
 
     - name: Resolve database credentials
       id: credentials
-      uses: $/.github/actions/cd/resolve-db-credentials
+      uses: Mooner510/workflows/.github/actions/cd/resolve-db-credentials@v1
       with:
         project: ${{ steps.identity.outputs.project }}
         migration-engine: none
@@ -128,7 +128,7 @@ runs:
 
     - name: Resolve runtime environment files
       id: runtime_env
-      uses: $/.github/actions/cd/resolve-runtime-env-files
+      uses: Mooner510/workflows/.github/actions/cd/resolve-runtime-env-files@v1
       with:
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
@@ -136,7 +136,7 @@ runs:
 
     - name: Resolve service CORS metadata
       id: service_metadata
-      uses: $/.github/actions/cd/resolve-cors-metadata
+      uses: Mooner510/workflows/.github/actions/cd/resolve-cors-metadata@v1
       with:
         environment: prod
         project: ${{ steps.identity.outputs.project }}
@@ -202,7 +202,7 @@ runs:
 
     - name: Read current known-good deployment
       id: current
-      uses: $/.github/actions/cd/state
+      uses: Mooner510/workflows/.github/actions/cd/state@v1
       with:
         operation: read
         project: ${{ steps.identity.outputs.project }}
@@ -211,7 +211,7 @@ runs:
 
     - name: Read previous known-good deployment
       id: target
-      uses: $/.github/actions/cd/state
+      uses: Mooner510/workflows/.github/actions/cd/state@v1
       with:
         operation: previous
         project: ${{ steps.identity.outputs.project }}
@@ -232,7 +232,7 @@ runs:
 
     - name: Deploy previous known-good image
       id: rollback
-      uses: $/.github/actions/cd/docker/deploy
+      uses: Mooner510/workflows/.github/actions/cd/docker/deploy@v1
       with:
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
@@ -253,14 +253,14 @@ runs:
 
     - name: Verify rolled back service
       id: rollback_health
-      uses: $/.github/actions/cd/docker/health
+      uses: Mooner510/workflows/.github/actions/cd/docker/health@v1
       with:
         url: http://127.0.0.1:${{ steps.rollback.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
     - name: Record successful manual rollback
       id: record
-      uses: $/.github/actions/cd/state
+      uses: Mooner510/workflows/.github/actions/cd/state@v1
       with:
         operation: record
         project: ${{ steps.identity.outputs.project }}
@@ -274,7 +274,7 @@ runs:
     - name: Restore original deployment after rollback failure
       id: restore
       if: failure() && steps.rollback.outcome == 'success' && steps.current.outputs.exists == 'true'
-      uses: $/.github/actions/cd/docker/deploy
+      uses: Mooner510/workflows/.github/actions/cd/docker/deploy@v1
       with:
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
@@ -296,14 +296,14 @@ runs:
     - name: Verify restored original deployment
       id: restore_health
       if: failure() && steps.restore.outcome == 'success'
-      uses: $/.github/actions/cd/docker/health
+      uses: Mooner510/workflows/.github/actions/cd/docker/health@v1
       with:
         url: http://127.0.0.1:${{ steps.restore.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
     - name: Restore original deployment state
       if: failure() && steps.restore_health.outcome == 'success'
-      uses: $/.github/actions/cd/state
+      uses: Mooner510/workflows/.github/actions/cd/state@v1
       with:
         operation: record
         project: ${{ steps.identity.outputs.project }}

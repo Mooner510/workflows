@@ -153,7 +153,7 @@ runs:
 
     - name: Deploy HTTP service
       if: steps.contract.outputs.operation == 'deploy'
-      uses: $/.github/actions/cd/docker-service
+      uses: Mooner510/workflows/.github/actions/cd/docker-service@v1
       with:
         environment: prod
         production-branch: ${{ steps.contract.outputs.production_branch }}
@@ -184,7 +184,7 @@ runs:
 
     - name: Roll back HTTP service
       if: steps.contract.outputs.operation == 'rollback'
-      uses: $/.github/actions/cd/docker-service-rollback
+      uses: Mooner510/workflows/.github/actions/cd/docker-service-rollback@v1
       with:
         production-branch: ${{ steps.contract.outputs.production_branch }}
         service-name: ${{ inputs.service-name }}

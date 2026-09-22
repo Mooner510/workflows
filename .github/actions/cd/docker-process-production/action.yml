@@ -99,7 +99,7 @@ runs:
         ref: ${{ steps.contract.outputs.branch }}
 
     - name: Deploy production process
-      uses: $/.github/actions/cd/docker-process
+      uses: Mooner510/workflows/.github/actions/cd/docker-process@v1
       with:
         environment: prod
         operation: ${{ steps.contract.outputs.operation }}

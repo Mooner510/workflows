@@ -87,13 +87,13 @@ runs:
 
     - name: Check development deployment flag
       id: development_gate
-      uses: $/.github/actions/cd/development-enabled
+      uses: Mooner510/workflows/.github/actions/cd/development-enabled@v1
       with:
         service: ${{ inputs.service-name }}
 
     - name: Deploy development process
       if: steps.development_gate.outputs.enabled == 'true'
-      uses: $/.github/actions/cd/docker-process
+      uses: Mooner510/workflows/.github/actions/cd/docker-process@v1
       with:
         environment: dev
         operation: deploy

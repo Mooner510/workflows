@@ -48,30 +48,30 @@ runs:
 
     - name: Goose migration CI
       if: steps.migration.outputs.has_goose == 'true'
-      uses: $/.github/actions/ci/migration/goose
+      uses: Mooner510/workflows/.github/actions/ci/migration/goose@v1
       with:
         components: ${{ steps.migration.outputs.goose }}
 
     - name: Go command migration CI
       if: steps.migration.outputs.has_go_command == 'true'
-      uses: $/.github/actions/ci/migration/go-command
+      uses: Mooner510/workflows/.github/actions/ci/migration/go-command@v1
       with:
         components: ${{ steps.migration.outputs.go_command }}
 
     - name: Prisma migration CI
       if: steps.migration.outputs.has_prisma == 'true'
-      uses: $/.github/actions/ci/migration/prisma
+      uses: Mooner510/workflows/.github/actions/ci/migration/prisma@v1
       with:
         components: ${{ steps.migration.outputs.prisma }}
 
     - name: Drizzle migration CI
       if: steps.migration.outputs.has_drizzle == 'true'
-      uses: $/.github/actions/ci/migration/drizzle
+      uses: Mooner510/workflows/.github/actions/ci/migration/drizzle@v1
       with:
         components: ${{ steps.migration.outputs.drizzle }}
 
     - name: Flyway migration CI
       if: steps.migration.outputs.has_flyway == 'true'
-      uses: $/.github/actions/ci/migration/flyway
+      uses: Mooner510/workflows/.github/actions/ci/migration/flyway@v1
       with:
         components: ${{ steps.migration.outputs.flyway }}

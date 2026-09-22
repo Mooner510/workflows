@@ -45,25 +45,25 @@ runs:
 
     - name: Prepare Android profile
       if: inputs.profile == 'android'
-      uses: $/.github/actions/ci/java-kotlin/profiles/android
+      uses: Mooner510/workflows/.github/actions/ci/java-kotlin/profiles/android@v1
 
     - name: Validate Spring Boot profile
       if: inputs.profile == 'spring-boot'
-      uses: $/.github/actions/ci/java-kotlin/profiles/spring-boot
+      uses: Mooner510/workflows/.github/actions/ci/java-kotlin/profiles/spring-boot@v1
       with:
         components: ${{ inputs.components }}
         build-tool: ${{ inputs.build-tool }}
 
     - name: Run Gradle CI
       if: inputs.build-tool == 'gradle'
-      uses: $/.github/actions/ci/java-kotlin/build-tools/gradle
+      uses: Mooner510/workflows/.github/actions/ci/java-kotlin/build-tools/gradle@v1
       with:
         components: ${{ inputs.components }}
         profile: ${{ inputs.profile }}
 
     - name: Run Maven CI
       if: inputs.build-tool == 'maven'
-      uses: $/.github/actions/ci/java-kotlin/build-tools/maven
+      uses: Mooner510/workflows/.github/actions/ci/java-kotlin/build-tools/maven@v1
       with:
         components: ${{ inputs.components }}
         profile: ${{ inputs.profile }}
