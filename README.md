@@ -363,7 +363,7 @@ dev:
 
 Derived development address preserves scheme and explicit port. Production address가 없으면 development도 자동 생성하지 않습니다.
 
-Effective address가 없으면 Docker deployment와 health check는 정상 진행하고 Caddy registration만 warning과 함께 skip합니다. 기존 Caddy configuration을 자동 제거하지 않습니다. `project addr ... set/rm`이 실행 중 managed HTTP service의 generated Caddy route를 즉시 갱신/제거합니다.
+Effective address가 없으면 Docker deployment와 health check는 정상 진행하고 중앙 CD가 해당 service의 기존 generated Caddy route를 제거합니다. 따라서 과거 addr 설정을 제거한 뒤 redeploy/rollback해도 stale route가 남지 않습니다. `project addr ... set/rm`은 실행 중 managed HTTP service의 generated Caddy route를 즉시 갱신/제거합니다.
 
 CORS는 environment 간 자동 상속이나 derivation을 하지 않습니다.
 
