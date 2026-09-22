@@ -72,15 +72,19 @@ jobs:
           go-version: stable
           cache: false
 
-      - name: Apply gofmt
+      - name: Apply gofmt and go mod tidy
         id: format
         shell: bash
         env:
           FORMAT_PATH: ${{ inputs.path }}
           TARGET_BRANCH: ${{ github.ref_name }}
+          CI_PRIVATE_REPO_TOKEN: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
+          GOPRIVATE: ${{ inputs.go_private_patterns }}
+          GONOSUMDB: ${{ inputs.go_private_patterns }}
         run: |
           set -euo pipefail
 
+          command -v go >/dev/null || { echo "::error::go is required."; exit 1; }
           command -v gofmt >/dev/null || { echo "::error::gofmt is required."; exit 1; }
           command -v realpath >/dev/null || { echo "::error::realpath is required on the self-hosted runner."; exit 1; }
 
@@ -123,9 +127,10 @@ jobs:
           if (( ${#go_files[@]} == 0 )); then
             echo "changed=false" >>"$GITHUB_OUTPUT"
             echo "changed_count=0" >>"$GITHUB_OUTPUT"
+            echo "modules_tidied=0" >>"$GITHUB_OUTPUT"
             echo "No Go files found under $display_path."
             {
-              echo "### Go Format"
+              echo "### Go Format & Tidy"
               echo
               echo "- Branch: `$TARGET_BRANCH`"
               echo "- Path: `$display_path`"
@@ -134,71 +139,8 @@ jobs:
             exit 0
           fi
 
-          printf '%s\0' "${go_files[@]}" | xargs -0 -r -n 100 gofmt -w
-          git add -A -- "$target_relative"
-
-          if git diff --cached --quiet; then
-            echo "changed=false" >>"$GITHUB_OUTPUT"
-            echo "changed_count=0" >>"$GITHUB_OUTPUT"
-            echo "All Go files under $display_path are already formatted."
-            {
-              echo "### Go Format"
-              echo
-              echo "- Branch: `$TARGET_BRANCH`"
-              echo "- Path: `$display_path`"
-              echo "- Files scanned: `${#go_files[@]}`"
-              echo "- Result: no changes"
-            } >>"$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          changed_count="$(git diff --cached --name-only | wc -l | tr -d ' ')"
-          echo "changed=true" >>"$GITHUB_OUTPUT"
-          echo "changed_count=$changed_count" >>"$GITHUB_OUTPUT"
-
-      - name: Commit and push formatting
-        id: push
-        if: steps.format.outputs.changed == 'true'
-        shell: bash
-        env:
-          TARGET_BRANCH: ${{ github.ref_name }}
-          COMMITTER_NAME: ${{ github.actor }}
-          COMMITTER_EMAIL: ${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com
-        run: |
-          set -euo pipefail
-
-          git config user.name "$COMMITTER_NAME"
-          git config user.email "$COMMITTER_EMAIL"
-          git commit -m "style: apply gofmt"
-          commit_sha="$(git rev-parse HEAD)"
-
-          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
-
-          echo "commit_sha=$commit_sha" >>"$GITHUB_OUTPUT"
-          echo "Pushed formatted commit $commit_sha to $TARGET_BRANCH."
-
-      - name: Prepare pushed Go CI
-        id: go-ci
-        if: steps.format.outputs.changed == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
-
-          workspace="$(realpath -e "$GITHUB_WORKSPACE")"
-          pushed_sha="${{ steps.push.outputs.commit_sha }}"
-          [[ "$(git rev-parse HEAD)" == "$pushed_sha" ]] || {
-            echo "::error::Workspace HEAD does not match the pushed formatting commit."
-            exit 1
-          }
-
           declare -A modules=()
-
-          while IFS= read -r changed; do
-            [[ "$changed" == *.go ]] || continue
-
-            file="$workspace/$changed"
+          for file in "${go_files[@]}"; do
             cursor="$(dirname "$file")"
             module=""
 
@@ -212,14 +154,152 @@ jobs:
             done
 
             if [[ -z "$module" ]]; then
-              echo "::error::No go.mod found for formatted file '$changed'."
+              relative_file="$(realpath --relative-to="$workspace" "$file")"
+              echo "::error::No go.mod found for Go file '$relative_file'."
               exit 1
             fi
             modules["$module"]=1
-          done < <(git diff-tree --no-commit-id --name-only -r "$pushed_sha")
+          done
+
+          mapfile -t module_list < <(printf '%s\n' "${!modules[@]}" | sort)
+          echo "modules_tidied=${#module_list[@]}" >>"$GITHUB_OUTPUT"
+
+          git_config="$RUNNER_TEMP/workflows-go-format-gitconfig"
+          : >"$git_config"
+          chmod 600 "$git_config"
+          export GIT_CONFIG_GLOBAL="$git_config"
+          trap 'rm -f "$git_config"' EXIT
+
+          if [[ -n "${CI_PRIVATE_REPO_TOKEN:-}" ]]; then
+            echo "::add-mask::$CI_PRIVATE_REPO_TOKEN"
+            git config --global url."https://x-access-token:${CI_PRIVATE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+
+          printf '%s\0' "${go_files[@]}" | xargs -0 -r -n 100 gofmt -w
+
+          for module in "${module_list[@]}"; do
+            module_relative="$(realpath --relative-to="$workspace" "$module")"
+            echo "==> go mod tidy: $module_relative"
+            (
+              cd "$module"
+              go mod tidy
+            )
+          done
+
+          git -C "$workspace" add -A -- "$target_relative"
+
+          for module in "${module_list[@]}"; do
+            module_relative="$(realpath --relative-to="$workspace" "$module")"
+            if [[ "$module_relative" == "." ]]; then
+              go_mod_relative="go.mod"
+              go_sum_relative="go.sum"
+            else
+              go_mod_relative="$module_relative/go.mod"
+              go_sum_relative="$module_relative/go.sum"
+            fi
+
+            git -C "$workspace" add -A -- "$go_mod_relative"
+            if [[ -e "$workspace/$go_sum_relative" ]] || git -C "$workspace" ls-files --error-unmatch -- "$go_sum_relative" >/dev/null 2>&1; then
+              git -C "$workspace" add -A -- "$go_sum_relative"
+            fi
+          done
+
+          if git -C "$workspace" diff --cached --quiet; then
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+            echo "changed_count=0" >>"$GITHUB_OUTPUT"
+            echo "All Go files under $display_path are formatted and all discovered modules are tidy."
+            {
+              echo "### Go Format & Tidy"
+              echo
+              echo "- Branch: `$TARGET_BRANCH`"
+              echo "- Path: `$display_path`"
+              echo "- Files scanned: `${#go_files[@]}`"
+              echo "- Modules tidied: `${#module_list[@]}`"
+              echo "- Result: no changes"
+            } >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          changed_count="$(git -C "$workspace" diff --cached --name-only | wc -l | tr -d ' ')"
+          echo "changed=true" >>"$GITHUB_OUTPUT"
+          echo "changed_count=$changed_count" >>"$GITHUB_OUTPUT"
+
+      - name: Commit and push Go maintenance
+        id: push
+        if: steps.format.outputs.changed == 'true'
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ github.ref_name }}
+          COMMITTER_NAME: ${{ github.actor }}
+          COMMITTER_EMAIL: ${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com
+        run: |
+          set -euo pipefail
+
+          git config user.name "$COMMITTER_NAME"
+          git config user.email "$COMMITTER_EMAIL"
+          git commit -m "style: format and tidy Go"
+          commit_sha="$(git rev-parse HEAD)"
+
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+
+          echo "commit_sha=$commit_sha" >>"$GITHUB_OUTPUT"
+          echo "Pushed Go maintenance commit $commit_sha to $TARGET_BRANCH."
+
+      - name: Prepare pushed Go CI
+        id: go-ci
+        if: steps.format.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+
+          workspace="$(realpath -e "$GITHUB_WORKSPACE")"
+          pushed_sha="${{ steps.push.outputs.commit_sha }}"
+          [[ "$(git rev-parse HEAD)" == "$pushed_sha" ]] || {
+            echo "::error::Workspace HEAD does not match the pushed Go maintenance commit."
+            exit 1
+          }
+
+          declare -A modules=()
+
+          while IFS= read -r -d '' changed; do
+            module=""
+
+            case "$changed" in
+              *.go)
+                file="$workspace/$changed"
+                cursor="$(dirname "$file")"
+
+                while :; do
+                  if [[ -f "$cursor/go.mod" ]]; then
+                    module="$cursor"
+                    break
+                  fi
+                  [[ "$cursor" == "$workspace" ]] && break
+                  cursor="$(dirname "$cursor")"
+                done
+                ;;
+              go.mod|*/go.mod|go.sum|*/go.sum)
+                cursor="$workspace/$(dirname "$changed")"
+                if [[ -f "$cursor/go.mod" ]]; then
+                  module="$(realpath -e "$cursor")"
+                fi
+                ;;
+              *)
+                continue
+                ;;
+            esac
+
+            if [[ -z "$module" ]]; then
+              echo "::error::No go.mod found for changed Go file or module metadata '$changed'."
+              exit 1
+            fi
+            modules["$module"]=1
+          done < <(git diff-tree --no-commit-id --name-only -r -z "$pushed_sha")
 
           if (( ${#modules[@]} == 0 )); then
-            echo "::error::The pushed formatting commit contains no resolvable Go module."
+            echo "::error::The pushed Go maintenance commit contains no resolvable Go module."
             exit 1
           fi
 
@@ -243,13 +323,16 @@ jobs:
             if [[ -z "$common_version" ]]; then
               common_version="$version"
             elif [[ "$common_version" != "$version" ]]; then
-              echo "::error::The formatted commit spans Go modules with different Go versions ($common_version and $version). Run Go Format separately for each module path."
+              echo "::error::The pushed commit spans Go modules with different Go versions ($common_version and $version). Run Go Format separately for each module path."
               exit 1
             fi
 
             relative="$(realpath --relative-to="$workspace" "$module")"
             index=$((index + 1))
-            components="$(jq -c               --arg name "formatted-module-$index"               --arg path "$relative"               '. + [{name: $name, path: $path}]' <<<"$components")"
+            components="$(jq -c \
+              --arg name "formatted-module-$index" \
+              --arg path "$relative" \
+              '. + [{name: $name, path: $path}]' <<<"$components")"
           done < <(printf '%s\n' "${!modules[@]}" | sort)
 
           echo "components=$components" >>"$GITHUB_OUTPUT"
@@ -276,12 +359,13 @@ jobs:
           COMMITTER_NAME: ${{ github.actor }}
         run: |
           {
-            echo "### Go Format"
+            echo "### Go Format & Tidy"
             echo
             echo "- Branch: `$TARGET_BRANCH`"
             echo "- Path: `$DISPLAY_PATH`"
             echo "- Files scanned: `$FILES_SCANNED`"
             echo "- Files changed: `$CHANGED_COUNT`"
+            echo "- Modules tidied: `${{ steps.format.outputs.modules_tidied }}`"
             echo "- Commit: `$COMMIT_SHA`"
             echo "- Committer: `$COMMITTER_NAME`"
             echo "- Go CI: passed"
