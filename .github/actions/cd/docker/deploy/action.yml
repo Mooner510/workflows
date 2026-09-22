@@ -69,12 +69,6 @@ inputs:
     default: 'true'
 
 outputs:
-  previous-existed:
-    value: ${{ steps.deploy.outputs.previous_existed }}
-  previous-image:
-    value: ${{ steps.deploy.outputs.previous_image }}
-  previous-image-id:
-    value: ${{ steps.deploy.outputs.previous_image_id }}
   published-port:
     description: Docker-assigned loopback published port for the running container.
     value: ${{ steps.deploy.outputs.published_port }}

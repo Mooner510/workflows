@@ -472,31 +472,18 @@ runs:
         STATE_REVISION: ${{ steps.previous.outputs.revision }}
         STATE_IMAGE: ${{ steps.previous.outputs.image }}
         STATE_IMAGE_ID: ${{ steps.previous.outputs['image-id'] }}
-        LIVE_PREVIOUS_EXISTS: ${{ steps.deploy.outputs['previous-existed'] }}
-        LIVE_PREVIOUS_IMAGE: ${{ steps.deploy.outputs['previous-image'] }}
-        LIVE_PREVIOUS_IMAGE_ID: ${{ steps.deploy.outputs['previous-image-id'] }}
       run: |
         set -euo pipefail
         if [[ "$STATE_EXISTS" == "true" ]]; then
           {
             echo "exists=true"
-            echo "persistent=true"
             echo "revision=$STATE_REVISION"
             echo "image=$STATE_IMAGE"
             echo "image_id=$STATE_IMAGE_ID"
           } >>"$GITHUB_OUTPUT"
-        elif [[ "$LIVE_PREVIOUS_EXISTS" == "true" && -n "$LIVE_PREVIOUS_IMAGE_ID" ]]; then
-          {
-            echo "exists=true"
-            echo "persistent=false"
-            echo "revision="
-            echo "image=$LIVE_PREVIOUS_IMAGE"
-            echo "image_id=$LIVE_PREVIOUS_IMAGE_ID"
-          } >>"$GITHUB_OUTPUT"
         else
           {
             echo "exists=false"
-            echo "persistent=false"
             echo "revision="
             echo "image="
             echo "image_id="
@@ -553,7 +540,7 @@ runs:
         attempts: ${{ inputs.health-attempts }}
 
     - name: Record successful rollback
-      if: failure() && steps.rollback_health.outcome == 'success' && steps.rollback_source.outputs.persistent == 'true'
+      if: failure() && steps.rollback_health.outcome == 'success'
       uses: $/.github/actions/cd/state
       with:
         environment: ${{ inputs.environment }}

@@ -98,7 +98,17 @@ runs:
 
         validate_record_file() {
           local file="$1"
-          jq -e 'type == "object" and (.revision | type == "string") and (.image | type == "string") and (.imageId | type == "string") and (.deployedAt | type == "string")' "$file" >/dev/null
+          jq -e             --arg project "$PROJECT"             --arg service "$SERVICE"             --arg environment "$DEPLOY_ENVIRONMENT"             '
+              type == "object"
+              and .project == $project
+              and .service == $service
+              and .environment == $environment
+              and (.revision | type == "string" and length > 0)
+              and (.image | type == "string" and length > 0)
+              and (.imageId | type == "string" and length > 0)
+              and (.deployedAt | type == "string" and length > 0)
+              and (.event | type == "string" and length > 0)
+            ' "$file" >/dev/null
         }
 
         if [[ "$OPERATION" == "read" ]]; then
@@ -123,7 +133,19 @@ runs:
             exit 0
           fi
           validate_record_file "$current" || { echo "::error::Deployment state '$current' is invalid."; exit 1; }
-          if ! jq -s -e 'all(.[]; type == "object" and (.revision | type == "string") and (.image | type == "string") and (.imageId | type == "string") and (.deployedAt | type == "string"))' "$history" >/dev/null; then
+          if ! jq -s -e             --arg project "$PROJECT"             --arg service "$SERVICE"             --arg environment "$DEPLOY_ENVIRONMENT"             '
+              all(.[];
+                type == "object"
+                and .project == $project
+                and .service == $service
+                and .environment == $environment
+                and (.revision | type == "string" and length > 0)
+                and (.image | type == "string" and length > 0)
+                and (.imageId | type == "string" and length > 0)
+                and (.deployedAt | type == "string" and length > 0)
+                and (.event | type == "string" and length > 0)
+              )
+            ' "$history" >/dev/null; then
             echo "::error::Deployment history '$history' is invalid."
             exit 1
           fi
