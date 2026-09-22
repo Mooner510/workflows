@@ -106,6 +106,26 @@ runs:
         image: ${{ inputs.image-name }}
 
     - name: Resolve database credentials
+    - name: Validate project-owned runtime prerequisites
+      shell: bash
+      env:
+        PROJECT: ${{ steps.identity.outputs.project }}
+        SERVICE: ${{ inputs.service-name }}
+        NETWORK: ${{ steps.identity.outputs.network }}
+      run: |
+        set -euo pipefail
+        service_root="/opt/stacks/projects/$PROJECT/$SERVICE"
+        [[ -d "$service_root" ]] || {
+          echo "::error::Service registry is missing: $service_root"
+          echo "::error::Register it first with: sudo project service ensure $PROJECT/$SERVICE"
+          exit 1
+        }
+        docker network inspect "$NETWORK" >/dev/null 2>&1 || {
+          echo "::error::Project network '$NETWORK' does not exist."
+          echo "::error::Create it first with the project CLI."
+          exit 1
+        }
+
       id: credentials
       uses: $/.github/actions/cd/resolve-db-credentials
       with:
