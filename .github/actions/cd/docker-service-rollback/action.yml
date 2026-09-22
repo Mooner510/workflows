@@ -277,6 +277,15 @@ runs:
         caddyfile: ${{ inputs.caddyfile }}
         sites-directory: ${{ inputs.caddy-sites-directory }}
 
+    - name: Remove stale Caddy route
+      if: steps.service_metadata.outputs.address == ''
+      uses: $/.github/actions/cd/caddy
+      with:
+        operation: remove
+        service-name: ${{ inputs.service-name }}
+        caddyfile: ${{ inputs.caddyfile }}
+        sites-directory: ${{ inputs.caddy-sites-directory }}
+
     - name: Record successful manual rollback
       id: record
       uses: $/.github/actions/cd/state
