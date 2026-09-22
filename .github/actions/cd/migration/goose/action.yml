@@ -21,10 +21,6 @@ inputs:
     description: Goose version used when no explicit version or nearest go.mod pin exists.
     required: false
     default: v3.28.0
-  go-version:
-    description: Deprecated compatibility input. Goose CD no longer requires a Go runtime.
-    required: false
-    default: stable
 
 runs:
   using: composite

@@ -13,10 +13,6 @@ inputs:
   production-branch:
     description: Branch whose history is allowed to reach production.
     required: true
-  project:
-    description: Deprecated compatibility input. Ignored; the caller repository name is always the canonical project identifier.
-    required: false
-    default: ''
   working-directory:
     description: Service root relative to the caller repository.
     required: true
@@ -133,10 +129,6 @@ inputs:
     description: Flyway build tool (gradle or maven).
     required: false
     default: gradle
-  go-version:
-    description: Deprecated compatibility input. Goose migration no longer requires a Go runtime.
-    required: false
-    default: stable
   node-version:
     description: Node.js version used by Prisma/Drizzle migration.
     required: false

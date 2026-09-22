@@ -1,5 +1,5 @@
 name: Android release
-description: Build a signed Android release artifact and optionally upload it to a published GitHub Release.
+description: Build and verify a signed Android release artifact.
 
 inputs:
   production-branch:
@@ -23,10 +23,6 @@ inputs:
   keystore-path:
     description: Absolute or repository-relative release keystore path.
     required: true
-  upload-to-release:
-    description: Upload the artifact when triggered by a stable GitHub Release.
-    required: false
-    default: 'true'
 
 outputs:
   artifact:
@@ -167,14 +163,3 @@ runs:
         } >>"$GITHUB_OUTPUT"
         echo "Release artifact: $artifact"
         echo "SHA-256: $digest"
-
-    - name: Upload artifact to GitHub Release
-      if: inputs.upload-to-release == 'true' && github.event_name == 'release'
-      shell: bash
-      env:
-        ARTIFACT: ${{ steps.artifact.outputs.path }}
-      run: |
-        set -euo pipefail
-        command -v gh >/dev/null || { echo "::error::gh CLI is required to upload Android release artifacts."; exit 1; }
-        [[ -n "${GH_TOKEN:-}" ]] || { echo "::error::GH_TOKEN is required to upload Android release artifacts."; exit 1; }
-        gh release upload "$GITHUB_REF_NAME" "$ARTIFACT" --clobber

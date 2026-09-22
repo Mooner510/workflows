@@ -5,10 +5,6 @@ inputs:
   production-branch:
     description: Branch whose history is allowed to reach production.
     required: true
-  project:
-    description: Deprecated compatibility input. Ignored; the caller repository name is always the canonical project identifier.
-    required: false
-    default: ''
   service-name:
     description: Stable logical Docker service name.
     required: true

@@ -115,7 +115,7 @@ jobs:
 
             [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid component name '$name'."; exit 1; }
             case "$type" in
-              go|node|java-kotlin|android) ;;
+              go|node|java-kotlin) ;;
               *) echo "::error::Component '$name' has unsupported type '$type'."; exit 1 ;;
             esac
 
@@ -466,10 +466,6 @@ jobs:
                   exit 1
                 fi
                 component="$(jq -c --arg manager "$detected_manager" '.package_manager = $manager' <<<"$component")"
-                ;;
-              android)
-                [[ -f "$component_path/gradlew" ]] || { echo "::error::Legacy android component '$name' must contain gradlew."; exit 1; }
-                component="$(jq -c '.type = "java-kotlin" | .build_tool = "gradle" | .profile = "android"' <<<"$component")"
                 ;;
               java-kotlin)
                 configured_tool="$(jq -r '.build_tool // empty' <<<"$component")"
