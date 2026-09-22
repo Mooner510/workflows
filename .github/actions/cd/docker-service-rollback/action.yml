@@ -15,10 +15,6 @@ inputs:
   container-port:
     description: Internal application port.
     required: true
-  domain:
-    description: Deprecated compatibility input. Ignored; routing is owned by the project CLI.
-    required: false
-    default: ''
   db-credential-source:
     description: host reads database credentials from /opt/stacks/projects/<repository-name>/db.env. github is a compatibility mode for caller-provided credentials.
     required: false
@@ -75,14 +71,6 @@ inputs:
     description: Persistent deployment state root.
     required: false
     default: /var/lib/stacks
-  caddyfile:
-    description: Deprecated compatibility input. Ignored; workflows never write Caddy configuration.
-    required: false
-    default: /opt/stacks/shared/caddy/Caddyfile
-  caddy-sites-directory:
-    description: Deprecated compatibility input. Ignored; workflows never write Caddy configuration.
-    required: false
-    default: /opt/stacks/shared/caddy/sites
 
 outputs:
   revision:
