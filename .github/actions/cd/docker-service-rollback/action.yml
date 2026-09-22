@@ -10,13 +10,13 @@ inputs:
     required: false
     default: ''
   service-name:
-    description: Stable Docker container, state, and Caddy site name.
+    description: Stable logical Docker service name.
     required: true
   container-port:
     description: Internal application port.
     required: true
   domain:
-    description: Deprecated compatibility input. Automatic Caddy routing is resolved only from addr.env.
+    description: Deprecated compatibility input. Ignored; routing is owned by the project CLI.
     required: false
     default: ''
   db-credential-source:
@@ -76,11 +76,11 @@ inputs:
     required: false
     default: /var/lib/stacks
   caddyfile:
-    description: Main Caddyfile importing generated sites.
+    description: Deprecated compatibility input. Ignored; workflows never write Caddy configuration.
     required: false
     default: /opt/stacks/shared/caddy/Caddyfile
   caddy-sites-directory:
-    description: Directory imported by the main Caddyfile.
+    description: Deprecated compatibility input. Ignored; workflows never write Caddy configuration.
     required: false
     default: /opt/stacks/shared/caddy/sites
 
@@ -142,13 +142,14 @@ runs:
         service: ${{ inputs.service-name }}
         env-files-json: ${{ inputs.env-files-json }}
 
-    - name: Resolve service address and CORS metadata
+    - name: Resolve service CORS metadata
       id: service_metadata
       uses: $/.github/actions/cd/resolve-service-metadata
       with:
         environment: prod
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
+        routing: 'false'
 
     - name: Resolve rollback contract
       id: contract
@@ -266,25 +267,15 @@ runs:
         url: http://127.0.0.1:${{ steps.rollback.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
-    - name: Register Caddy route
-      id: caddy
-      if: steps.service_metadata.outputs.address != ''
-      uses: $/.github/actions/cd/caddy
-      with:
-        service-name: ${{ inputs.service-name }}
-        domain: ${{ steps.service_metadata.outputs.address }}
-        upstream: ${{ inputs.service-name }}:${{ inputs.container-port }}
-        caddyfile: ${{ inputs.caddyfile }}
-        sites-directory: ${{ inputs.caddy-sites-directory }}
-
-    - name: Remove stale Caddy route
-      if: steps.service_metadata.outputs.address == ''
-      uses: $/.github/actions/cd/caddy
-      with:
-        operation: remove
-        service-name: ${{ inputs.service-name }}
-        caddyfile: ${{ inputs.caddyfile }}
-        sites-directory: ${{ inputs.caddy-sites-directory }}
+    - name: Reconcile route through project CLI
+      id: route
+      shell: bash
+      env:
+        PROJECT: ${{ steps.identity.outputs.project }}
+        SERVICE: ${{ inputs.service-name }}
+      run: |
+        set -euo pipefail
+        sudo -n /opt/stacks/cli/bin/project-addr-sync "$PROJECT/$SERVICE" prod
 
     - name: Record successful manual rollback
       id: record
@@ -329,19 +320,19 @@ runs:
         url: http://127.0.0.1:${{ steps.restore.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
-    - name: Restore original Caddy route
-      id: restore_caddy
-      if: failure() && steps.restore_health.outcome == 'success' && steps.service_metadata.outputs.address != ''
-      uses: $/.github/actions/cd/caddy
-      with:
-        service-name: ${{ inputs.service-name }}
-        domain: ${{ steps.service_metadata.outputs.address }}
-        upstream: ${{ inputs.service-name }}:${{ inputs.container-port }}
-        caddyfile: ${{ inputs.caddyfile }}
-        sites-directory: ${{ inputs.caddy-sites-directory }}
+    - name: Reconcile restored original route
+      id: restore_route
+      if: failure() && steps.restore_health.outcome == 'success'
+      shell: bash
+      env:
+        PROJECT: ${{ steps.identity.outputs.project }}
+        SERVICE: ${{ inputs.service-name }}
+      run: |
+        set -euo pipefail
+        sudo -n /opt/stacks/cli/bin/project-addr-sync "$PROJECT/$SERVICE" prod
 
     - name: Restore original deployment state
-      if: failure() && steps.restore_health.outcome == 'success' && (steps.service_metadata.outputs.address == '' || steps.restore_caddy.outcome == 'success')
+      if: failure() && steps.restore_health.outcome == 'success' && steps.restore_route.outcome == 'success'
       uses: $/.github/actions/cd/state
       with:
         operation: record
