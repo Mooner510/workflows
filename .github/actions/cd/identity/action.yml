@@ -1,5 +1,5 @@
 name: Resolve repository deployment identity
-description: Derive canonical project, environment-specific Docker network, container service name, and image name.
+description: Derive canonical project, environment-specific Docker network, namespaced physical Docker container name, and image name.
 
 inputs:
   environment:
@@ -30,10 +30,10 @@ outputs:
     description: Resolved Docker network name.
     value: ${{ steps.identity.outputs.network }}
   service:
-    description: Environment-specific physical Docker service/container name.
+    description: Environment-specific physical Docker service/container name, namespaced by project.
     value: ${{ steps.identity.outputs.service }}
   image:
-    description: Environment-specific local Docker image repository name.
+    description: Environment-specific local Docker image repository name, namespaced by project.
     value: ${{ steps.identity.outputs.image }}
 
 runs:
@@ -74,17 +74,22 @@ runs:
           exit 1
         }
 
-        service="$SERVICE_INPUT"
-        image="$IMAGE_INPUT"
-        if [[ -n "$service" ]]; then
-          [[ "$service" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid service '$service'."; exit 1; }
-          [[ -n "$image" ]] || image="$service"
-          [[ "$image" =~ ^[A-Za-z0-9][A-Za-z0-9_./-]*$ ]] || { echo "::error::Invalid image '$image'."; exit 1; }
+        logical_service="$SERVICE_INPUT"
+        logical_image="$IMAGE_INPUT"
+        service=""
+        image=""
+        if [[ -n "$logical_service" ]]; then
+          [[ "$logical_service" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::Invalid service '$logical_service'."; exit 1; }
+          [[ -n "$logical_image" ]] || logical_image="$logical_service"
+          [[ "$logical_image" =~ ^[A-Za-z0-9][A-Za-z0-9_./-]*$ ]] || { echo "::error::Invalid image '$logical_image'."; exit 1; }
+
+          service="$project-$logical_service"
+          image="$project-$logical_image"
           if [[ "$DEPLOY_ENVIRONMENT" == "dev" ]]; then
             service="$service-dev"
             image="$image-dev"
           fi
-        elif [[ -n "$image" ]]; then
+        elif [[ -n "$logical_image" ]]; then
           echo "::error::image requires service."
           exit 1
         fi
