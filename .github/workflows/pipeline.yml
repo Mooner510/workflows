@@ -152,7 +152,7 @@ jobs:
               exit 1
             fi
 
-            if ! jq -e '(.deploy_service_watches == null) or ((.deploy_service_watches | type) == "object" and all(.deploy_service_watches | to_entries[]; (.key | test("^[a-z][a-z0-9-]{0,62}$")) and (.value | type == "array") and all(.value[]; type == "string")))' <<<"$component" >/dev/null; then
+            if ! jq -e '(.deploy_service_watches == null) or ((.deploy_service_watches | type) == "object" and (.deploy_service_watches | to_entries | all((.key | test("^[a-z][a-z0-9-]{0,62}$")) and (.value | type == "array") and (.value | all(type == "string")))))' <<<"$component" >/dev/null; then
               echo "::error::Component '$name' deploy_service_watches must map canonical service names to path arrays."
               exit 1
             fi
