@@ -1,5 +1,5 @@
 name: Docker service deployment
-description: Build, migrate, deploy, health-check, persist state, and register one API or Web Docker service with Caddy.
+description: Build, migrate, deploy, health-check, persist state, and ask the project CLI to reconcile routing for one HTTP Docker service.
 
 inputs:
   environment:
@@ -21,7 +21,7 @@ inputs:
     description: Service root relative to the caller repository.
     required: true
   service-name:
-    description: Stable Docker container, state, and Caddy site name.
+    description: Stable logical Docker service name.
     required: true
   image-name:
     description: Local Docker image repository name without a tag.
@@ -50,7 +50,7 @@ inputs:
     description: Internal application port.
     required: true
   domain:
-    description: Deprecated compatibility input. Automatic Caddy routing is resolved only from addr.env/addr.dev.env.
+    description: Deprecated compatibility input. Ignored; routing is owned by the project CLI.
     required: false
     default: ''
   db-credential-source:
@@ -162,11 +162,11 @@ inputs:
     required: false
     default: /var/lib/stacks
   caddyfile:
-    description: Main Caddyfile importing generated sites.
+    description: Deprecated compatibility input. Ignored; workflows never write Caddy configuration.
     required: false
     default: /opt/stacks/shared/caddy/Caddyfile
   caddy-sites-directory:
-    description: Directory imported by the main Caddyfile.
+    description: Deprecated compatibility input. Ignored; workflows never write Caddy configuration.
     required: false
     default: /opt/stacks/shared/caddy/sites
 
@@ -234,13 +234,14 @@ runs:
         service: ${{ inputs.service-name }}
         env-files-json: ${{ inputs.env-files-json }}
 
-    - name: Resolve service address and CORS metadata
+    - name: Resolve service CORS metadata
       id: service_metadata
       uses: $/.github/actions/cd/resolve-service-metadata
       with:
         environment: ${{ inputs.environment }}
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
+        routing: 'false'
 
     - name: Resolve deployment contract
       id: contract
@@ -520,25 +521,18 @@ runs:
         url: http://127.0.0.1:${{ steps.deploy.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
-    - name: Register Caddy route
-      id: caddy
-      if: steps.service_metadata.outputs.address != ''
-      uses: $/.github/actions/cd/caddy
-      with:
-        service-name: ${{ steps.identity.outputs.service }}
-        domain: ${{ steps.service_metadata.outputs.address }}
-        upstream: ${{ steps.identity.outputs.service }}:${{ inputs.container-port }}
-        caddyfile: ${{ inputs.caddyfile }}
-        sites-directory: ${{ inputs.caddy-sites-directory }}
-
-    - name: Remove stale Caddy route
-      if: steps.service_metadata.outputs.address == ''
-      uses: $/.github/actions/cd/caddy
-      with:
-        operation: remove
-        service-name: ${{ steps.identity.outputs.service }}
-        caddyfile: ${{ inputs.caddyfile }}
-        sites-directory: ${{ inputs.caddy-sites-directory }}
+    - name: Reconcile route through project CLI
+      id: route
+      shell: bash
+      env:
+        PROJECT: ${{ steps.identity.outputs.project }}
+        SERVICE: ${{ inputs.service-name }}
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+      run: |
+        set -euo pipefail
+        wrapper=/opt/stacks/cli/bin/project-addr-sync
+        [[ -x "$wrapper" ]] || { echo "::error::Restricted project addr sync wrapper is not installed: $wrapper"; exit 1; }
+        sudo -n "$wrapper" "$PROJECT/$SERVICE" "$DEPLOY_ENVIRONMENT"
 
     - name: Record successful deployment
       uses: $/.github/actions/cd/state
@@ -583,19 +577,20 @@ runs:
         url: http://127.0.0.1:${{ steps.rollback.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
-    - name: Restore Caddy route after rollback
-      id: rollback_caddy
-      if: failure() && steps.rollback_health.outcome == 'success' && steps.service_metadata.outputs.address != ''
-      uses: $/.github/actions/cd/caddy
-      with:
-        service-name: ${{ steps.identity.outputs.service }}
-        domain: ${{ steps.service_metadata.outputs.address }}
-        upstream: ${{ steps.identity.outputs.service }}:${{ inputs.container-port }}
-        caddyfile: ${{ inputs.caddyfile }}
-        sites-directory: ${{ inputs.caddy-sites-directory }}
+    - name: Reconcile route after rollback
+      id: rollback_route
+      if: failure() && steps.rollback_health.outcome == 'success'
+      shell: bash
+      env:
+        PROJECT: ${{ steps.identity.outputs.project }}
+        SERVICE: ${{ inputs.service-name }}
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+      run: |
+        set -euo pipefail
+        sudo -n /opt/stacks/cli/bin/project-addr-sync "$PROJECT/$SERVICE" "$DEPLOY_ENVIRONMENT"
 
     - name: Record successful rollback
-      if: failure() && steps.rollback_health.outcome == 'success' && (steps.service_metadata.outputs.address == '' || steps.rollback_caddy.outcome == 'success') && steps.rollback_source.outputs.persistent == 'true'
+      if: failure() && steps.rollback_health.outcome == 'success' && steps.rollback_route.outcome == 'success' && steps.rollback_source.outputs.persistent == 'true'
       uses: $/.github/actions/cd/state
       with:
         environment: ${{ inputs.environment }}
@@ -608,18 +603,18 @@ runs:
         event: rollback
         root: ${{ inputs.state-root }}
 
-    - name: Remove Caddy route after failed first deployment
-      if: failure() && steps.deploy.outcome == 'success' && steps.rollback_source.outputs.exists != 'true' && steps.caddy.outcome == 'success'
-      uses: $/.github/actions/cd/caddy
-      with:
-        operation: remove
-        service-name: ${{ steps.identity.outputs.service }}
-        caddyfile: ${{ inputs.caddyfile }}
-        sites-directory: ${{ inputs.caddy-sites-directory }}
-
     - name: Remove failed first deployment
       if: failure() && steps.deploy.outcome == 'success' && steps.rollback_source.outputs.exists != 'true'
       shell: bash
       env:
         SERVICE_NAME: ${{ steps.identity.outputs.service }}
       run: docker rm -f "$SERVICE_NAME" >/dev/null 2>&1 || true
+
+    - name: Remove failed first route through project CLI
+      if: failure() && steps.deploy.outcome == 'success' && steps.rollback_source.outputs.exists != 'true'
+      shell: bash
+      env:
+        PROJECT: ${{ steps.identity.outputs.project }}
+        SERVICE: ${{ inputs.service-name }}
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+      run: sudo -n /opt/stacks/cli/bin/project-addr-sync "$PROJECT/$SERVICE" "$DEPLOY_ENVIRONMENT"
