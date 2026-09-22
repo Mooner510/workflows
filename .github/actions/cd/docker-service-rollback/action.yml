@@ -164,12 +164,11 @@ runs:
 
     - name: Resolve service CORS metadata
       id: service_metadata
-      uses: $/.github/actions/cd/resolve-service-metadata
+      uses: $/.github/actions/cd/resolve-cors-metadata
       with:
         environment: prod
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
-        routing: 'false'
 
     - name: Resolve rollback contract
       id: contract
