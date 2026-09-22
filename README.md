@@ -11,6 +11,22 @@ CI components may declare a `deploy_services` array of canonical logical service
 }
 ```
 
+For one CI component that owns multiple independently deployable services, use `deploy_service_watches` to map each service to the repository paths that actually require that service to be redeployed.
+
+```json
+{
+  "name": "go-runtime",
+  "type": "go",
+  "path": ".",
+  "watch_path": false,
+  "watch": ["cmd", "internal", "go.mod", "go.sum", "Dockerfile"],
+  "deploy_service_watches": {
+    "api": ["cmd/api", "internal/api", "go.mod", "go.sum", "Dockerfile"],
+    "worker": ["cmd/worker", "internal/worker", "go.mod", "go.sum", "Dockerfile"]
+  }
+}
+```
+
 Development callers must deploy a service only when all three conditions hold: the push targets `dev`, the shared CI job succeeds, and `affected_services` contains that service. The central development action still enforces the host `.dev-disabled` gate.
 
 Shared library dependencies are expressed with component `watch` paths instead of implicitly marking every component of the same language as affected. Repository-level `go.work`/`go.work.sum` still affect Go components, and repository-root Node package-manager/workspace metadata still affects Node components.
