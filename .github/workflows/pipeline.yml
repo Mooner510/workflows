@@ -324,13 +324,6 @@ jobs:
                     affected=true
                     break
                   fi
-                  while IFS= read -r peer; do
-                    peer="${peer%/}"
-                    if [[ "$peer" == "." ]] || [[ "$changed" == "$peer" ]] || [[ "$changed" == "$peer/"* ]]; then
-                      affected=true
-                      break 2
-                    fi
-                  done < <(jq -r '.[] | select(.type == "go") | .path' <<<"$components")
                 done <"$changed_file_list"
               elif [[ "$type" == "node" ]]; then
                 while IFS= read -r changed; do
@@ -340,13 +333,6 @@ jobs:
                       break
                       ;;
                   esac
-                  while IFS= read -r peer; do
-                    peer="${peer%/}"
-                    if [[ "$peer" == "." ]] || [[ "$changed" == "$peer" ]] || [[ "$changed" == "$peer/"* ]]; then
-                      affected=true
-                      break 2
-                    fi
-                  done < <(jq -r '.[] | select(.type == "node") | .path' <<<"$components")
                 done <"$changed_file_list"
               fi
             fi
