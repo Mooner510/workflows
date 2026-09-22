@@ -105,7 +105,6 @@ runs:
         service: ${{ inputs.service-name }}
         image: ${{ inputs.image-name }}
 
-    - name: Resolve database credentials
     - name: Validate project-owned runtime prerequisites
       shell: bash
       env:
@@ -126,6 +125,7 @@ runs:
           exit 1
         }
 
+    - name: Resolve database credentials
       id: credentials
       uses: $/.github/actions/cd/resolve-db-credentials
       with:
