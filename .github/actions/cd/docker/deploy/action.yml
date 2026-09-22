@@ -208,7 +208,6 @@ runs:
           args+=("${volume_args[@]}")
           args+=("${hardening_args[@]}")
           [[ -z "$NETWORK" ]] || args+=(--network "$NETWORK")
-          args+=(--label "com.mooner510.workflows.service=$CONTAINER_NAME")
           args+=(--label "com.mooner510.stacks.managed=true")
           [[ -z "$PROJECT" ]] || args+=(--label "com.mooner510.stacks.project=$PROJECT")
           [[ -z "$LOGICAL_SERVICE" ]] || args+=(--label "com.mooner510.stacks.service=$LOGICAL_SERVICE")
