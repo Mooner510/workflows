@@ -26,7 +26,7 @@
 └─ cd/
    ├─ guard/
    ├─ development-enabled/
-   ├─ resolve-service-metadata/
+   ├─ resolve-cors-metadata/
    ├─ docker-service-production/
    ├─ docker-service-development/
    ├─ docker-process-production/
