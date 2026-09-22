@@ -58,7 +58,7 @@ inputs:
     required: false
     default: '[]'
   database:
-    description: Resolve and inject DATABASE_URL from canonical service/project db.env even when this service does not own migrations.
+    description: Resolve and inject DATABASE_URL from the canonical project db.env/db.dev.env even when this service does not own migrations.
     required: false
     default: 'false'
   env-names-json:
@@ -69,10 +69,6 @@ inputs:
     description: JSON array of Docker volume specifications.
     required: false
     default: '[]'
-  network:
-    description: Optional Docker network override. Empty uses project-<repository-name>.
-    required: false
-    default: ''
   restart-policy:
     description: Docker restart policy.
     required: false
@@ -184,7 +180,6 @@ runs:
       uses: $/.github/actions/cd/identity
       with:
         environment: ${{ inputs.environment }}
-        network: ${{ inputs.network }}
         service: ${{ inputs.service-name }}
         image: ${{ inputs.image-name }}
 
