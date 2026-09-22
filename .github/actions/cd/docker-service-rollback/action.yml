@@ -247,7 +247,7 @@ runs:
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
         environment: prod
-        container-name: ${{ inputs.service-name }}
+        container-name: ${{ steps.identity.outputs.service }}
         image: ${{ steps.target.outputs['image-id'] }}
         container-port: ${{ inputs.container-port }}
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
@@ -289,7 +289,7 @@ runs:
         project: ${{ steps.identity.outputs.project }}
         service: ${{ inputs.service-name }}
         environment: prod
-        container-name: ${{ inputs.service-name }}
+        container-name: ${{ steps.identity.outputs.service }}
         image: ${{ steps.current.outputs['image-id'] }}
         container-port: ${{ inputs.container-port }}
         env-files-json: ${{ steps.runtime_env.outputs.env-files-json }}
