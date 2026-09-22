@@ -1,3 +1,22 @@
+## Affected service contract
+
+CI components may declare a `deploy_services` array of canonical logical service names. The reusable pipeline keeps CI change detection component-scoped and exposes `affected_services` as the sorted union of deploy services attached to affected components.
+
+```json
+{
+  "name": "api",
+  "type": "go",
+  "path": "services/api",
+  "deploy_services": ["api"]
+}
+```
+
+Development callers must deploy a service only when all three conditions hold: the push targets `dev`, the shared CI job succeeds, and `affected_services` contains that service. The central development action still enforces the host `.dev-disabled` gate.
+
+Shared library dependencies are expressed with component `watch` paths instead of implicitly marking every component of the same language as affected. Repository-level `go.work`/`go.work.sum` still affect Go components, and repository-root Node package-manager/workspace metadata still affects Node components.
+
+Production service selection remains caller-owned because each repository knows its deployable services. Canonical `deploy.yml` callers expose `operation`, an `all` boolean, and one boolean per deployable logical service so manual runs and the `project deploy` CLI can select one, many, or every service.
+
 # workflows
 
 공용 self-hosted GitHub Actions CI/CD 구현입니다.
