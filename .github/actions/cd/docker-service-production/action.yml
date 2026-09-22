@@ -1,5 +1,5 @@
 name: Docker service production
-description: Canonical production entrypoint for one generic HTTP Docker service. Resolves checkout, branch, deploy/rollback, migration, runtime hardening, project-CLI routing reconciliation, and state through shared actions.
+description: Canonical production entrypoint for one generic HTTP Docker service. Resolves checkout, branch, deploy/rollback, migration, runtime hardening, runtime isolation and state through shared actions.
 
 inputs:
   production-branch:

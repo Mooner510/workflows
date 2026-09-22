@@ -268,16 +268,6 @@ runs:
         url: http://127.0.0.1:${{ steps.rollback.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
-    - name: Reconcile route through project CLI
-      id: route
-      shell: bash
-      env:
-        PROJECT: ${{ steps.identity.outputs.project }}
-        SERVICE: ${{ inputs.service-name }}
-      run: |
-        set -euo pipefail
-        sudo -n /opt/stacks/cli/bin/project-addr-sync "$PROJECT/$SERVICE" prod
-
     - name: Record successful manual rollback
       id: record
       uses: $/.github/actions/cd/state
@@ -321,19 +311,8 @@ runs:
         url: http://127.0.0.1:${{ steps.restore.outputs['published-port'] }}${{ inputs.health-path }}
         attempts: ${{ inputs.health-attempts }}
 
-    - name: Reconcile restored original route
-      id: restore_route
-      if: failure() && steps.restore_health.outcome == 'success'
-      shell: bash
-      env:
-        PROJECT: ${{ steps.identity.outputs.project }}
-        SERVICE: ${{ inputs.service-name }}
-      run: |
-        set -euo pipefail
-        sudo -n /opt/stacks/cli/bin/project-addr-sync "$PROJECT/$SERVICE" prod
-
     - name: Restore original deployment state
-      if: failure() && steps.restore_health.outcome == 'success' && steps.restore_route.outcome == 'success'
+      if: failure() && steps.restore_health.outcome == 'success'
       uses: $/.github/actions/cd/state
       with:
         operation: record

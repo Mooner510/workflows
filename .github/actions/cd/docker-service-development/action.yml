@@ -1,5 +1,5 @@
 name: Docker service development
-description: Canonical development entrypoint for one generic HTTP Docker service. Deploys pushes to the dev branch with isolated runtime config, database, Docker identity, project-CLI routing reconciliation, and state.
+description: Canonical development entrypoint for one generic HTTP Docker service. Deploys pushes to the dev branch with isolated runtime config, database, Docker identity, runtime isolation and state.
 
 inputs:
   development-branch:

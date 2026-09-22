@@ -272,7 +272,7 @@ jobs:
         uses: Mooner510/workflows/.github/actions/cd/docker-service-development@v1
         with:
           working-directory: services/api
-          service-name: my-project-api
+          service-name: api
           container-port: '8080'
 
   deploy-prod:
@@ -284,7 +284,7 @@ jobs:
         uses: Mooner510/workflows/.github/actions/cd/docker-service-production@v1
         with:
           working-directory: services/api
-          service-name: my-project-api
+          service-name: api
           container-port: '8080'
 ```
 
@@ -325,58 +325,41 @@ prod: project deploy.env -> service deploy.env -> service secret/deploy.env
 dev:  project deploy.dev.env -> service deploy.dev.env -> service secret/deploy.dev.env
 ```
 
-`DEPLOY_DOMAIN`은 routing source가 아닙니다. Routing은 `project` CLI가 소유하는 `addr.env` / `addr.dev.env`와 Caddy reconcile 로직에서만 결정합니다. Central workflows는 address를 해석하거나 Caddy 파일을 직접 쓰지 않습니다. `DEPLOY_VOLUMES_JSON`은 선택된 runtime env 파일을 계속 사용합니다. Mutable persistent volume은 dev가 prod와 같은 host path/volume을 지정하지 않는 것이 원칙이며 중앙 workflow는 임의 path를 자동 변환하지 않습니다.
+`DEPLOY_DOMAIN`은 routing source가 아닙니다. HTTP routing state는 `project` CLI가 관리하는 Caddy fragment 자체에만 존재하며 central workflows는 address/Caddy를 읽거나 수정하지 않습니다. `DEPLOY_VOLUMES_JSON`은 선택된 runtime env 파일을 계속 사용합니다. Mutable persistent volume은 dev가 prod와 같은 host path/volume을 지정하지 않는 것이 원칙이며 중앙 workflow는 임의 path를 자동 변환하지 않습니다.
 
 ### Address / CORS metadata
 
-Address와 CORS는 `deploy.env`에서 분리된 host metadata입니다. Project/service registry와 project network는 배포 전에 이미 존재해야 하며 workflows는 이를 생성하지 않습니다.
-
-```text
-project CLI owns:
-- /opt/stacks/projects/<project>/<service>/ service registry
-- project-<project> / project-<project>-dev networks
-- addr metadata and generated Caddy routes
-
-central workflows:
-- require the registry and project network to exist
-- always attach HTTP containers to existing caddy-shared
-- inject CORS_ORIGINS from cors metadata
-- request route reconciliation only through project-addr-sync
-```
-
+HTTP address는 runtime env metadata가 아닙니다. `addr.env` / `addr.dev.env`는 사용하지 않습니다. Routing의 유일한 source of truth는 project CLI가 생성하는 Caddy fragment입니다.
 
 ```text
 Production
-/opt/stacks/projects/<project>/addr.env
-/opt/stacks/projects/<project>/<service>/addr.env
+/opt/stacks/shared/caddy/sites/<project>/<service>.caddy
+
+Development
+/opt/stacks/shared/caddy/sites/<project>/<service>-dev.caddy
+```
+
+Main Caddyfile은 project별 nested fragment를 직접 import해야 합니다.
+
+```caddy
+import /etc/caddy/sites/*/*.caddy
+```
+
+Central workflows는 Caddy route를 생성/삭제/동기화하지 않습니다. HTTP service는 addr 유무와 관계없이 existing `caddy-shared` network에 연결됩니다. 첫 deployment가 health까지 성공한 뒤 운영자가 `project addr <project>/<service> set <origin> [-dev]`를 실행하면 project CLI가 running managed container의 canonical `com.mooner510.stacks.container-port` label을 읽어 upstream을 자동 결정하고 즉시 Caddy validate/reload를 수행합니다.
+
+Production/development address는 서로 독립적입니다. 자동 derivation/fallback은 없습니다. 해당 environment의 Caddy fragment가 없으면 외부 route도 없습니다. 주소 변경과 제거는 배포와 무관하게 즉시 적용됩니다.
+
+CORS는 routing과 별개로 host metadata를 유지합니다.
+
+```text
+Production
 /opt/stacks/projects/<project>/cors.env
 /opt/stacks/projects/<project>/<service>/cors.env
 
 Development
-/opt/stacks/projects/<project>/addr.dev.env
-/opt/stacks/projects/<project>/<service>/addr.dev.env
 /opt/stacks/projects/<project>/cors.dev.env
 /opt/stacks/projects/<project>/<service>/cors.dev.env
 ```
-
-Address resolution:
-
-```text
-prod:
-  service addr.env
-  -> project addr.env
-  -> none
-
-dev:
-  service addr.dev.env
-  -> project addr.dev.env
-  -> derive from effective production address by prefixing hostname with dev-
-  -> none
-```
-
-Derived development address preserves scheme and explicit port. Production address가 없으면 development도 자동 생성하지 않습니다.
-
-HTTP deploy/rollback은 health 성공 후 제한된 `project-addr-sync` wrapper를 호출합니다. Wrapper는 `project addr <project>/<service> sync [-dev]`만 실행할 수 있으며 Caddy 파일을 직접 수정하는 코드는 `project` CLI에만 존재합니다. Effective address가 없거나 service가 실행 중이 아니면 project CLI가 자신이 관리하는 stale route를 제거합니다. `project addr ... set/rm`도 동일한 reconcile 경로를 사용합니다.
 
 CORS는 environment 간 자동 상속이나 derivation을 하지 않습니다.
 
@@ -385,7 +368,8 @@ prod CORS = project cors.env + service cors.env
 dev CORS  = project cors.dev.env + service cors.dev.env
 ```
 
-각 파일은 origin 하나당 한 줄이며 중복 제거 후 `CORS_ORIGINS` comma-separated environment variable로 container에 주입됩니다. HTTP/non-HTTP service 종류와 관계없이 동일하게 적용하며 파일이 없으면 변수를 주입하지 않습니다. CORS 파일 변경은 실행 중 container에 즉시 반영하지 않으므로 redeploy가 필요합니다.
+각 파일은 origin 하나당 한 줄이며 중복 제거 후 `CORS_ORIGINS` comma-separated environment variable로 container에 주입됩니다. 파일 변경은 실행 중 container에 즉시 반영되지 않으므로 redeploy가 필요합니다.
+
 
 ### Development enable flag
 
@@ -411,7 +395,7 @@ com.mooner510.stacks.kind=http|process
 com.mooner510.stacks.container-port=<port>  # HTTP only
 ```
 
-기존 `com.mooner510.workflows.service`와 OCI revision label도 유지합니다. Project CLI가 생성하는 Caddy site는 project/service/environment namespace를 포함한 `<project>--<service>--<prod|dev>.caddy`를 사용하고 ownership marker를 기록합니다.
+기존 `com.mooner510.workflows.service`와 OCI revision label도 유지합니다. Logical service name은 project prefix를 반복하지 않는 짧은 role 이름(`api`, `web`, `worker`, `media`, `keyd`, `site`)을 사용합니다. Project CLI가 생성하는 Caddy site는 `sites/<project>/<service>.caddy` 또는 `sites/<project>/<service>-dev.caddy`를 사용하고 ownership marker를 기록합니다.
 
 ### Rollback and state
 
