@@ -152,6 +152,14 @@ jobs:
               exit 1
             fi
 
+            if ! jq -e '(.deploy_service_watches == null) or ((.deploy_service_watches | type) == "object" and all(.deploy_service_watches | to_entries[]; (.key | test("^[a-z][a-z0-9-]{0,62}$")) and (.value | type == "array") and all(.value[]; type == "string"))))' <<<"$component" >/dev/null; then
+              echo "::error::Component '$name' deploy_service_watches must map canonical service names to path arrays."
+              exit 1
+            fi
+            while IFS= read -r deploy_watch; do
+              validate_relative_path "$deploy_watch" "Component '$name' deploy_service_watches entry"
+            done < <(jq -r '.deploy_service_watches // {} | to_entries[] | .value[]' <<<"$component")
+
             case "$type" in
               node)
                 package_manager="$(jq -r '.package_manager // empty' <<<"$component")"
@@ -524,6 +532,29 @@ jobs:
           ci_targets="$(jq -c 'map(.target)' <<<"$ci_groups")"
           ci_groups_by_target="$(jq -c 'reduce .[] as $group ({}; .[$group.target] = $group)' <<<"$ci_groups")"
           affected_services="$(jq -c '[.[] | (.deploy_services // [])[]] | unique | sort' <<<"$normalized")"
+
+          while IFS= read -r component; do
+            service_watch_map="$(jq -c '.deploy_service_watches // {}' <<<"$component")"
+            while IFS= read -r service; do
+              [[ -n "$service" ]] || continue
+              service_affected="$force_all"
+              if [[ "$service_affected" != "true" ]]; then
+                while IFS= read -r changed; do
+                  while IFS= read -r watch; do
+                    watch="${watch%/}"
+                    if [[ "$watch" == "." ]] || [[ "$changed" == "$watch" ]] || [[ "$changed" == "$watch/"* ]]; then
+                      service_affected=true
+                      break 2
+                    fi
+                  done < <(jq -r --arg service "$service" '.[$service][]' <<<"$service_watch_map")
+                done <"$changed_file_list"
+              fi
+              if [[ "$service_affected" == "true" ]]; then
+                affected_services="$(jq -c --arg service "$service" '. + [$service] | unique | sort' <<<"$affected_services")"
+              fi
+            done < <(jq -r 'keys[]' <<<"$service_watch_map")
+          done < <(jq -c '.[]' <<<"$normalized")
+
           if [[ "$(jq 'length' <<<"$normalized")" -gt 0 ]]; then has_changes=true; else has_changes=false; fi
 
           {
