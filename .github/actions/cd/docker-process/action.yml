@@ -204,6 +204,7 @@ runs:
       env:
         OPERATION: ${{ inputs.operation }}
         DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+        PROJECT: ${{ steps.identity.outputs.project }}
         SERVICE: ${{ steps.identity.outputs.service }}
         DEPLOY_IMAGE_ID: ${{ steps.build.outputs.image-id }}
         ROLLBACK_IMAGE_ID: ${{ steps.previous.outputs.image-id }}
@@ -242,7 +243,25 @@ runs:
         [[ "$volumes" != "[]" ]] || volumes="$CONFIG_VOLUMES"
         jq -e 'type=="array" and all(.[]; type=="string")' <<<"$volumes" >/dev/null || { echo "::error::volumes must be a string array."; exit 1; }
 
+        tls_gid=""
+        shared_tls_root="/opt/stacks/shared/pki/root_ca.crt"
+        if [[ -f "$shared_tls_root" ]]; then
+          volumes="$(jq -c --arg volume "$shared_tls_root:/run/stacks/tls/root_ca.crt:ro" '. + [$volume]' <<<"$volumes")"
+          echo "Using managed TLS trust root: $shared_tls_root"
+        fi
+        tls_dir="/opt/stacks/projects/$PROJECT/${{ inputs.service-name }}/secret/tls/$DEPLOY_ENVIRONMENT"
+        if [[ -d "$tls_dir" ]]; then
+          [[ -f "$tls_dir/tls.crt" && -f "$tls_dir/tls.key" ]] || {
+            echo "::error::Managed TLS directory is incomplete: $tls_dir"
+            exit 1
+          }
+          tls_gid="$(stat -c '%g' "$tls_dir/tls.key")"
+          volumes="$(jq -c --arg volume "$tls_dir:/run/stacks/tls/service:ro" '. + [$volume]' <<<"$volumes")"
+          echo "Using managed service TLS: $tls_dir -> /run/stacks/tls/service"
+        fi
+
         create_args=(docker create --name "$SERVICE" --restart unless-stopped)
+        [[ -z "$tls_gid" ]] || create_args+=(--group-add "$tls_gid")
         [[ "$INIT" != "true" ]] || create_args+=(--init)
         while IFS= read -r opt; do create_args+=(--security-opt "$opt"); done < <(jq -r '.[]' <<<"$SECURITY_OPTS")
         while IFS= read -r cap; do create_args+=(--cap-drop "$cap"); done < <(jq -r '.[]' <<<"$CAP_DROP")
