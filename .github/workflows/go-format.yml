@@ -34,6 +34,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: go-format-${{ github.repository }}-${{ github.ref_name }}
@@ -237,136 +238,55 @@ jobs:
 
           git config user.name "$COMMITTER_NAME"
           git config user.email "$COMMITTER_EMAIL"
+          diff_base="$(git rev-parse HEAD)"
           git commit -m "style: format and tidy Go"
           commit_sha="$(git rev-parse HEAD)"
 
           git push origin "HEAD:refs/heads/$TARGET_BRANCH"
 
-          echo "commit_sha=$commit_sha" >>"$GITHUB_OUTPUT"
+          {
+            echo "commit_sha=$commit_sha"
+            echo "diff_base=$diff_base"
+          } >>"$GITHUB_OUTPUT"
           echo "Pushed Go maintenance commit $commit_sha to $TARGET_BRANCH."
 
-      - name: Prepare pushed Go CI
-        id: go-ci
+      - name: Dispatch canonical caller CI
         if: steps.format.outputs.changed == 'true'
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: ${{ github.ref_name }}
+          DIFF_BASE: ${{ steps.push.outputs.diff_base }}
         run: |
           set -euo pipefail
+          command -v curl >/dev/null || { echo "::error::curl is required."; exit 1; }
+          command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
 
-          command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
-
-          workspace="$(realpath -e "$GITHUB_WORKSPACE")"
-          pushed_sha="${{ steps.push.outputs.commit_sha }}"
-          [[ "$(git rev-parse HEAD)" == "$pushed_sha" ]] || {
-            echo "::error::Workspace HEAD does not match the pushed Go maintenance commit."
+          payload="$(jq -cn --arg ref "$TARGET_BRANCH" --arg diff_base "$DIFF_BASE" '{ref:$ref,inputs:{diff_base:$diff_base}}')"
+          response="$(mktemp)"
+          trap 'rm -f "$response"' EXIT
+          code="$(curl -sS -o "$response" -w '%{http_code}' \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/dispatches" \
+            -d "$payload")"
+          [[ "$code" == "204" ]] || {
+            cat "$response" >&2
+            echo "::error::Failed to dispatch canonical caller CI (HTTP $code)."
             exit 1
           }
 
-          declare -A modules=()
-
-          while IFS= read -r -d '' changed; do
-            module=""
-
-            case "$changed" in
-              *.go)
-                file="$workspace/$changed"
-                cursor="$(dirname "$file")"
-
-                while :; do
-                  if [[ -f "$cursor/go.mod" ]]; then
-                    module="$cursor"
-                    break
-                  fi
-                  [[ "$cursor" == "$workspace" ]] && break
-                  cursor="$(dirname "$cursor")"
-                done
-                ;;
-              go.mod|*/go.mod|go.sum|*/go.sum)
-                cursor="$workspace/$(dirname "$changed")"
-                if [[ -f "$cursor/go.mod" ]]; then
-                  module="$(realpath -e "$cursor")"
-                fi
-                ;;
-              *)
-                continue
-                ;;
-            esac
-
-            if [[ -z "$module" ]]; then
-              echo "::error::No go.mod found for changed Go file or module metadata '$changed'."
-              exit 1
-            fi
-            modules["$module"]=1
-          done < <(git diff-tree --no-commit-id --name-only -r -z "$pushed_sha")
-
-          if (( ${#modules[@]} == 0 )); then
-            echo "::error::The pushed Go maintenance commit contains no resolvable Go module."
-            exit 1
-          fi
-
-          components='[]'
-          common_version=""
-          index=0
-
-          while IFS= read -r module; do
-            module_file="$module/go.mod"
-            toolchain="$(awk '$1 == "toolchain" && $2 ~ /^go[0-9]/ { sub(/^go/, "", $2); print $2; exit }' "$module_file")"
-            version="$toolchain"
-            if [[ -z "$version" ]]; then
-              version="$(awk '$1 == "go" { print $2; exit }' "$module_file")"
-            fi
-
-            if [[ -z "$version" || ! "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?([-.][0-9A-Za-z.-]+)?$ ]]; then
-              echo "::error::Unable to resolve a valid Go version from '$module_file'."
-              exit 1
-            fi
-
-            if [[ -z "$common_version" ]]; then
-              common_version="$version"
-            elif [[ "$common_version" != "$version" ]]; then
-              echo "::error::The pushed commit spans Go modules with different Go versions ($common_version and $version). Run Go Format separately for each module path."
-              exit 1
-            fi
-
-            relative="$(realpath --relative-to="$workspace" "$module")"
-            index=$((index + 1))
-            components="$(jq -c \
-              --arg name "formatted-module-$index" \
-              --arg path "$relative" \
-              '. + [{name: $name, path: $path}]' <<<"$components")"
-          done < <(printf '%s\n' "${!modules[@]}" | sort)
-
-          echo "components=$components" >>"$GITHUB_OUTPUT"
-          echo "version=$common_version" >>"$GITHUB_OUTPUT"
-
-      - name: Verify pushed Go commit
-        if: steps.format.outputs.changed == 'true'
-        uses: Mooner510/workflows/.github/actions/ci/go@v1
-        with:
-          components: ${{ steps.go-ci.outputs.components }}
-          version: ${{ steps.go-ci.outputs.version }}
-          go_private_patterns: ${{ inputs.go_private_patterns }}
-          private_repo_token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
-
-      - name: Report result
-        if: steps.format.outputs.changed == 'true' && success()
-        shell: bash
-        env:
-          TARGET_BRANCH: ${{ github.ref_name }}
-          DISPLAY_PATH: ${{ steps.format.outputs.display_path }}
-          FILES_SCANNED: ${{ steps.format.outputs.files_scanned }}
-          CHANGED_COUNT: ${{ steps.format.outputs.changed_count }}
-          COMMIT_SHA: ${{ steps.push.outputs.commit_sha }}
-          COMMITTER_NAME: ${{ github.actor }}
-        run: |
+          echo "Canonical CI dispatched for $TARGET_BRANCH with diff_base=$DIFF_BASE."
           {
             echo "### Go Format & Tidy"
             echo
-            echo "- Branch: `$TARGET_BRANCH`"
-            echo "- Path: `$DISPLAY_PATH`"
-            echo "- Files scanned: `$FILES_SCANNED`"
-            echo "- Files changed: `$CHANGED_COUNT`"
-            echo "- Modules tidied: `${{ steps.format.outputs.modules_tidied }}`"
-            echo "- Commit: `$COMMIT_SHA`"
-            echo "- Committer: `$COMMITTER_NAME`"
-            echo "- Go CI: passed"
+            echo "- Branch: \`$TARGET_BRANCH\`"
+            echo "- Path: \`${{ steps.format.outputs.display_path }}\`"
+            echo "- Files scanned: \`${{ steps.format.outputs.files_scanned }}\`"
+            echo "- Files changed: \`${{ steps.format.outputs.changed_count }}\`"
+            echo "- Modules tidied: \`${{ steps.format.outputs.modules_tidied }}\`"
+            echo "- Commit: \`${{ steps.push.outputs.commit_sha }}\`"
+            echo "- Canonical CI: dispatched"
           } >>"$GITHUB_STEP_SUMMARY"
