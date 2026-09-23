@@ -159,6 +159,19 @@ runs:
         done < <(jq -r '.[]' <<<"$ENV_NAMES_JSON")
 
         declare -a volume_args=()
+        tls_gid=""
+        if [[ -n "$PROJECT" && -n "$LOGICAL_SERVICE" ]]; then
+          tls_dir="/opt/stacks/projects/$PROJECT/$LOGICAL_SERVICE/secret/tls/$DEPLOY_ENVIRONMENT"
+          if [[ -d "$tls_dir" ]]; then
+            [[ -f "$tls_dir/tls.crt" && -f "$tls_dir/tls.key" && -f "$tls_dir/root_ca.crt" ]] || {
+              echo "::error::Managed TLS directory is incomplete: $tls_dir"
+              exit 1
+            }
+            tls_gid="$(stat -c '%g' "$tls_dir/tls.key")"
+            volume_args+=(-v "$tls_dir:/run/stacks/tls:ro")
+            echo "Using managed TLS: $tls_dir -> /run/stacks/tls"
+          fi
+        fi
         while IFS= read -r encoded; do
           value="$(printf '%s' "$encoded" | base64 --decode)"
           [[ -n "$value" && "$value" != *$'\n'* && "$value" != *$'\r'* ]] || { echo "::error::Invalid volume specification."; exit 1; }
@@ -198,6 +211,7 @@ runs:
             publish="127.0.0.1::$CONTAINER_PORT"
           fi
           local -a args=(docker create --name "$CONTAINER_NAME" --restart "$RESTART_POLICY" -p "$publish")
+          [[ -z "$tls_gid" ]] || args+=(--group-add "$tls_gid")
           args+=("${env_args[@]}")
           args+=("${volume_args[@]}")
           args+=("${hardening_args[@]}")
