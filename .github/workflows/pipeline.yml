@@ -17,6 +17,11 @@ on:
         required: false
         type: string
         default: ''
+      diff_base:
+        description: Optional base commit SHA for explicit dispatches that must preserve normal push change detection.
+        required: false
+        type: string
+        default: ''
     secrets:
       CI_PRIVATE_REPO_TOKEN:
         description: Optional GitHub token with read access to private repository dependencies used by Go or Node components.
@@ -72,6 +77,7 @@ jobs:
           HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
+          DIFF_BASE: ${{ inputs.diff_base }}
         run: |
           set -euo pipefail
 
@@ -236,6 +242,14 @@ jobs:
           if [[ "$FORCE_ALL" == "true" ]]; then
             force_all=true
             echo "force_all=true: every configured component is affected."
+          elif [[ -n "${DIFF_BASE:-}" ]]; then
+            base_sha="$DIFF_BASE"
+            head_sha="$HEAD_SHA"
+            git cat-file -e "${base_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$base_sha"
+            git cat-file -e "${head_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$head_sha"
+            git diff --name-only --no-renames --diff-filter=ACMRD "$base_sha" "$head_sha" >"$changed_file_list"
+            git_log_opts="${base_sha}..${head_sha}"
+            echo "Using explicit diff base: $base_sha"
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             base_sha="$PR_BASE_SHA"
             head_sha="$HEAD_SHA"
