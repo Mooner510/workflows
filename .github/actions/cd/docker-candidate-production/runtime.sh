@@ -171,7 +171,6 @@ resolve_runtime_env_files() {
   [[ ! -f "$PROJECT_ROOT/$project/deploy.env" ]] || ENV_FILES+=("$PROJECT_ROOT/$project/deploy.env")
   [[ ! -f "$PROJECT_ROOT/$project/$svc/deploy.env" ]] || ENV_FILES+=("$PROJECT_ROOT/$project/$svc/deploy.env")
   [[ ! -f "$PROJECT_ROOT/$project/$svc/secret/deploy.env" ]] || ENV_FILES+=("$PROJECT_ROOT/$project/$svc/secret/deploy.env")
-  ((${#ENV_FILES[@]} > 0)) || fail "No production runtime env file exists for $project/$svc."
 }
 
 resolve_volumes() {
@@ -390,6 +389,8 @@ deploy_service() {
 
   record_state "$svc" "$revision" "$image" "$image_id" "$operation"
   rm -rf "$tmp"
+  flock -u "$lock"
+  eval "exec ${lock}>&-"
   echo "Production $operation complete: $project/$svc@$revision"
 }
 
