@@ -1,0 +1,202 @@
+name: Run canonical Docker service
+description: Replace one service from a prebuilt image using image-owned EXPOSE and HEALTHCHECK metadata.
+
+inputs:
+  project:
+    required: true
+  service:
+    required: true
+  environment:
+    required: true
+  image:
+    required: true
+  restore-image:
+    description: Optional known-good image ID restored if the requested image fails after mutation.
+    required: false
+    default: ''
+  env-files-json:
+    required: false
+    default: '[]'
+  env-names-json:
+    required: false
+    default: '[]'
+  volumes-json:
+    required: false
+    default: '[]'
+  network:
+    required: true
+
+outputs:
+  image-id:
+    value: ${{ steps.run.outputs.image_id }}
+  exposed-port:
+    value: ${{ steps.run.outputs.exposed_port }}
+
+runs:
+  using: composite
+  steps:
+    - name: Replace and verify service
+      id: run
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+        SERVICE: ${{ inputs.service }}
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+        IMAGE: ${{ inputs.image }}
+        RESTORE_IMAGE: ${{ inputs.restore-image }}
+        ENV_FILES_JSON: ${{ inputs.env-files-json }}
+        ENV_NAMES_JSON: ${{ inputs.env-names-json }}
+        VOLUMES_JSON: ${{ inputs.volumes-json }}
+        NETWORK: ${{ inputs.network }}
+      run: |
+        set -euo pipefail
+
+        command -v docker >/dev/null || { echo "::error::Docker is required."; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
+
+        [[ "$PROJECT" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { echo "::error::Invalid project '$PROJECT'."; exit 1; }
+        [[ "$SERVICE" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { echo "::error::Invalid service '$SERVICE'."; exit 1; }
+        case "$DEPLOY_ENVIRONMENT" in prod|dev) ;; *) echo "::error::Invalid environment."; exit 1 ;; esac
+        jq -e 'type=="array" and all(.[]; type=="string")' <<<"$ENV_FILES_JSON" >/dev/null
+        jq -e 'type=="array" and all(.[]; type=="string")' <<<"$ENV_NAMES_JSON" >/dev/null
+        jq -e 'type=="array" and all(.[]; type=="string")' <<<"$VOLUMES_JSON" >/dev/null
+
+        docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "::error::Deployment image is unavailable: $IMAGE"; exit 1; }
+        [[ -z "$RESTORE_IMAGE" ]] || docker image inspect "$RESTORE_IMAGE" >/dev/null 2>&1 || {
+          echo "::error::Known-good restore image is unavailable: $RESTORE_IMAGE"
+          exit 1
+        }
+        docker network inspect "$NETWORK" >/dev/null 2>&1 || {
+          echo "::error::Project Docker network '$NETWORK' does not exist."
+          exit 1
+        }
+
+        container="$PROJECT.$SERVICE"
+        [[ "$DEPLOY_ENVIRONMENT" != "dev" ]] || container="$container.dev"
+
+        declare -a volume_args=()
+        while IFS= read -r volume; do volume_args+=(-v "$volume"); done < <(jq -r '.[]' <<<"$VOLUMES_JSON")
+
+        tls_gid=""
+        secret_root="/opt/stacks/projects/$PROJECT/$SERVICE/secret"
+        if [[ "$DEPLOY_ENVIRONMENT" == "dev" ]]; then
+          tls_cert="$secret_root/tls.dev.crt"
+          tls_key="$secret_root/tls.dev.key"
+        else
+          tls_cert="$secret_root/tls.crt"
+          tls_key="$secret_root/tls.key"
+        fi
+        if [[ -e "$tls_cert" || -e "$tls_key" ]]; then
+          [[ -f "$tls_cert" && -f "$tls_key" ]] || {
+            echo "::error::Managed TLS identity is incomplete for $PROJECT/$SERVICE [$DEPLOY_ENVIRONMENT]."
+            exit 1
+          }
+          tls_gid="$(stat -c '%g' "$tls_key")"
+          volume_args+=(-v "$tls_cert:/opt/stacks/tls/tls.crt:ro")
+          volume_args+=(-v "$tls_key:/opt/stacks/tls/tls.key:ro")
+        fi
+
+        registry="/opt/stacks/shared/pki/registry.json"
+        if [[ -f "$registry" ]]; then
+          jq -e '.version == 1 and (.trust|type)=="object"' "$registry" >/dev/null || {
+            echo "::error::Invalid PKI registry: $registry"
+            exit 1
+          }
+          target="$PROJECT/$SERVICE"
+          while IFS= read -r ca; do
+            [[ "$ca" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { echo "::error::Invalid CA '$ca'."; exit 1; }
+            root="/opt/stacks/shared/pki/$ca/$DEPLOY_ENVIRONMENT/root_ca.crt"
+            [[ -f "$root" ]] || { echo "::error::Trusted CA root is missing: $root"; exit 1; }
+            volume_args+=(-v "$root:/opt/stacks/tls/trust/$ca.crt:ro")
+          done < <(jq -r --arg target "$target" --arg env "$DEPLOY_ENVIRONMENT" '.trust[$target][$env] // [] | unique[]' "$registry")
+        fi
+
+        inspect_contract() {
+          local image="$1" inspect exposed count port health
+          inspect="$(docker image inspect "$image")"
+          exposed="$(jq -c '.[0].Config.ExposedPorts // {} | keys' <<<"$inspect")"
+          jq -e 'all(.[]; endswith("/tcp"))' <<<"$exposed" >/dev/null || return 1
+          count="$(jq 'length' <<<"$exposed")"
+          (( count <= 1 )) || return 1
+          port=""
+          if (( count == 1 )); then
+            port="$(jq -r '.[0] | sub("/tcp$";"")' <<<"$exposed")"
+            [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || return 1
+          fi
+          health="$(jq -c '.[0].Config.Healthcheck.Test // []' <<<"$inspect")"
+          jq -e 'type=="array" and length>0 and .[0] != "NONE"' <<<"$health" >/dev/null || return 1
+          printf '%s' "$port"
+        }
+
+        wait_healthy() {
+          local name="$1" status running
+          for ((attempt=1; attempt<=90; attempt++)); do
+            status="$(docker inspect "$name" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' 2>/dev/null || true)"
+            running="$(docker inspect "$name" --format '{{.State.Running}}' 2>/dev/null || true)"
+            if [[ "$status" == "healthy" ]]; then return 0; fi
+            if [[ "$running" != "true" || "$status" == "unhealthy" ]]; then return 1; fi
+            sleep 2
+          done
+          return 1
+        }
+
+        create_and_start() {
+          local image="$1" port args
+          port="$(inspect_contract "$image")" || {
+            echo "::error::Image must define HEALTHCHECK and expose at most one TCP port: $image" >&2
+            return 1
+          }
+
+          args=(docker create --name "$container" --restart unless-stopped --init
+            --security-opt no-new-privileges:true --cap-drop ALL
+            --network "$NETWORK"
+            --label "kr.mooner510.stacks.managed=true"
+            --label "kr.mooner510.stacks.project=$PROJECT"
+            --label "kr.mooner510.stacks.service=$SERVICE"
+            --label "kr.mooner510.stacks.environment=$DEPLOY_ENVIRONMENT")
+          [[ -z "$port" ]] || args+=(--label "kr.mooner510.stacks.container-port=$port")
+          [[ -z "$tls_gid" ]] || args+=(--group-add "$tls_gid")
+          while IFS= read -r file; do args+=(--env-file "$file"); done < <(jq -r '.[]' <<<"$ENV_FILES_JSON")
+          while IFS= read -r name; do args+=(-e "$name"); done < <(jq -r '.[]' <<<"$ENV_NAMES_JSON")
+          args+=("${volume_args[@]}")
+          args+=("$image")
+
+          "${args[@]}" >/dev/null
+          if [[ -n "$port" ]]; then
+            docker network inspect caddy-shared >/dev/null 2>&1 || {
+              docker rm -f "$container" >/dev/null 2>&1 || true
+              echo "::error::Shared caddy-shared network does not exist."
+              return 1
+            }
+            [[ "$NETWORK" == "caddy-shared" ]] || docker network connect caddy-shared "$container"
+          fi
+          docker start "$container" >/dev/null
+          wait_healthy "$container"
+        }
+
+        if docker container inspect "$container" >/dev/null 2>&1; then
+          docker stop -t 20 "$container" >/dev/null || true
+          docker rm -f "$container" >/dev/null || true
+        fi
+
+        if ! create_and_start "$IMAGE"; then
+          docker logs "$container" >&2 2>/dev/null || true
+          docker rm -f "$container" >/dev/null 2>&1 || true
+          if [[ -n "$RESTORE_IMAGE" ]]; then
+            echo "Restoring previous known-good image."
+            create_and_start "$RESTORE_IMAGE" || {
+              docker logs "$container" >&2 2>/dev/null || true
+              echo "::error::Deployment failed and previous known-good image could not be restored."
+              exit 1
+            }
+          fi
+          echo "::error::Requested image failed Docker HEALTHCHECK."
+          exit 1
+        fi
+
+        image_id="$(docker image inspect "$IMAGE" --format '{{.Id}}')"
+        exposed_port="$(inspect_contract "$IMAGE")"
+        {
+          echo "image_id=$image_id"
+          echo "exposed_port=$exposed_port"
+        } >>"$GITHUB_OUTPUT"
