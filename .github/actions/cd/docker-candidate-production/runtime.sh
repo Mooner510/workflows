@@ -362,11 +362,16 @@ deploy_service() {
 
   apply_migrations "$manifest" "$source_root"
 
-  previous_image=""; previous_revision=""; previous_ref=""
+  previous_image=""; previous_revision=""
+  current_state="$state_dir/current.json"
+  if [[ -f "$current_state" ]]; then
+    previous_image="$(jq -r '.imageId // empty' "$current_state")"
+    previous_revision="$(jq -r '.revision // empty' "$current_state")"
+    if [[ -n "$previous_image" ]]; then
+      docker image inspect "$previous_image" >/dev/null 2>&1 || fail "Current known-good image is unavailable locally: $previous_image"
+    fi
+  fi
   if docker container inspect "$project.$svc" >/dev/null 2>&1; then
-    previous_image="$(docker inspect "$project.$svc" --format '{{.Image}}')"
-    previous_ref="$(docker inspect "$project.$svc" --format '{{.Config.Image}}')"
-    previous_revision="$(docker inspect "$project.$svc" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
     stop_timeout="$(jq -r '.runtime.stopTimeout' <<<"$manifest")"
     docker stop -t "$stop_timeout" "$project.$svc" >/dev/null || true
     docker rm -f "$project.$svc" >/dev/null || true
