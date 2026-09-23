@@ -10,11 +10,6 @@ on:
         required: false
         type: string
         default: /
-      go_private_patterns:
-        description: Optional GOPRIVATE pattern for private Go modules.
-        required: false
-        type: string
-        default: ''
     secrets:
       CI_PRIVATE_REPO_TOKEN:
         description: Optional GitHub token with read access to private Go module repositories.
@@ -26,11 +21,6 @@ on:
         required: false
         type: string
         default: /
-      go_private_patterns:
-        description: Optional GOPRIVATE pattern for private Go modules.
-        required: false
-        type: string
-        default: ''
 
 permissions:
   contents: write
@@ -67,6 +57,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
+      - name: Load canonical project contract
+        id: contract
+        uses: Mooner510/workflows/.github/actions/config/load@v1
+
       - name: Set up Go for formatting
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -80,8 +74,8 @@ jobs:
           FORMAT_PATH: ${{ inputs.path }}
           TARGET_BRANCH: ${{ github.ref_name }}
           CI_PRIVATE_REPO_TOKEN: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
-          GOPRIVATE: ${{ inputs.go_private_patterns }}
-          GONOSUMDB: ${{ inputs.go_private_patterns }}
+          GOPRIVATE: ${{ steps.contract.outputs.go_private_patterns }}
+          GONOSUMDB: ${{ steps.contract.outputs.go_private_patterns }}
         run: |
           set -euo pipefail
 
