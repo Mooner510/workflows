@@ -244,20 +244,46 @@ runs:
         jq -e 'type=="array" and all(.[]; type=="string")' <<<"$volumes" >/dev/null || { echo "::error::volumes must be a string array."; exit 1; }
 
         tls_gid=""
-        shared_tls_root="/opt/stacks/shared/pki/root_ca.crt"
-        if [[ -f "$shared_tls_root" ]]; then
-          volumes="$(jq -c --arg volume "$shared_tls_root:/run/stacks/tls/root_ca.crt:ro" '. + [$volume]' <<<"$volumes")"
-          echo "Using managed TLS trust root: $shared_tls_root"
+        secret_root="/opt/stacks/projects/$PROJECT/${{ inputs.service-name }}/secret"
+        if [[ "$DEPLOY_ENVIRONMENT" == "dev" ]]; then
+          tls_cert="$secret_root/tls.dev.crt"
+          tls_key="$secret_root/tls.dev.key"
+        else
+          tls_cert="$secret_root/tls.crt"
+          tls_key="$secret_root/tls.key"
         fi
-        tls_dir="/opt/stacks/projects/$PROJECT/${{ inputs.service-name }}/secret/tls/$DEPLOY_ENVIRONMENT"
-        if [[ -d "$tls_dir" ]]; then
-          [[ -f "$tls_dir/tls.crt" && -f "$tls_dir/tls.key" ]] || {
-            echo "::error::Managed TLS directory is incomplete: $tls_dir"
+
+        if [[ -e "$tls_cert" || -e "$tls_key" ]]; then
+          [[ -f "$tls_cert" && -f "$tls_key" ]] || {
+            echo "::error::Managed TLS identity is incomplete for $PROJECT/${{ inputs.service-name }} [$DEPLOY_ENVIRONMENT]."
             exit 1
           }
-          tls_gid="$(stat -c '%g' "$tls_dir/tls.key")"
-          volumes="$(jq -c --arg volume "$tls_dir:/run/stacks/tls/service:ro" '. + [$volume]' <<<"$volumes")"
-          echo "Using managed service TLS: $tls_dir -> /run/stacks/tls/service"
+          tls_gid="$(stat -c '%g' "$tls_key")"
+          volumes="$(jq -c --arg volume "$tls_cert:/opt/stacks/tls/tls.crt:ro" '. + [$volume]' <<<"$volumes")"
+          volumes="$(jq -c --arg volume "$tls_key:/opt/stacks/tls/tls.key:ro" '. + [$volume]' <<<"$volumes")"
+          echo "Using managed TLS identity: $PROJECT/${{ inputs.service-name }} [$DEPLOY_ENVIRONMENT]"
+        fi
+
+        registry="/opt/stacks/shared/pki/registry.json"
+        if [[ -f "$registry" ]]; then
+          jq -e '.version == 1 and (.trust | type == "object")' "$registry" >/dev/null || {
+            echo "::error::Invalid PKI registry: $registry"
+            exit 1
+          }
+          target="$PROJECT/${{ inputs.service-name }}"
+          while IFS= read -r ca; do
+            [[ "$ca" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
+              echo "::error::Invalid trusted CA name '$ca' for $target."
+              exit 1
+            }
+            root="/opt/stacks/shared/pki/$ca/$DEPLOY_ENVIRONMENT/root_ca.crt"
+            [[ -f "$root" ]] || {
+              echo "::error::Trusted CA root is missing: $root"
+              exit 1
+            }
+            volumes="$(jq -c --arg volume "$root:/opt/stacks/tls/trust/$ca.crt:ro" '. + [$volume]' <<<"$volumes")"
+            echo "Trusting managed CA: $ca/$DEPLOY_ENVIRONMENT"
+          done < <(jq -r --arg target "$target" --arg env "$DEPLOY_ENVIRONMENT" '.trust[$target][$env] // [] | unique[]' "$registry")
         fi
 
         create_args=(docker create --name "$SERVICE" --restart unless-stopped)
