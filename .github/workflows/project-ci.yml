@@ -33,7 +33,7 @@ jobs:
     outputs:
       components: ${{ steps.contract.outputs.components }}
       services: ${{ steps.contract.outputs.services }}
-      go_private_patterns: ${{ steps.contract.outputs.go-private-patterns }}
+      go_private_patterns: ${{ steps.contract.outputs.go_private_patterns }}
       affected_components: ${{ steps.detect.outputs.all_components }}
       ci_targets: ${{ steps.detect.outputs.ci_targets }}
       ci_groups: ${{ steps.detect.outputs.ci_groups_by_target }}
