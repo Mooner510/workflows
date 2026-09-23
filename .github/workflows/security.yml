@@ -175,15 +175,41 @@ jobs:
           TARGET_FILE: ${{ steps.targets.outputs.scan_targets }}
         run: |
           set -euo pipefail
+
+          tracked_count="$(git -C "$GITHUB_WORKSPACE" ls-files | wc -l)"
+          (( tracked_count > 0 )) || { echo "::error::Security scan checkout is empty."; exit 1; }
+
+          run_scanner() {
+            local container rc
+            container="$(docker create "$@")"
+            if ! docker cp "$GITHUB_WORKSPACE/." "$container:/src"; then
+              docker rm -f "$container" >/dev/null 2>&1 || true
+              echo "::error::Failed to copy the checked-out repository into the scanner container."
+              return 1
+            fi
+            set +e
+            docker start --attach "$container"
+            rc=$?
+            set -e
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            return "$rc"
+          }
+
           while IFS= read -r target; do
-            if [[ "$target" == "/src" ]]; then host_target="$GITHUB_WORKSPACE"; elif [[ "$target" == "/src/"* ]]; then host_target="$GITHUB_WORKSPACE/${target#/src/}"; else echo "::error::Invalid Semgrep target '$target'."; exit 1; fi
+            if [[ "$target" == "/src" ]]; then
+              host_target="$GITHUB_WORKSPACE"
+            elif [[ "$target" == "/src/"* ]]; then
+              host_target="$GITHUB_WORKSPACE/${target#/src/}"
+            else
+              echo "::error::Invalid Semgrep target '$target'."
+              exit 1
+            fi
+            find "$host_target" -type f -print -quit | grep -q . || {
+              echo "::error::Semgrep target '$target' contains no files."
+              exit 1
+            }
             echo "==> Semgrep: $target"
-            docker run --rm --cap-drop=ALL --security-opt=no-new-privileges \
-              -v "$host_target:/src:ro" -w /src \
-              semgrep/semgrep@sha256:012c8fe81c14da2d7691b90fcd826ce07f460a3301442b16c460575c87d3efb6 \
-              semgrep scan --config p/default \
-                --exclude-rule yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag \
-                --error --metrics off --disable-version-check .
+            run_scanner --cap-drop=ALL --security-opt=no-new-privileges               semgrep/semgrep@sha256:012c8fe81c14da2d7691b90fcd826ce07f460a3301442b16c460575c87d3efb6               semgrep scan --config p/default                 --exclude-rule yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag                 --error --metrics off --disable-version-check "$target"
           done <"$TARGET_FILE"
 
       - name: OSV dependency vulnerabilities
@@ -192,12 +218,30 @@ jobs:
           TARGET_FILE: ${{ steps.targets.outputs.dependency_targets }}
         run: |
           set -euo pipefail
+
+          run_scanner() {
+            local container rc
+            container="$(docker create "$@")"
+            if ! docker cp "$GITHUB_WORKSPACE/." "$container:/src"; then
+              docker rm -f "$container" >/dev/null 2>&1 || true
+              echo "::error::Failed to copy the checked-out repository into the scanner container."
+              return 1
+            fi
+            set +e
+            docker start --attach "$container"
+            rc=$?
+            set -e
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            return "$rc"
+          }
+
           while IFS= read -r target; do
+            [[ "$target" == "/src" || "$target" == "/src/"* ]] || {
+              echo "::error::Invalid OSV target '$target'."
+              exit 1
+            }
             echo "==> OSV: $target"
-            docker run --rm --cap-drop=ALL --security-opt=no-new-privileges \
-              -v "$GITHUB_WORKSPACE:/src:ro" \
-              ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475 \
-              scan source --recursive --allow-no-lockfiles --no-call-analysis=go "$target"
+            run_scanner --cap-drop=ALL --security-opt=no-new-privileges               ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475               scan source --recursive --allow-no-lockfiles --no-call-analysis=go "$target"
           done <"$TARGET_FILE"
 
       - name: Gitleaks current files
@@ -206,12 +250,30 @@ jobs:
           TARGET_FILE: ${{ steps.targets.outputs.scan_targets }}
         run: |
           set -euo pipefail
+
+          run_scanner() {
+            local container rc
+            container="$(docker create "$@")"
+            if ! docker cp "$GITHUB_WORKSPACE/." "$container:/src"; then
+              docker rm -f "$container" >/dev/null 2>&1 || true
+              echo "::error::Failed to copy the checked-out repository into the scanner container."
+              return 1
+            fi
+            set +e
+            docker start --attach "$container"
+            rc=$?
+            set -e
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            return "$rc"
+          }
+
           while IFS= read -r target; do
+            [[ "$target" == "/src" || "$target" == "/src/"* ]] || {
+              echo "::error::Invalid Gitleaks target '$target'."
+              exit 1
+            }
             echo "==> Gitleaks files: $target"
-            docker run --rm --network=none --cap-drop=ALL --security-opt=no-new-privileges \
-              -v "$GITHUB_WORKSPACE:/src:ro" \
-              ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
-              dir --redact --no-banner "$target"
+            run_scanner --network=none --cap-drop=ALL --security-opt=no-new-privileges               ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f               dir --redact --no-banner "$target"
           done <"$TARGET_FILE"
 
       - name: Gitleaks git history secrets
@@ -220,11 +282,19 @@ jobs:
           GIT_LOG_OPTS: ${{ inputs.git_log_opts }}
         run: |
           set -euo pipefail
-          docker run --rm --network=none --cap-drop=ALL --security-opt=no-new-privileges \
-            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/src \
-            -v "$GITHUB_WORKSPACE:/src:ro" \
-            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
-            git --redact --no-banner --log-opts="$GIT_LOG_OPTS" /src
+
+          container="$(docker create --network=none --cap-drop=ALL --security-opt=no-new-privileges             -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/src             ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f             git --redact --no-banner --log-opts="$GIT_LOG_OPTS" /src)"
+          if ! docker cp "$GITHUB_WORKSPACE/." "$container:/src"; then
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            echo "::error::Failed to copy Git history into the Gitleaks container."
+            exit 1
+          fi
+          set +e
+          docker start --attach "$container"
+          rc=$?
+          set -e
+          docker rm -f "$container" >/dev/null 2>&1 || true
+          exit "$rc"
 
       - name: Trivy misconfiguration
         shell: bash
@@ -232,17 +302,34 @@ jobs:
           TARGET_FILE: ${{ steps.targets.outputs.scan_targets }}
         run: |
           set -euo pipefail
-          if [[ "${RUNNER_TOOL_CACHE:-}" == "/opt/cache/tool-cache" ]]; then
-            cache_dir="/opt/cache/tool-cache/trivy"
-          else
-            cache_dir="${RUNNER_TEMP}/workflows-trivy-cache"
-          fi
-          mkdir -p "$cache_dir"
+
+          run_trivy() {
+            local target="$1"
+            local container rc
+            local -a docker_args=(--cap-drop=ALL --security-opt=no-new-privileges)
+            if [[ "${RUNNER_TOOL_CACHE:-}" == "/opt/cache/tool-cache" ]]; then
+              mkdir -p /opt/cache/tool-cache/trivy
+              docker_args+=(-v /opt/cache/tool-cache/trivy:/root/.cache/trivy)
+            fi
+            container="$(docker create "${docker_args[@]}"               ghcr.io/aquasecurity/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969               fs --scanners misconfig --severity HIGH,CRITICAL --exit-code 1 --no-progress                 --skip-version-check --skip-dirs .git --skip-dirs node_modules --skip-dirs build --skip-dirs .gradle "$target")"
+            if ! docker cp "$GITHUB_WORKSPACE/." "$container:/src"; then
+              docker rm -f "$container" >/dev/null 2>&1 || true
+              echo "::error::Failed to copy the checked-out repository into the Trivy container."
+              return 1
+            fi
+            set +e
+            docker start --attach "$container"
+            rc=$?
+            set -e
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            return "$rc"
+          }
+
           while IFS= read -r target; do
+            [[ "$target" == "/src" || "$target" == "/src/"* ]] || {
+              echo "::error::Invalid Trivy target '$target'."
+              exit 1
+            }
             echo "==> Trivy: $target"
-            docker run --rm --cap-drop=ALL --security-opt=no-new-privileges \
-              -v "$GITHUB_WORKSPACE:/src:ro" -v "$cache_dir:/root/.cache/trivy" \
-              ghcr.io/aquasecurity/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 \
-              fs --scanners misconfig --severity HIGH,CRITICAL --exit-code 1 --no-progress \
-                --skip-version-check --skip-dirs .git --skip-dirs node_modules --skip-dirs build --skip-dirs .gradle "$target"
+            run_trivy "$target"
           done <"$TARGET_FILE"

@@ -97,6 +97,41 @@ runs:
 
         echo "==> Building $image"
         DOCKER_BUILDKIT=1 "${args[@]}"
+
+        echo "==> Scanning built image for HIGH/CRITICAL vulnerabilities"
+        archive="$(mktemp "$RUNNER_TEMP/workflows-image-XXXXXX.tar")"
+        container=""
+        cleanup_scan() {
+          rm -f "$archive"
+          if [[ -n "$container" ]]; then
+            docker rm -f "$container" >/dev/null 2>&1 || true
+          fi
+        }
+        trap cleanup_scan EXIT
+
+        docker save "$image" -o "$archive"
+        scan_args=(--cap-drop=ALL --security-opt=no-new-privileges)
+        if [[ "${RUNNER_TOOL_CACHE:-}" == "/opt/cache/tool-cache" ]]; then
+          mkdir -p /opt/cache/tool-cache/trivy
+          scan_args+=(-v /opt/cache/tool-cache/trivy:/root/.cache/trivy)
+        fi
+        container="$(docker create "${scan_args[@]}"           ghcr.io/aquasecurity/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969           image --input /image.tar --scanners vuln --severity HIGH,CRITICAL --exit-code 1             --no-progress --skip-version-check)"
+        docker cp "$archive" "$container:/image.tar"
+
+        set +e
+        docker start --attach "$container"
+        scan_rc=$?
+        set -e
+        docker rm -f "$container" >/dev/null 2>&1 || true
+        container=""
+        rm -f "$archive"
+        trap - EXIT
+        if (( scan_rc != 0 )); then
+          docker image rm -f "$image" >/dev/null 2>&1 || true
+          echo "::error::Built image failed the HIGH/CRITICAL vulnerability gate."
+          exit "$scan_rc"
+        fi
+
         image_id="$(docker image inspect "$image" --format '{{.Id}}')"
         {
           echo "image=$image"

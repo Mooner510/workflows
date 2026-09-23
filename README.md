@@ -190,7 +190,10 @@ Semgrep CE
 OSV-Scanner
 Gitleaks current + history
 Trivy misconfiguration
+CD built-image Trivy HIGH/CRITICAL vulnerability gate
 ```
+
+Self-hosted runner가 container 안에서 host Docker daemon을 사용하는 경우에도 source bind path를 신뢰하지 않습니다. Security scanner는 checkout을 `docker cp`로 scanner container에 복사해 검사하며, 빈 checkout/복사 실패는 fail-closed 처리합니다. 따라서 runner 내부 `GITHUB_WORKSPACE`와 Docker host path가 달라도 빈 디렉터리를 성공으로 오인하지 않습니다.
 
 ## Manual Go formatting
 
