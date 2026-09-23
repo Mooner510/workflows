@@ -11,6 +11,10 @@ inputs:
   package-manager:
     description: Package manager shared by this CI group (npm, pnpm, yarn, or bun).
     required: true
+  private_repo_token:
+    description: Optional GitHub token with read access to private Git dependencies.
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -56,6 +60,22 @@ runs:
       with:
         node-version: ${{ inputs.version }}
         package-manager-cache: false
+
+    - name: Configure private Git dependency access
+      if: inputs.private_repo_token != ''
+      shell: bash
+      env:
+        PRIVATE_REPO_TOKEN: ${{ inputs.private_repo_token }}
+      run: |
+        set -euo pipefail
+        git_config="$RUNNER_TEMP/node-private-gitconfig-${GITHUB_RUN_ID}-${GITHUB_JOB}"
+        : >"$git_config"
+        chmod 600 "$git_config"
+        auth_prefix="https://x-access-token:${PRIVATE_REPO_TOKEN}@github.com/"
+        git config --file "$git_config" --add url."$auth_prefix".insteadOf "https://github.com/"
+        git config --file "$git_config" --add url."$auth_prefix".insteadOf "ssh://git@github.com/"
+        git config --file "$git_config" --add url."$auth_prefix".insteadOf "git@github.com:"
+        echo "GIT_CONFIG_GLOBAL=$git_config" >>"$GITHUB_ENV"
 
     - name: Install npm dependencies
       if: inputs.package-manager == 'npm'
@@ -149,3 +169,11 @@ runs:
 
           checked[$component]=1
         done < <(jq -c '.[]' <<<"$components")
+    - name: Remove private Git credentials
+      if: always() && inputs.private_repo_token != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -n "${GIT_CONFIG_GLOBAL:-}" ]]; then
+          rm -f "$GIT_CONFIG_GLOBAL"
+        fi
