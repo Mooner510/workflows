@@ -1,0 +1,548 @@
+name: Detect affected components and services
+description: Canonical repository change detection used by every shared CI/CD workflow.
+
+inputs:
+  components:
+    description: Normalized component JSON array.
+    required: true
+  force_all:
+    description: Mark every component and mapped service as affected.
+    required: false
+    default: 'false'
+  diff_base:
+    description: Optional trusted ancestor SHA used by explicit maintenance CI dispatches.
+    required: false
+    default: ''
+
+outputs:
+  all_components:
+    value: ${{ steps.detect.outputs.all_components }}
+  ci_targets:
+    value: ${{ steps.detect.outputs.ci_targets }}
+  ci_groups_by_target:
+    value: ${{ steps.detect.outputs.ci_groups_by_target }}
+  affected_services:
+    value: ${{ steps.detect.outputs.affected_services }}
+  has_changes:
+    value: ${{ steps.detect.outputs.has_changes }}
+  git_log_opts:
+    value: ${{ steps.detect.outputs.git_log_opts }}
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout caller repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+        ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+    - name: Validate, detect, and normalize affected components
+      id: detect
+      shell: bash
+      env:
+        COMPONENTS_JSON: ${{ inputs.components }}
+        FORCE_ALL: ${{ inputs.force_all }}
+        EVENT_NAME: ${{ github.event_name }}
+        HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PUSH_BEFORE_SHA: ${{ github.event.before }}
+      run: |
+        set -euo pipefail
+
+        command -v git >/dev/null || { echo "::error::git is required on the self-hosted runner."; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+
+        components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+        if [[ "$(jq 'type' <<<"$components")" != '"array"' ]] || [[ "$(jq 'length' <<<"$components")" -eq 0 ]]; then
+          echo "::error::components must be a non-empty JSON array."
+          exit 1
+        fi
+
+        duplicate_names="$(jq -r 'group_by(.name)[] | select(length > 1) | .[0].name' <<<"$components")"
+        if [[ -n "$duplicate_names" ]]; then
+          echo "::error::Component names must be unique: ${duplicate_names//$'\n'/, }"
+          exit 1
+        fi
+
+        workspace="$(realpath "$GITHUB_WORKSPACE")"
+
+        validate_relative_path() {
+          local value="$1"
+          local label="$2"
+          if [[ -z "$value" ]] || [[ "$value" == /* ]] || [[ "$value" == *$'\n'* ]] || [[ "$value" == *$'\r'* ]]; then
+            echo "::error::$label must be a non-empty repository-relative path."
+            exit 1
+          fi
+          if [[ "$value" == ".." || "$value" == ../* || "$value" == */../* || "$value" == */.. ]]; then
+            echo "::error::$label must not contain '..' path traversal."
+            exit 1
+          fi
+        }
+
+        count="$(jq 'length' <<<"$components")"
+        for ((i = 0; i < count; i++)); do
+          component="$(jq -c ".[$i]" <<<"$components")"
+          if [[ "$(jq 'type' <<<"$component")" != '"object"' ]]; then
+            echo "::error::Every components entry must be an object."
+            exit 1
+          fi
+
+          name="$(jq -r '.name // empty' <<<"$component")"
+          type="$(jq -r '.type // empty' <<<"$component")"
+          path="$(jq -r '.path // empty' <<<"$component")"
+
+          [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid component name '$name'."; exit 1; }
+          case "$type" in
+            go|node|java-kotlin) ;;
+            *) echo "::error::Component '$name' has unsupported type '$type'."; exit 1 ;;
+          esac
+
+          validate_relative_path "$path" "Component '$name' path"
+          resolved="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+          if [[ -z "$resolved" ]] || { [[ "$resolved" != "$workspace" ]] && [[ "$resolved" != "$workspace/"* ]]; }; then
+            echo "::error::Component '$name' path '$path' does not resolve inside the repository."
+            exit 1
+          fi
+
+          if ! jq -e '(.watch == null) or ((.watch | type) == "array" and all(.watch[]; type == "string"))' <<<"$component" >/dev/null; then
+            echo "::error::Component '$name' watch must be an array of repository-relative path strings."
+            exit 1
+          fi
+          if ! jq -e '(.watch_path == null) or ((.watch_path | type) == "boolean")' <<<"$component" >/dev/null; then
+            echo "::error::Component '$name' watch_path must be boolean when set."
+            exit 1
+          fi
+          while IFS= read -r watch; do
+            validate_relative_path "$watch" "Component '$name' watch entry"
+          done < <(jq -r '.watch // [] | .[]' <<<"$component")
+
+          if [[ "$(jq -r '.watch_path // true' <<<"$component")" == "false" ]] && [[ "$(jq '.watch // [] | length' <<<"$component")" -eq 0 ]]; then
+            echo "::error::Component '$name' must define at least one watch entry when watch_path is false."
+            exit 1
+          fi
+
+          if ! jq -e '(.deploy_services == null) or ((.deploy_services | type) == "array" and all(.deploy_services[]; type == "string" and test("^[a-z][a-z0-9-]{0,62}$")) and ((.deploy_services | unique | length) == (.deploy_services | length)))' <<<"$component" >/dev/null; then
+            echo "::error::Component '$name' deploy_services must be a unique array of canonical logical service names."
+            exit 1
+          fi
+
+          if ! jq -e '(.deploy_service_watches == null) or ((.deploy_service_watches | type) == "object" and (.deploy_service_watches | to_entries | all((.key | test("^[a-z][a-z0-9-]{0,62}$")) and (.value | type == "array") and (.value | all(type == "string")))))' <<<"$component" >/dev/null; then
+            echo "::error::Component '$name' deploy_service_watches must map canonical service names to path arrays."
+            exit 1
+          fi
+          while IFS= read -r deploy_watch; do
+            validate_relative_path "$deploy_watch" "Component '$name' deploy_service_watches entry"
+          done < <(jq -r '.deploy_service_watches // {} | to_entries[] | .value[]' <<<"$component")
+
+          case "$type" in
+            node)
+              package_manager="$(jq -r '.package_manager // empty' <<<"$component")"
+              if [[ -n "$package_manager" ]]; then
+                case "$package_manager" in npm|pnpm|yarn|bun) ;; *) echo "::error::Invalid package_manager '$package_manager' for '$name'."; exit 1 ;; esac
+              fi
+              ;;
+            java-kotlin)
+              build_tool="$(jq -r '.build_tool // empty' <<<"$component")"
+              profile="$(jq -r '.profile // "none"' <<<"$component")"
+              if [[ -n "$build_tool" ]]; then
+                case "$build_tool" in gradle|maven) ;; *) echo "::error::Invalid build_tool '$build_tool' for '$name'."; exit 1 ;; esac
+              fi
+              case "$profile" in none|android|spring-boot) ;; *) echo "::error::Invalid profile '$profile' for '$name'."; exit 1 ;; esac
+              ;;
+          esac
+
+          if ! jq -e '(.gradle_tasks == null) or ((.gradle_tasks | type) == "string")' <<<"$component" >/dev/null; then
+            echo "::error::Component '$name' gradle_tasks must be a string when set."
+            exit 1
+          fi
+          if ! jq -e '(.maven_goals == null) or ((.maven_goals | type) == "string")' <<<"$component" >/dev/null; then
+            echo "::error::Component '$name' maven_goals must be a string when set."
+            exit 1
+          fi
+
+          migration_engine="$(jq -r '.migration_engine // "none"' <<<"$component")"
+          case "$migration_engine" in
+            none)
+              ;;
+            goose|go-command)
+              if [[ "$migration_engine" == "go-command" && "$type" != "go" ]]; then
+                echo "::error::go-command migration requires a Go component ('$name')."
+                exit 1
+              fi
+              migration_path="$(jq -r '.migration_path // "db/migrations"' <<<"$component")"
+              validate_relative_path "$migration_path" "Component '$name' migration_path"
+              if ! jq -e '(.goose_version == null) or ((.goose_version | type) == "string" and length > 0)' <<<"$component" >/dev/null; then
+                echo "::error::Component '$name' goose_version must be a non-empty string when set."
+                exit 1
+              fi
+              ;;
+            prisma)
+              [[ "$type" == "node" ]] || { echo "::error::Prisma migration requires a Node component ('$name')."; exit 1; }
+              migration_path="$(jq -r '.migration_path // "prisma/migrations"' <<<"$component")"
+              migration_schema="$(jq -r '.migration_schema // "prisma/schema.prisma"' <<<"$component")"
+              validate_relative_path "$migration_path" "Component '$name' migration_path"
+              validate_relative_path "$migration_schema" "Component '$name' migration_schema"
+              ;;
+            drizzle)
+              [[ "$type" == "node" ]] || { echo "::error::Drizzle migration requires a Node component ('$name')."; exit 1; }
+              migration_path="$(jq -r '.migration_path // "drizzle"' <<<"$component")"
+              migration_config="$(jq -r '.migration_config // "drizzle.config.ts"' <<<"$component")"
+              validate_relative_path "$migration_path" "Component '$name' migration_path"
+              validate_relative_path "$migration_config" "Component '$name' migration_config"
+              ;;
+            flyway)
+              [[ "$type" == "java-kotlin" ]] || { echo "::error::Flyway migration requires a Java/Kotlin component ('$name')."; exit 1; }
+              migration_path="$(jq -r '.migration_path // "src/main/resources/db/migration"' <<<"$component")"
+              validate_relative_path "$migration_path" "Component '$name' migration_path"
+              ;;
+            *)
+              echo "::error::Unsupported migration_engine '$migration_engine' for '$name'."
+              exit 1
+              ;;
+          esac
+        done
+
+        force_all=false
+        changed_file_list="$(mktemp)"
+        trap 'rm -f "$changed_file_list"' EXIT
+        git_log_opts="--all"
+
+        if [[ "$FORCE_ALL" == "true" ]]; then
+          force_all=true
+          echo "force_all=true: every configured component is affected."
+        elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+          base_sha="$PR_BASE_SHA"
+          head_sha="$HEAD_SHA"
+          git cat-file -e "${base_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$base_sha"
+          git cat-file -e "${head_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$head_sha"
+          merge_base="$(git merge-base "$base_sha" "$head_sha")"
+          git diff --name-only --no-renames --diff-filter=ACMRD "$merge_base" "$head_sha" >"$changed_file_list"
+          git_log_opts="${merge_base}..${head_sha}"
+        elif [[ "$EVENT_NAME" == "push" ]] && [[ -n "${PUSH_BEFORE_SHA:-}" ]] && [[ ! "$PUSH_BEFORE_SHA" =~ ^0+$ ]]; then
+          git cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2>/dev/null || git fetch --no-tags origin "$PUSH_BEFORE_SHA"
+          git diff --name-only --no-renames --diff-filter=ACMRD "$PUSH_BEFORE_SHA" "$HEAD_SHA" >"$changed_file_list"
+          git_log_opts="${PUSH_BEFORE_SHA}..${HEAD_SHA}"
+        else
+          force_all=true
+          echo "No reliable diff base for event '$EVENT_NAME'; every configured component is affected."
+        fi
+
+        if [[ "$force_all" != "true" ]]; then
+          echo "Changed files:"
+          [[ -s "$changed_file_list" ]] && sed 's/^/  - /' "$changed_file_list" || echo "  (none)"
+        fi
+
+        repo_relative_path() {
+          local input="$1"
+          local resolved
+          resolved="$(realpath -m "$GITHUB_WORKSPACE/$input")"
+          if [[ "$resolved" == "$workspace" ]]; then
+            printf '.'
+          elif [[ "$resolved" == "$workspace/"* ]]; then
+            printf '%s' "${resolved#"$workspace"/}"
+          else
+            echo "::error::Path '$input' resolves outside the repository." >&2
+            return 1
+          fi
+        }
+
+        selected='[]'
+        for ((i = 0; i < count; i++)); do
+          component="$(jq -c ".[$i]" <<<"$components")"
+          name="$(jq -r '.name' <<<"$component")"
+          path="$(jq -r '.path' <<<"$component")"
+          affected="$force_all"
+          migration_changed=false
+          migration_engine="$(jq -r '.migration_engine // "none"' <<<"$component")"
+
+          if [[ "$migration_engine" != "none" ]]; then
+            if [[ "$force_all" == "true" ]]; then
+              migration_changed=true
+            else
+              case "$migration_engine" in
+                goose|go-command)
+                  migration_path="$(jq -r '.migration_path // "db/migrations"' <<<"$component")"
+                  migration_schema=""
+                  ;;
+                prisma)
+                  migration_path="$(jq -r '.migration_path // "prisma/migrations"' <<<"$component")"
+                  migration_schema="$(jq -r '.migration_schema // "prisma/schema.prisma"' <<<"$component")"
+                  ;;
+                drizzle)
+                  migration_path="$(jq -r '.migration_path // "drizzle"' <<<"$component")"
+                  migration_schema="$(jq -r '.migration_config // "drizzle.config.ts"' <<<"$component")"
+                  ;;
+                flyway)
+                  migration_path="$(jq -r '.migration_path // "src/main/resources/db/migration"' <<<"$component")"
+                  migration_schema=""
+                  ;;
+              esac
+
+              migration_root="$(repo_relative_path "$path/$migration_path")" || exit 1
+              migration_schema_path=""
+              if [[ -n "$migration_schema" ]]; then
+                migration_schema_path="$(repo_relative_path "$path/$migration_schema")" || exit 1
+              fi
+
+              while IFS= read -r changed; do
+                if [[ "$changed" == "$migration_root" ]] || [[ "$changed" == "$migration_root/"* ]] ||                      { [[ -n "$migration_schema_path" ]] && [[ "$changed" == "$migration_schema_path" ]]; }; then
+                  migration_changed=true
+                  break
+                fi
+              done <"$changed_file_list"
+            fi
+          fi
+
+          if [[ "$migration_changed" == "true" ]]; then
+            affected=true
+            echo "Migration affected: $name"
+          fi
+
+          if [[ "$affected" != "true" && "$force_all" != "true" ]]; then
+            type="$(jq -r '.type' <<<"$component")"
+            if [[ "$type" == "go" ]]; then
+              while IFS= read -r changed; do
+                if [[ "$changed" == "go.work" || "$changed" == "go.work.sum" ]]; then
+                  affected=true
+                  break
+                fi
+              done <"$changed_file_list"
+            elif [[ "$type" == "node" ]]; then
+              while IFS= read -r changed; do
+                case "$changed" in
+                  package.json|package-lock.json|pnpm-lock.yaml|pnpm-workspace.yaml|yarn.lock|bun.lock|bun.lockb)
+                    affected=true
+                    break
+                    ;;
+                esac
+              done <"$changed_file_list"
+            fi
+          fi
+
+          if [[ "$affected" != "true" ]]; then
+            while IFS= read -r changed; do
+              if [[ "$changed" == ".github/workflows/"* || "$changed" == ".github/actions/"* ]]; then
+                affected=true
+                break
+              fi
+
+              while IFS= read -r watch; do
+                watch="${watch%/}"
+                if [[ "$watch" == "." ]] || [[ "$changed" == "$watch" ]] || [[ "$changed" == "$watch/"* ]]; then
+                  affected=true
+                  break 2
+                fi
+              done < <(jq -r '((if (.watch_path // true) then [.path] else [] end) + (.watch // [])) | unique | .[]' <<<"$component")
+            done <"$changed_file_list"
+          fi
+
+          if [[ "$affected" == "true" ]]; then
+            component="$(jq -c --argjson migration_changed "$migration_changed" '.migration_changed = $migration_changed' <<<"$component")"
+            selected="$(jq -c --argjson component "$component" '. + [$component]' <<<"$selected")"
+            echo "Affected: $name ($(jq -r '.path' <<<"$component"))"
+          fi
+        done
+
+        resolve_node_manager() {
+          local component="$1"
+          local cursor="$component"
+          local matches=()
+          while :; do
+            matches=()
+            [[ -f "$cursor/package-lock.json" ]] && matches+=(npm)
+            [[ -f "$cursor/pnpm-lock.yaml" ]] && matches+=(pnpm)
+            [[ -f "$cursor/yarn.lock" ]] && matches+=(yarn)
+            [[ -f "$cursor/bun.lock" || -f "$cursor/bun.lockb" ]] && matches+=(bun)
+            if (( ${#matches[@]} > 1 )); then
+              echo "::error::Multiple Node package-manager lockfiles found in '$cursor'." >&2
+              return 1
+            fi
+            if (( ${#matches[@]} == 1 )); then
+              printf '%s' "${matches[0]}"
+              return 0
+            fi
+            [[ "$cursor" == "$workspace" ]] && break
+            cursor="$(dirname "$cursor")"
+          done
+          echo "::error::No Node package-manager lockfile found from '$component' up to repository root." >&2
+          return 1
+        }
+
+        resolve_java_build_tool() {
+          local component="$1"
+          local gradle=false
+          local maven=false
+          [[ -f "$component/gradlew" || -f "$component/build.gradle" || -f "$component/build.gradle.kts" ]] && gradle=true
+          [[ -f "$component/mvnw" || -f "$component/pom.xml" ]] && maven=true
+          if [[ "$gradle" == "true" && "$maven" == "true" ]]; then
+            echo "::error::Both Gradle and Maven metadata found at '$component'; set build_tool explicitly." >&2
+            return 1
+          fi
+          if [[ "$gradle" == "true" ]]; then printf 'gradle'; return 0; fi
+          if [[ "$maven" == "true" ]]; then printf 'maven'; return 0; fi
+          echo "::error::No Gradle or Maven build metadata found at '$component'." >&2
+          return 1
+        }
+
+        resolve_go_version() {
+          local component="$1"
+          local cursor="$component"
+          local module_file=""
+          local toolchain=""
+          local version=""
+
+          while :; do
+            if [[ -f "$cursor/go.mod" ]]; then
+              module_file="$cursor/go.mod"
+              break
+            fi
+            [[ "$cursor" == "$workspace" ]] && break
+            cursor="$(dirname "$cursor")"
+          done
+
+          [[ -n "$module_file" ]] || {
+            printf 'stable'
+            return 0
+          }
+
+          toolchain="$(awk '$1 == "toolchain" && $2 ~ /^go[0-9]/ { sub(/^go/, "", $2); print $2; exit }' "$module_file")"
+          version="$toolchain"
+          if [[ -z "$version" ]]; then
+            version="$(awk '$1 == "go" { print $2; exit }' "$module_file")"
+          fi
+
+          if [[ -z "$version" || ! "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Unable to resolve a valid Go version from '$module_file'." >&2
+            return 1
+          fi
+          printf '%s' "$version"
+        }
+
+        normalized='[]'
+        while IFS= read -r component; do
+          name="$(jq -r '.name' <<<"$component")"
+          type="$(jq -r '.type' <<<"$component")"
+          path="$(jq -r '.path' <<<"$component")"
+          component_path="$(realpath -e "$GITHUB_WORKSPACE/$path")"
+
+          case "$type" in
+            go)
+              configured_version="$(jq -r '.go_version // empty' <<<"$component")"
+              if [[ -n "$configured_version" ]]; then
+                go_version="$configured_version"
+              else
+                go_version="$(resolve_go_version "$component_path")" || exit 1
+              fi
+              component="$(jq -c --arg version "$go_version" '.go_version = $version' <<<"$component")"
+              ;;
+            node)
+              detected_manager="$(resolve_node_manager "$component_path")" || exit 1
+              configured_manager="$(jq -r '.package_manager // empty' <<<"$component")"
+              if [[ -n "$configured_manager" && "$configured_manager" != "$detected_manager" ]]; then
+                echo "::error::Node component '$name' declares '$configured_manager' but lockfile detection found '$detected_manager'."
+                exit 1
+              fi
+              component="$(jq -c --arg manager "$detected_manager" '.package_manager = $manager' <<<"$component")"
+              ;;
+            java-kotlin)
+              configured_tool="$(jq -r '.build_tool // empty' <<<"$component")"
+              if [[ -n "$configured_tool" ]]; then
+                build_tool="$configured_tool"
+              else
+                build_tool="$(resolve_java_build_tool "$component_path")" || exit 1
+              fi
+              profile="$(jq -r '.profile // "none"' <<<"$component")"
+              if [[ "$build_tool" == "gradle" && ! -f "$component_path/gradlew" ]]; then
+                echo "::error::Java/Kotlin Gradle component '$name' must contain gradlew at its component root."
+                exit 1
+              fi
+              if [[ "$build_tool" == "maven" && ! -f "$component_path/mvnw" ]]; then
+                echo "::error::Java/Kotlin Maven component '$name' must contain mvnw at its component root."
+                exit 1
+              fi
+              if [[ "$profile" == "android" && "$build_tool" != "gradle" ]]; then
+                echo "::error::Android profile requires Gradle for component '$name'."
+                exit 1
+              fi
+              component="$(jq -c --arg tool "$build_tool" --arg profile "$profile" '.build_tool = $tool | .profile = $profile' <<<"$component")"
+              ;;
+          esac
+
+          normalized="$(jq -c --argjson component "$component" '. + [$component]' <<<"$normalized")"
+        done < <(jq -c '.[]' <<<"$selected")
+
+        ci_groups="$(jq -c '
+          [
+            (map(select(.type == "go"))
+              | group_by(.go_version // "stable")[]
+              | {
+                  target: ("Go " + (.[0].go_version // "stable")),
+                  type: "go",
+                  version: (.[0].go_version // "stable"),
+                  components: .
+                }),
+            (map(select(.type == "node"))
+              | group_by([(.node_version // "24.21.0"), .package_manager])[]
+              | {
+                  target: ("Node " + (.[0].node_version // "24") + " / " + .[0].package_manager),
+                  type: "node",
+                  version: (.[0].node_version // "24"),
+                  package_manager: .[0].package_manager,
+                  components: .
+                }),
+            (map(select(.type == "java-kotlin"))
+              | group_by([(.java_version // "17"), .build_tool, .profile])[]
+              | {
+                  target: ("Java " + (.[0].java_version // "17") + " / " + .[0].build_tool + (if .[0].profile == "none" then "" else " / " + .[0].profile end)),
+                  type: "java-kotlin",
+                  version: (.[0].java_version // "17"),
+                  build_tool: .[0].build_tool,
+                  profile: .[0].profile,
+                  components: .
+                })
+          ]
+        ' <<<"$normalized")"
+
+        ci_targets="$(jq -c 'map(.target)' <<<"$ci_groups")"
+        ci_groups_by_target="$(jq -c 'reduce .[] as $group ({}; .[$group.target] = $group)' <<<"$ci_groups")"
+        affected_services="$(jq -c '[.[] | (.deploy_services // [])[]] | unique | sort' <<<"$normalized")"
+
+        while IFS= read -r component; do
+          service_watch_map="$(jq -c '.deploy_service_watches // {}' <<<"$component")"
+          while IFS= read -r service; do
+            [[ -n "$service" ]] || continue
+            service_affected="$force_all"
+            if [[ "$service_affected" != "true" ]]; then
+              while IFS= read -r changed; do
+                if [[ "$changed" == ".github/workflows/"* || "$changed" == ".github/actions/"* ]]; then
+                  service_affected=true
+                  break
+                fi
+                while IFS= read -r watch; do
+                  watch="${watch%/}"
+                  if [[ "$watch" == "." ]] || [[ "$changed" == "$watch" ]] || [[ "$changed" == "$watch/"* ]]; then
+                    service_affected=true
+                    break 2
+                  fi
+                done < <(jq -r --arg service "$service" '.[$service][]' <<<"$service_watch_map")
+              done <"$changed_file_list"
+            fi
+            if [[ "$service_affected" == "true" ]]; then
+              affected_services="$(jq -c --arg service "$service" '. + [$service] | unique | sort' <<<"$affected_services")"
+            fi
+          done < <(jq -r 'keys[]' <<<"$service_watch_map")
+        done < <(jq -c '.[]' <<<"$normalized")
+
+        if [[ "$(jq 'length' <<<"$normalized")" -gt 0 ]]; then has_changes=true; else has_changes=false; fi
+
+        {
+          echo "all_components=$normalized"
+          echo "ci_targets=$ci_targets"
+          echo "ci_groups_by_target=$ci_groups_by_target"
+          echo "affected_services=$affected_services"
+          echo "has_changes=$has_changes"
+          echo "git_log_opts=$git_log_opts"
+        } >>"$GITHUB_OUTPUT"
+
