@@ -20,11 +20,6 @@ on:
         required: false
         type: string
         default: ci.yml
-      ci_workflow:
-        description: Caller CI workflow file to dispatch after a maintenance commit. Empty disables dispatch.
-        required: false
-        type: string
-        default: ci.yml
     secrets:
       CI_PRIVATE_REPO_TOKEN:
         description: Optional GitHub token with read access to private Go module repositories.
@@ -41,6 +36,11 @@ on:
         required: false
         type: string
         default: ''
+      ci_workflow:
+        description: Caller CI workflow file to dispatch after a maintenance commit. Empty disables dispatch.
+        required: false
+        type: string
+        default: ci.yml
 
 permissions:
   contents: write
