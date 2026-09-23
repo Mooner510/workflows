@@ -1,0 +1,97 @@
+name: Finalize canonical Docker images
+description: Atomically promote or clean temporary service images for one verified revision.
+
+inputs:
+  services:
+    description: Canonical normalized service JSON array.
+    required: true
+  affected-services:
+    description: JSON array of affected logical service names.
+    required: true
+  environment:
+    description: prod or dev.
+    required: true
+  operation:
+    description: finalize or cleanup.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Finalize image set
+      shell: bash
+      env:
+        SERVICES_JSON: ${{ inputs.services }}
+        AFFECTED_SERVICES_JSON: ${{ inputs.affected-services }}
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+        OPERATION: ${{ inputs.operation }}
+      run: |
+        set -euo pipefail
+
+        command -v docker >/dev/null || { echo "::error::Docker is required."; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
+
+        case "$DEPLOY_ENVIRONMENT" in prod|dev) ;; *) echo "::error::environment must be prod or dev."; exit 1 ;; esac
+        case "$OPERATION" in finalize|cleanup) ;; *) echo "::error::operation must be finalize or cleanup."; exit 1 ;; esac
+
+        jq -e 'type=="array" and all(.[]; type=="string")' <<<"$AFFECTED_SERVICES_JSON" >/dev/null || {
+          echo "::error::affected-services must be a string array."
+          exit 1
+        }
+
+        project="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+        temp_prefix="ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA}"
+        canonical_tag="$GITHUB_SHA"
+        if [[ "$DEPLOY_ENVIRONMENT" == "dev" ]]; then
+          temp_prefix="dev-$temp_prefix"
+          canonical_tag="dev-$GITHUB_SHA"
+        fi
+
+        mapfile -t names < <(jq -r '.[]' <<<"$AFFECTED_SERVICES_JSON")
+        if (( ${#names[@]} == 0 )); then
+          echo "No affected Docker services."
+          exit 0
+        fi
+
+        declare -a temps=()
+        declare -a canonicals=()
+        for name in "${names[@]}"; do
+          jq -e --arg name "$name" 'any(.[]; .name==$name)' <<<"$SERVICES_JSON" >/dev/null || {
+            echo "::error::Affected service '$name' is not declared in .github/stacks.json."
+            exit 1
+          }
+          temps+=("$project/$name:$temp_prefix")
+          canonicals+=("$project/$name:$canonical_tag")
+        done
+
+        if [[ "$OPERATION" == "cleanup" ]]; then
+          for image in "${temps[@]}"; do
+            docker image rm -f "$image" >/dev/null 2>&1 || true
+          done
+          echo "Temporary image cleanup complete."
+          exit 0
+        fi
+
+        # Verify the complete affected set before publishing any canonical tag.
+        for image in "${temps[@]}"; do
+          docker image inspect "$image" >/dev/null 2>&1 || {
+            echo "::error::Verified temporary image is missing: $image"
+            exit 1
+          }
+        done
+
+        created=()
+        rollback_tags() {
+          for tag in "${created[@]}"; do
+            docker image rm -f "$tag" >/dev/null 2>&1 || true
+          done
+        }
+        trap rollback_tags ERR
+
+        for ((i=0; i<${#temps[@]}; i++)); do
+          docker tag "${temps[$i]}" "${canonicals[$i]}"
+          created+=("${canonicals[$i]}")
+          echo "Published ${canonicals[$i]}"
+        done
+
+        trap - ERR
