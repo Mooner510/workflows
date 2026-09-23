@@ -6,6 +6,8 @@ outputs:
     value: ${{ steps.load.outputs.components }}
   services:
     value: ${{ steps.load.outputs.services }}
+  go-private-patterns:
+    value: ${{ steps.load.outputs.go_private_patterns }}
 
 runs:
   using: composite
@@ -27,9 +29,10 @@ runs:
         jq -e '
           type == "object"
           and (.version == 1)
-          and ((keys - ["version","components","services"]) | length == 0)
+          and ((keys - ["version","components","services","go_private_patterns"]) | length == 0)
           and (.components | type == "array" and length > 0)
           and ((.services // []) | type == "array")
+          and ((.go_private_patterns == null) or (.go_private_patterns|type)=="string")
         ' "$contract" >/dev/null || {
           echo "::error::.github/stacks.json must be a version 1 object containing only version, components, and services."
           exit 1
@@ -37,6 +40,7 @@ runs:
 
         components="$(jq -c '.components' "$contract")"
         services="$(jq -c '.services // []' "$contract")"
+        go_private_patterns="$(jq -r '.go_private_patterns // ""' "$contract")"
 
         duplicate_components="$(jq -r 'group_by(.name)[] | select(length > 1) | .[0].name // empty' <<<"$components")"
         [[ -z "$duplicate_components" ]] || {
@@ -158,4 +162,5 @@ runs:
         {
           echo "components=$normalized_components"
           echo "services=$normalized_services"
+          echo "go_private_patterns=$go_private_patterns"
         } >>"$GITHUB_OUTPUT"
