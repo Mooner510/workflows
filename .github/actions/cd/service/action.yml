@@ -1,0 +1,307 @@
+name: Deploy canonical service
+description: Canonical environment-aware service deployment using only .github/stacks.json metadata and prebuilt images.
+
+inputs:
+  service:
+    description: Normalized service JSON.
+    required: true
+  components:
+    description: Normalized component JSON array.
+    required: true
+  environment:
+    description: prod or dev.
+    required: true
+  operation:
+    description: deploy or rollback.
+    required: false
+    default: deploy
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve service contract
+      id: contract
+      shell: bash
+      env:
+        SERVICE_JSON: ${{ inputs.service }}
+        COMPONENTS_JSON: ${{ inputs.components }}
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+        OPERATION: ${{ inputs.operation }}
+      run: |
+        set -euo pipefail
+        command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
+        case "$DEPLOY_ENVIRONMENT" in prod|dev) ;; *) echo "::error::Invalid environment."; exit 1 ;; esac
+        case "$OPERATION" in deploy|rollback) ;; *) echo "::error::Invalid operation."; exit 1 ;; esac
+        if [[ "$DEPLOY_ENVIRONMENT" == "dev" && "$OPERATION" != "deploy" ]]; then
+          echo "::error::Development supports automatic deploy only."
+          exit 1
+        fi
+
+        service="$(jq -r '.name' <<<"$SERVICE_JSON")"
+        component_name="$(jq -r '.component' <<<"$SERVICE_JSON")"
+        component="$(jq -c --arg name "$component_name" '.[] | select(.name==$name)' <<<"$COMPONENTS_JSON")"
+        [[ -n "$component" ]] || { echo "::error::Missing component '$component_name'."; exit 1; }
+
+        project="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+        network="project-$project"
+        [[ "$DEPLOY_ENVIRONMENT" != "dev" ]] || network="$network-dev"
+
+        migrate="$(jq -r '.migrate // false' <<<"$SERVICE_JSON")"
+        database="$(jq -r '.database // false' <<<"$SERVICE_JSON")"
+        engine="none"
+        if [[ "$migrate" == "true" ]]; then
+          engine="$(jq -r '.migration_engine // "none"' <<<"$component")"
+        fi
+
+        component_path="$(jq -r '.path' <<<"$component")"
+        migration_path="$(jq -r '.migration_path // empty' <<<"$component")"
+        migration_schema="$(jq -r '.migration_schema // empty' <<<"$component")"
+        migration_config="$(jq -r '.migration_config // empty' <<<"$component")"
+        migration_package="$(jq -r '.migration_package // empty' <<<"$component")"
+        migration_package_manager="$(jq -r '.migration_package_manager // .package_manager // empty' <<<"$component")"
+        migration_build_tool="$(jq -r '.migration_build_tool // .build_tool // empty' <<<"$component")"
+        goose_version="$(jq -r '.goose_version // empty' <<<"$component")"
+
+        if [[ "$migrate" == "true" ]]; then
+          case "$engine" in
+            goose|go-command|prisma|drizzle|flyway) ;;
+            *) echo "::error::Service '$service' has unsupported migration engine '$engine'."; exit 1 ;;
+          esac
+        fi
+
+        if [[ "$engine" == "prisma" || "$engine" == "drizzle" ]]; then
+          if [[ -z "$migration_package_manager" ]]; then
+            cursor="$(realpath -e "$GITHUB_WORKSPACE/$component_path")"
+            workspace="$(realpath -e "$GITHUB_WORKSPACE")"
+            while :; do
+              found=()
+              [[ -f "$cursor/package-lock.json" ]] && found+=(npm)
+              [[ -f "$cursor/pnpm-lock.yaml" ]] && found+=(pnpm)
+              [[ -f "$cursor/yarn.lock" ]] && found+=(yarn)
+              [[ -f "$cursor/bun.lock" || -f "$cursor/bun.lockb" ]] && found+=(bun)
+              (( ${#found[@]} <= 1 )) || { echo "::error::Multiple package-manager lockfiles found for '$service'."; exit 1; }
+              if (( ${#found[@]} == 1 )); then migration_package_manager="${found[0]}"; break; fi
+              [[ "$cursor" == "$workspace" ]] && break
+              cursor="$(dirname "$cursor")"
+            done
+          fi
+          [[ -n "$migration_package_manager" ]] || { echo "::error::Unable to resolve package manager for '$service' migration."; exit 1; }
+        fi
+
+        if [[ "$engine" == "flyway" && -z "$migration_build_tool" ]]; then
+          root="$GITHUB_WORKSPACE/$component_path"
+          if [[ -f "$root/gradlew" ]]; then migration_build_tool=gradle
+          elif [[ -f "$root/mvnw" ]]; then migration_build_tool=maven
+          else echo "::error::Unable to resolve Flyway build tool for '$service'."; exit 1
+          fi
+        fi
+
+        canonical_tag="$GITHUB_SHA"
+        [[ "$DEPLOY_ENVIRONMENT" != "dev" ]] || canonical_tag="dev-$GITHUB_SHA"
+        image="$project/$service:$canonical_tag"
+
+        {
+          echo "project=$project"
+          echo "service=$service"
+          echo "network=$network"
+          echo "database=$database"
+          echo "migrate=$migrate"
+          echo "migration_engine=$engine"
+          echo "component_path=$component_path"
+          echo "migration_path=$migration_path"
+          echo "migration_schema=$migration_schema"
+          echo "migration_config=$migration_config"
+          echo "migration_package=$migration_package"
+          echo "migration_package_manager=$migration_package_manager"
+          echo "migration_build_tool=$migration_build_tool"
+          echo "goose_version=$goose_version"
+          echo "image=$image"
+        } >>"$GITHUB_OUTPUT"
+
+    - name: Check development deployment gate
+      id: dev_gate
+      if: inputs.environment == 'dev'
+      uses: Mooner510/workflows/.github/actions/cd/development-enabled@v1
+      with:
+        service: ${{ steps.contract.outputs.service }}
+
+    - name: Validate runtime prerequisites
+      if: steps.dev_gate.outputs.enabled != 'false'
+      shell: bash
+      env:
+        PROJECT: ${{ steps.contract.outputs.project }}
+        SERVICE: ${{ steps.contract.outputs.service }}
+        NETWORK: ${{ steps.contract.outputs.network }}
+      run: |
+        set -euo pipefail
+        [[ -d "/opt/stacks/projects/$PROJECT/$SERVICE" ]] || {
+          echo "::error::Service registry is missing: /opt/stacks/projects/$PROJECT/$SERVICE"
+          exit 1
+        }
+        docker network inspect "$NETWORK" >/dev/null 2>&1 || {
+          echo "::error::Project network is missing: $NETWORK"
+          exit 1
+        }
+
+    - name: Resolve database credentials
+      id: credentials
+      if: steps.dev_gate.outputs.enabled != 'false'
+      uses: Mooner510/workflows/.github/actions/cd/resolve-db-credentials@v1
+      with:
+        environment: ${{ inputs.environment }}
+        project: ${{ steps.contract.outputs.project }}
+        migration-engine: ${{ steps.contract.outputs.migration_engine }}
+        env-names-json: ${{ steps.contract.outputs.database == 'true' && '["DATABASE_URL"]' || '[]' }}
+
+    - name: Resolve runtime environment
+      id: runtime
+      if: steps.dev_gate.outputs.enabled != 'false'
+      uses: Mooner510/workflows/.github/actions/cd/resolve-runtime-env-files@v1
+      with:
+        environment: ${{ inputs.environment }}
+        project: ${{ steps.contract.outputs.project }}
+        service: ${{ steps.contract.outputs.service }}
+
+    - name: Resolve CORS metadata
+      id: cors
+      if: steps.dev_gate.outputs.enabled != 'false'
+      uses: Mooner510/workflows/.github/actions/cd/resolve-cors-metadata@v1
+      with:
+        environment: ${{ inputs.environment }}
+        project: ${{ steps.contract.outputs.project }}
+        service: ${{ steps.contract.outputs.service }}
+
+    - name: Resolve runtime environment names
+      id: env
+      if: steps.dev_gate.outputs.enabled != 'false'
+      shell: bash
+      env:
+        DB_NAMES: ${{ steps.credentials.outputs.resolved-env-names-json }}
+        HAS_CORS: ${{ steps.cors.outputs.has-cors }}
+      run: |
+        set -euo pipefail
+        names="$(jq -c '.' <<<"$DB_NAMES")"
+        [[ "$HAS_CORS" != "true" ]] || names="$(jq -c '. + ["CORS_ORIGINS"] | unique' <<<"$names")"
+        echo "names=$names" >>"$GITHUB_OUTPUT"
+
+    - name: Read current deployment
+      id: current
+      if: steps.dev_gate.outputs.enabled != 'false'
+      uses: Mooner510/workflows/.github/actions/cd/state@v1
+      with:
+        environment: ${{ inputs.environment }}
+        operation: read
+        project: ${{ steps.contract.outputs.project }}
+        service: ${{ steps.contract.outputs.service }}
+
+    - name: Read rollback target
+      id: previous
+      if: steps.dev_gate.outputs.enabled != 'false' && inputs.operation == 'rollback'
+      uses: Mooner510/workflows/.github/actions/cd/state@v1
+      with:
+        environment: ${{ inputs.environment }}
+        operation: previous
+        project: ${{ steps.contract.outputs.project }}
+        service: ${{ steps.contract.outputs.service }}
+
+    - name: Validate deployment image
+      if: steps.dev_gate.outputs.enabled != 'false' && inputs.operation == 'deploy'
+      shell: bash
+      env:
+        IMAGE: ${{ steps.contract.outputs.image }}
+        PROJECT: ${{ steps.contract.outputs.project }}
+        SERVICE: ${{ steps.contract.outputs.service }}
+      run: |
+        set -euo pipefail
+        docker image inspect "$IMAGE" >/dev/null 2>&1 || {
+          echo "::error::Verified image for the exact revision is unavailable: $IMAGE"
+          exit 1
+        }
+        revision="$(docker image inspect "$IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+        project="$(docker image inspect "$IMAGE" --format '{{ index .Config.Labels "kr.mooner510.stacks.project" }}')"
+        service="$(docker image inspect "$IMAGE" --format '{{ index .Config.Labels "kr.mooner510.stacks.service" }}')"
+        [[ "$revision" == "$GITHUB_SHA" && "$project" == "$PROJECT" && "$service" == "$SERVICE" ]] || {
+          echo "::error::Image provenance does not match the requested project/service/revision."
+          exit 1
+        }
+
+    - name: Apply Goose migrations
+      if: steps.dev_gate.outputs.enabled != 'false' && inputs.operation == 'deploy' && steps.contract.outputs.migration_engine == 'goose'
+      uses: Mooner510/workflows/.github/actions/cd/migration/goose@v1
+      with:
+        working-directory: ${{ steps.contract.outputs.component_path }}
+        migrations-path: ${{ steps.contract.outputs.migration_path || 'db/migrations' }}
+        goose-version: ${{ steps.contract.outputs.goose_version }}
+
+    - name: Apply Go command migrations
+      if: steps.dev_gate.outputs.enabled != 'false' && inputs.operation == 'deploy' && steps.contract.outputs.migration_engine == 'go-command'
+      uses: Mooner510/workflows/.github/actions/cd/migration/go-command@v1
+      with:
+        working-directory: ${{ steps.contract.outputs.component_path }}
+        package: ${{ steps.contract.outputs.migration_package }}
+
+    - name: Apply Prisma migrations
+      if: steps.dev_gate.outputs.enabled != 'false' && inputs.operation == 'deploy' && steps.contract.outputs.migration_engine == 'prisma'
+      uses: Mooner510/workflows/.github/actions/cd/migration/prisma@v1
+      with:
+        working-directory: ${{ steps.contract.outputs.component_path }}
+        schema: ${{ steps.contract.outputs.migration_schema || 'prisma/schema.prisma' }}
+        package-manager: ${{ steps.contract.outputs.migration_package_manager }}
+
+    - name: Apply Drizzle migrations
+      if: steps.dev_gate.outputs.enabled != 'false' && inputs.operation == 'deploy' && steps.contract.outputs.migration_engine == 'drizzle'
+      uses: Mooner510/workflows/.github/actions/cd/migration/drizzle@v1
+      with:
+        working-directory: ${{ steps.contract.outputs.component_path }}
+        migrations-path: ${{ steps.contract.outputs.migration_path || 'drizzle' }}
+        config: ${{ steps.contract.outputs.migration_config || 'drizzle.config.ts' }}
+        package-manager: ${{ steps.contract.outputs.migration_package_manager }}
+
+    - name: Apply Flyway migrations
+      if: steps.dev_gate.outputs.enabled != 'false' && inputs.operation == 'deploy' && steps.contract.outputs.migration_engine == 'flyway'
+      uses: Mooner510/workflows/.github/actions/cd/migration/flyway@v1
+      with:
+        working-directory: ${{ steps.contract.outputs.component_path }}
+        migrations-path: ${{ steps.contract.outputs.migration_path || 'src/main/resources/db/migration' }}
+        build-tool: ${{ steps.contract.outputs.migration_build_tool }}
+
+    - name: Run service
+      id: run
+      if: steps.dev_gate.outputs.enabled != 'false'
+      uses: Mooner510/workflows/.github/actions/cd/docker/run@v1
+      with:
+        project: ${{ steps.contract.outputs.project }}
+        service: ${{ steps.contract.outputs.service }}
+        environment: ${{ inputs.environment }}
+        image: ${{ inputs.operation == 'rollback' && steps.previous.outputs.image-id || steps.contract.outputs.image }}
+        restore-image: ${{ steps.current.outputs.image-id }}
+        env-files-json: ${{ steps.runtime.outputs.env-files-json }}
+        env-names-json: ${{ steps.env.outputs.names }}
+        volumes-json: ${{ steps.runtime.outputs.deploy-volumes-json }}
+        network: ${{ steps.contract.outputs.network }}
+
+    - name: Record deployment
+      if: steps.dev_gate.outputs.enabled != 'false' && inputs.operation == 'deploy'
+      uses: Mooner510/workflows/.github/actions/cd/state@v1
+      with:
+        environment: ${{ inputs.environment }}
+        operation: record
+        project: ${{ steps.contract.outputs.project }}
+        service: ${{ steps.contract.outputs.service }}
+        revision: ${{ github.sha }}
+        image: ${{ steps.contract.outputs.image }}
+        image-id: ${{ steps.run.outputs.image-id }}
+        event: deploy
+
+    - name: Record rollback
+      if: steps.dev_gate.outputs.enabled != 'false' && inputs.operation == 'rollback'
+      uses: Mooner510/workflows/.github/actions/cd/state@v1
+      with:
+        environment: ${{ inputs.environment }}
+        operation: record
+        project: ${{ steps.contract.outputs.project }}
+        service: ${{ steps.contract.outputs.service }}
+        revision: ${{ steps.previous.outputs.revision }}
+        image: ${{ steps.previous.outputs.image }}
+        image-id: ${{ steps.previous.outputs.image-id }}
+        event: rollback
