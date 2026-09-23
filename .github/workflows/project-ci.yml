@@ -1,0 +1,291 @@
+name: Canonical Project CI
+
+on:
+  workflow_call:
+    inputs:
+      diff_base:
+        description: Optional ancestor SHA used by explicit maintenance dispatches.
+        required: false
+        type: string
+        default: ''
+      force_all:
+        description: Expand validation to all declared components and services.
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      CI_PRIVATE_REPO_TOKEN:
+        description: Optional read-only token for declared private Go/Node dependencies.
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-ci-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Contract and changes
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 10
+    outputs:
+      components: ${{ steps.contract.outputs.components }}
+      services: ${{ steps.contract.outputs.services }}
+      go_private_patterns: ${{ steps.contract.outputs.go-private-patterns }}
+      affected_components: ${{ steps.detect.outputs.all_components }}
+      ci_targets: ${{ steps.detect.outputs.ci_targets }}
+      ci_groups: ${{ steps.detect.outputs.ci_groups_by_target }}
+      affected_services: ${{ steps.detect.outputs.affected_services }}
+      affected_service_objects: ${{ steps.select.outputs.services }}
+      has_changes: ${{ steps.detect.outputs.has_changes }}
+      git_log_opts: ${{ steps.detect.outputs.git_log_opts }}
+      image_environment: ${{ steps.mode.outputs.environment }}
+      image_required: ${{ steps.mode.outputs.required }}
+      ci_required: ${{ steps.mode.outputs.ci_required }}
+      security_required: ${{ steps.mode.outputs.security_required }}
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Load canonical project contract
+        id: contract
+        uses: Mooner510/workflows/.github/actions/config/load@v1
+
+      - name: Detect affected components and services
+        id: detect
+        uses: Mooner510/workflows/.github/actions/ci/detect@v1
+        with:
+          components: ${{ steps.contract.outputs.components }}
+          force_all: ${{ inputs.force_all }}
+          diff_base: ${{ inputs.diff_base }}
+
+      - name: Select affected service contracts
+        id: select
+        shell: bash
+        env:
+          SERVICES_JSON: ${{ steps.contract.outputs.services }}
+          AFFECTED_SERVICES_JSON: ${{ steps.detect.outputs.affected_services }}
+        run: |
+          set -euo pipefail
+          services="$(jq -c --argjson names "$AFFECTED_SERVICES_JSON" '[.[] | select(.name as $name | $names | index($name))]' <<<"$SERVICES_JSON")"
+          echo "services=$services" >>"$GITHUB_OUTPUT"
+
+      - name: Resolve branch execution mode
+        id: mode
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          AFFECTED_SERVICES: ${{ steps.detect.outputs.affected_services }}
+          CI_TARGETS: ${{ steps.detect.outputs.ci_targets }}
+          HAS_CHANGES: ${{ steps.detect.outputs.has_changes }}
+        run: |
+          set -euo pipefail
+
+          environment=""
+          if [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$REF_NAME" == "dev" ]]; then
+              environment=dev
+            elif [[ -n "$DEFAULT_BRANCH" && "$REF_NAME" == "$DEFAULT_BRANCH" ]]; then
+              environment=prod
+            fi
+          fi
+
+          required=false
+          if [[ -n "$environment" && "$(jq 'length' <<<"$AFFECTED_SERVICES")" -gt 0 ]]; then
+            required=true
+          fi
+
+          if [[ "$CI_TARGETS" == "[]" ]]; then ci_required=false; else ci_required=true; fi
+          if [[ "$HAS_CHANGES" == "true" ]]; then security_required=true; else security_required=false; fi
+
+          {
+            echo "environment=$environment"
+            echo "required=$required"
+            echo "ci_required=$ci_required"
+            echo "security_required=$security_required"
+          } >>"$GITHUB_OUTPUT"
+
+  security:
+    name: Security
+    needs: contract
+    if: needs.contract.outputs.security_required == 'true'
+    uses: Mooner510/workflows/.github/workflows/security.yml@v1
+    with:
+      components: ${{ needs.contract.outputs.affected_components }}
+      git_log_opts: ${{ needs.contract.outputs.git_log_opts }}
+
+  ci:
+    name: CI - ${{ matrix.target }}
+    needs: contract
+    if: needs.contract.outputs.ci_required == 'true'
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.contract.outputs.ci_targets) }}
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Go CI
+        if: fromJSON(needs.contract.outputs.ci_groups)[matrix.target].type == 'go'
+        uses: Mooner510/workflows/.github/actions/ci/go@v1
+        with:
+          components: ${{ toJSON(fromJSON(needs.contract.outputs.ci_groups)[matrix.target].components) }}
+          version: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].version }}
+          go_private_patterns: ${{ needs.contract.outputs.go_private_patterns }}
+          private_repo_token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
+
+      - name: Node CI
+        if: fromJSON(needs.contract.outputs.ci_groups)[matrix.target].type == 'node'
+        uses: Mooner510/workflows/.github/actions/ci/node@v1
+        with:
+          components: ${{ toJSON(fromJSON(needs.contract.outputs.ci_groups)[matrix.target].components) }}
+          version: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].version }}
+          package-manager: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].package_manager }}
+          private_repo_token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
+
+      - name: Java/Kotlin CI
+        if: fromJSON(needs.contract.outputs.ci_groups)[matrix.target].type == 'java-kotlin'
+        uses: Mooner510/workflows/.github/actions/ci/java-kotlin@v1
+        with:
+          components: ${{ toJSON(fromJSON(needs.contract.outputs.ci_groups)[matrix.target].components) }}
+          version: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].version }}
+          build-tool: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].build_tool }}
+          profile: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].profile }}
+
+      - name: Migration CI
+        uses: Mooner510/workflows/.github/actions/ci/migration@v1
+        with:
+          components: ${{ toJSON(fromJSON(needs.contract.outputs.ci_groups)[matrix.target].components) }}
+
+      - name: Go PostgreSQL integration CI
+        if: fromJSON(needs.contract.outputs.ci_groups)[matrix.target].type == 'go'
+        uses: Mooner510/workflows/.github/actions/ci/go-postgres@v1
+        with:
+          components: ${{ toJSON(fromJSON(needs.contract.outputs.ci_groups)[matrix.target].components) }}
+
+  images:
+    name: Image - ${{ matrix.service.name }}
+    needs: contract
+    if: needs.contract.outputs.image_required == 'true'
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.contract.outputs.affected_service_objects) }}
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Build and scan temporary image
+        uses: Mooner510/workflows/.github/actions/cd/docker/prepare@v1
+        with:
+          service: ${{ toJSON(matrix.service) }}
+          environment: ${{ needs.contract.outputs.image_environment }}
+
+  gate:
+    name: Verification gate
+    needs: [contract, security, ci, images]
+    if: always() && needs.contract.result == 'success'
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 5
+    steps:
+      - name: Require all requested verification
+        shell: bash
+        env:
+          SECURITY_REQUIRED: ${{ needs.contract.outputs.security_required }}
+          CI_REQUIRED: ${{ needs.contract.outputs.ci_required }}
+          IMAGE_REQUIRED: ${{ needs.contract.outputs.image_required }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          CI_RESULT: ${{ needs.ci.result }}
+          IMAGE_RESULT: ${{ needs.images.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$SECURITY_REQUIRED" == "true" && "$SECURITY_RESULT" != "success" ]]; then
+            echo "::error::Security verification did not succeed ($SECURITY_RESULT)."
+            exit 1
+          fi
+          if [[ "$CI_REQUIRED" == "true" && "$CI_RESULT" != "success" ]]; then
+            echo "::error::Language/migration CI did not succeed ($CI_RESULT)."
+            exit 1
+          fi
+          if [[ "$IMAGE_REQUIRED" == "true" && "$IMAGE_RESULT" != "success" ]]; then
+            echo "::error::Docker build/image scan did not succeed ($IMAGE_RESULT)."
+            exit 1
+          fi
+
+  finalize:
+    name: Publish verified images
+    needs: [contract, gate, images]
+    if: needs.gate.result == 'success' && needs.contract.outputs.image_required == 'true'
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 10
+    steps:
+      - name: Publish canonical revision tags
+        uses: Mooner510/workflows/.github/actions/cd/docker/finalize@v1
+        with:
+          services: ${{ needs.contract.outputs.services }}
+          affected-services: ${{ needs.contract.outputs.affected_services }}
+          environment: ${{ needs.contract.outputs.image_environment }}
+          operation: finalize
+
+  deploy-development:
+    name: Deploy dev - ${{ matrix.service.name }}
+    needs: [contract, gate, finalize]
+    if: needs.finalize.result == 'success' && needs.contract.outputs.image_environment == 'dev'
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.contract.outputs.affected_service_objects) }}
+
+    steps:
+      - name: Checkout exact verified revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Deploy verified development service
+        uses: Mooner510/workflows/.github/actions/cd/service@v1
+        with:
+          service: ${{ toJSON(matrix.service) }}
+          components: ${{ needs.contract.outputs.components }}
+          environment: dev
+          operation: deploy
+
+  cleanup:
+    name: Cleanup temporary images
+    needs: [contract, images, gate, finalize, deploy-development]
+    if: always() && needs.contract.result == 'success' && needs.contract.outputs.image_required == 'true'
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 10
+    steps:
+      - name: Remove run-scoped temporary tags
+        uses: Mooner510/workflows/.github/actions/cd/docker/finalize@v1
+        with:
+          services: ${{ needs.contract.outputs.services }}
+          affected-services: ${{ needs.contract.outputs.affected_services }}
+          environment: ${{ needs.contract.outputs.image_environment }}
+          operation: cleanup
