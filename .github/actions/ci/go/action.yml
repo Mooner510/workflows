@@ -96,6 +96,15 @@ runs:
               exit 1
             fi
 
+            go mod tidy
+            tidy_status="$(git status --short -- go.mod go.sum)"
+            if [[ -n "$tidy_status" ]]; then
+              echo "::error::go mod tidy is required for this module:"
+              printf '%s\n' "$tidy_status"
+              git diff -- go.mod go.sum || true
+              exit 1
+            fi
+
             go mod download
             go mod verify
             verified_modules[$module]=1
