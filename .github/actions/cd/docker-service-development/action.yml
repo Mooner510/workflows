@@ -1,5 +1,5 @@
 name: Docker service development
-description: Canonical development entrypoint for one generic HTTP Docker service. Deploys validated dev-branch revisions with isolated runtime config, database, Docker identity, runtime isolation and state.
+description: Canonical development entrypoint for one generic HTTP Docker service. Deploys pushes to the dev branch with isolated runtime config, database, Docker identity, runtime isolation and state.
 
 inputs:
   development-branch:
@@ -115,7 +115,7 @@ runs:
         set -euo pipefail
         branch="$DEVELOPMENT_BRANCH_INPUT"
         [[ -n "$branch" ]] || branch=dev
-        [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]] || { echo "::error::Development Docker service supports only push or workflow_dispatch events."; exit 1; }
+        [[ "$EVENT_NAME" == "push" ]] || { echo "::error::Development Docker service supports only push events."; exit 1; }
         [[ "$GITHUB_REF" == "refs/heads/$branch" ]] || { echo "::error::Development Docker service only deploys '$branch'."; exit 1; }
 
         image_name="$IMAGE_NAME_INPUT"

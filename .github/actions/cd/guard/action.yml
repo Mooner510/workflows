@@ -56,8 +56,8 @@ runs:
               echo "::error::Invalid development branch '$DEVELOPMENT_BRANCH'."
               exit 1
             }
-            [[ "$GITHUB_EVENT_NAME" == "push" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]] || {
-              echo "::error::Development deployment is allowed only from push or workflow_dispatch on '$DEVELOPMENT_BRANCH'."
+            [[ "$GITHUB_EVENT_NAME" == "push" ]] || {
+              echo "::error::Development deployment is allowed only from a push to '$DEVELOPMENT_BRANCH'."
               exit 1
             }
             [[ "$GITHUB_REF" == "refs/heads/$DEVELOPMENT_BRANCH" ]] || {

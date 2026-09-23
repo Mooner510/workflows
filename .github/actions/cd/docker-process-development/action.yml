@@ -1,5 +1,5 @@
 name: Docker process development
-description: Canonical development entrypoint for workers and non-HTTP Docker processes deployed from validated dev-branch revisions with isolated resources.
+description: Canonical development entrypoint for workers and non-HTTP Docker processes deployed from pushes to the dev branch with isolated resources.
 
 inputs:
   development-branch:
@@ -74,7 +74,7 @@ runs:
         set -euo pipefail
         branch="$BRANCH_INPUT"
         [[ -n "$branch" ]] || branch=dev
-        [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]] || { echo "::error::Development process deployment supports only push or workflow_dispatch events."; exit 1; }
+        [[ "$EVENT_NAME" == "push" ]] || { echo "::error::Development process deployment supports only push events."; exit 1; }
         [[ "$GITHUB_REF" == "refs/heads/$branch" ]] || { echo "::error::Development process deployment only accepts '$branch'."; exit 1; }
         echo "branch=$branch" >>"$GITHUB_OUTPUT"
 
