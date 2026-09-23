@@ -156,13 +156,6 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Reject GitHub-side production mutation
-      if: inputs.environment == 'prod'
-      shell: bash
-      run: |
-        echo "::error::Production container mutation is CLI-only. CI may create verified production candidates, but deploy/rollback must use 'project deploy' or 'project rollback' on the server."
-        exit 1
-
     - name: Validate deployment source
       uses: Mooner510/workflows/.github/actions/cd/guard@v1
       with:
