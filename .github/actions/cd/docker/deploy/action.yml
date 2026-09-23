@@ -160,16 +160,21 @@ runs:
 
         declare -a volume_args=()
         tls_gid=""
+        shared_tls_root="/opt/stacks/shared/pki/root_ca.crt"
+        if [[ -f "$shared_tls_root" ]]; then
+          volume_args+=(-v "$shared_tls_root:/run/stacks/tls/root_ca.crt:ro")
+          echo "Using managed TLS trust root: $shared_tls_root"
+        fi
         if [[ -n "$PROJECT" && -n "$LOGICAL_SERVICE" ]]; then
           tls_dir="/opt/stacks/projects/$PROJECT/$LOGICAL_SERVICE/secret/tls/$DEPLOY_ENVIRONMENT"
           if [[ -d "$tls_dir" ]]; then
-            [[ -f "$tls_dir/tls.crt" && -f "$tls_dir/tls.key" && -f "$tls_dir/root_ca.crt" ]] || {
+            [[ -f "$tls_dir/tls.crt" && -f "$tls_dir/tls.key" ]] || {
               echo "::error::Managed TLS directory is incomplete: $tls_dir"
               exit 1
             }
             tls_gid="$(stat -c '%g' "$tls_dir/tls.key")"
-            volume_args+=(-v "$tls_dir:/run/stacks/tls:ro")
-            echo "Using managed TLS: $tls_dir -> /run/stacks/tls"
+            volume_args+=(-v "$tls_dir:/run/stacks/tls/service:ro")
+            echo "Using managed service TLS: $tls_dir -> /run/stacks/tls/service"
           fi
         fi
         while IFS= read -r encoded; do
