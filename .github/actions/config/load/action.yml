@@ -6,7 +6,7 @@ outputs:
     value: ${{ steps.load.outputs.components }}
   services:
     value: ${{ steps.load.outputs.services }}
-  go-private-patterns:
+  go_private_patterns:
     value: ${{ steps.load.outputs.go_private_patterns }}
 
 runs:
