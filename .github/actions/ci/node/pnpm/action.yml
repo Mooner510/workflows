@@ -1,5 +1,5 @@
 name: pnpm install
-description: Install affected pnpm package roots with Corepack and a frozen lockfile.
+description: Install affected pnpm package roots with the package.json-pinned pnpm version and a frozen lockfile.
 
 inputs:
   components:
@@ -16,8 +16,7 @@ runs:
         COMPONENTS_JSON: ${{ inputs.components }}
       run: |
         set -euo pipefail
-        command -v corepack >/dev/null || { echo "::error::corepack is required for pnpm."; exit 1; }
-        corepack enable
+        command -v npm >/dev/null || { echo "::error::npm is required to launch the package.json-pinned pnpm version."; exit 1; }
 
         workspace="$(realpath "$GITHUB_WORKSPACE")"
         components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
@@ -45,14 +44,19 @@ runs:
           [[ -f "$root/package.json" ]] || { echo "::error::pnpm root '$root' must contain package.json."; exit 1; }
 
           package_manager="$(node -p 'require(process.argv[1]).packageManager || ""' "$root/package.json")"
-          [[ "$package_manager" =~ ^pnpm@[0-9]+\.[0-9]+\.[0-9]+([+-].*)?$ ]] || {
-            echo "::error::pnpm roots must pin packageManager, for example \"pnpm@10.17.1\"."
+          if [[ ! "$package_manager" =~ ^pnpm@([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::pnpm roots must pin packageManager exactly, for example \"pnpm@11.27.1\"."
             exit 1
-          }
+          fi
+          pnpm_version="${BASH_REMATCH[1]}"
 
           if [[ -z "${installed[$root]+x}" ]]; then
-            echo "==> pnpm install: $(realpath --relative-to="$workspace" "$root")"
-            (cd "$root" && pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_DIR")
+            echo "==> pnpm install: $(realpath --relative-to="$workspace" "$root") (pnpm $pnpm_version)"
+            (
+              cd "$root"
+              npm exec --yes --package="pnpm@$pnpm_version" -- \
+                pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_DIR"
+            )
             installed[$root]=1
           fi
         done < <(jq -c '.[]' <<<"$components")
