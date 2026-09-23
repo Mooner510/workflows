@@ -508,7 +508,7 @@ jobs:
                     components: .
                   }),
               (map(select(.type == "node"))
-                | group_by([(.node_version // "24"), .package_manager])[]
+                | group_by([(.node_version // "24.21.0"), .package_manager])[]
                 | {
                     target: ("Node " + (.[0].node_version // "24") + " / " + .[0].package_manager),
                     type: "node",
@@ -631,6 +631,6 @@ jobs:
 
       - name: Go PostgreSQL integration CI
         if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'go'
-        uses: Mooner510/workflows/.github/actions/ci/go@v1-postgres
+        uses: Mooner510/workflows/.github/actions/ci/go-postgres@v1
         with:
           components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
