@@ -176,8 +176,8 @@ runs:
       if: steps.dev_gate.outputs.enabled != 'false'
       shell: bash
       env:
-        DB_NAMES: ${{ steps.credentials.outputs.resolved-env-names-json }}
-        HAS_CORS: ${{ steps.cors.outputs.has-cors }}
+        DB_NAMES: ${{ steps.credentials.outputs['resolved-env-names-json'] }}
+        HAS_CORS: ${{ steps.cors.outputs['has-cors'] }}
       run: |
         set -euo pipefail
         names="$(jq -c '.' <<<"$DB_NAMES")"
@@ -273,11 +273,11 @@ runs:
         project: ${{ steps.contract.outputs.project }}
         service: ${{ steps.contract.outputs.service }}
         environment: ${{ inputs.environment }}
-        image: ${{ inputs.operation == 'rollback' && steps.previous.outputs.image-id || steps.contract.outputs.image }}
-        restore-image: ${{ steps.current.outputs.image-id }}
-        env-files-json: ${{ steps.runtime.outputs.env-files-json }}
+        image: ${{ inputs.operation == 'rollback' && steps.previous.outputs['image-id'] || steps.contract.outputs.image }}
+        restore-image: ${{ steps.current.outputs['image-id'] }}
+        env-files-json: ${{ steps.runtime.outputs['env-files-json'] }}
         env-names-json: ${{ steps.env.outputs.names }}
-        volumes-json: ${{ steps.runtime.outputs.deploy-volumes-json }}
+        volumes-json: ${{ steps.runtime.outputs['deploy-volumes-json'] }}
         network: ${{ steps.contract.outputs.network }}
 
     - name: Record deployment
@@ -290,7 +290,7 @@ runs:
         service: ${{ steps.contract.outputs.service }}
         revision: ${{ github.sha }}
         image: ${{ steps.contract.outputs.image }}
-        image-id: ${{ steps.run.outputs.image-id }}
+        image-id: ${{ steps.run.outputs['image-id'] }}
         event: deploy
 
     - name: Record rollback
@@ -303,5 +303,5 @@ runs:
         service: ${{ steps.contract.outputs.service }}
         revision: ${{ steps.previous.outputs.revision }}
         image: ${{ steps.previous.outputs.image }}
-        image-id: ${{ steps.previous.outputs.image-id }}
+        image-id: ${{ steps.previous.outputs['image-id'] }}
         event: rollback
