@@ -340,7 +340,7 @@ jobs:
 
       - name: Verify pushed Go commit
         if: steps.format.outputs.changed == 'true'
-        uses: $/.github/actions/ci/go
+        uses: Mooner510/workflows/.github/actions/ci/go@v1
         with:
           components: ${{ steps.go-ci.outputs.components }}
           version: ${{ steps.go-ci.outputs.version }}
