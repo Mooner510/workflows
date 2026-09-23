@@ -20,6 +20,7 @@ jobs:
       services: ${{ steps.contract.outputs.services }}
       selected_services: ${{ steps.request.outputs.services }}
       operation: ${{ steps.request.outputs.operation }}
+      project: ${{ steps.project.outputs.project }}
 
     steps:
       - name: Validate repository dispatch
@@ -52,6 +53,18 @@ jobs:
             exit 1
           fi
           echo "operation=$operation" >>"$GITHUB_OUTPUT"
+
+      - name: Resolve canonical project id
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          project="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+          [[ "$project" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
+            echo "::error::Repository name cannot be normalized to a canonical project id."
+            exit 1
+          }
+          echo "project=$project" >>"$GITHUB_OUTPUT"
 
       - name: Checkout exact default-branch revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -126,7 +139,7 @@ jobs:
         with:
           environment: prod
           operation: previous
-          project: ${{ lower(github.event.repository.name) }}
+          project: ${{ needs.contract.outputs.project }}
           service: ${{ matrix.service.name }}
 
       - name: Verify rollback image
