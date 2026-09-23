@@ -19,7 +19,7 @@ on:
         default: ''
     secrets:
       CI_PRIVATE_REPO_TOKEN:
-        description: Optional GitHub token with read access to private Go module repositories.
+        description: Optional GitHub token with read access to private repository dependencies used by Go or Node components.
         required: false
     outputs:
       changed_components:
@@ -574,7 +574,7 @@ jobs:
     name: Security
     needs: detect
     if: needs.detect.outputs.has_changes == 'true'
-    uses: $/.github/workflows/security.yml
+    uses: Mooner510/workflows/.github/workflows/security.yml@v1
     with:
       components: ${{ needs.detect.outputs.all_components }}
       git_log_opts: ${{ needs.detect.outputs.git_log_opts }}
@@ -599,7 +599,7 @@ jobs:
 
       - name: Go CI
         if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'go'
-        uses: $/.github/actions/ci/go
+        uses: Mooner510/workflows/.github/actions/ci/go@v1
         with:
           components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
           version: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].version }}
@@ -608,15 +608,16 @@ jobs:
 
       - name: Node CI
         if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'node'
-        uses: $/.github/actions/ci/node
+        uses: Mooner510/workflows/.github/actions/ci/node@v1
         with:
           components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
           version: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].version }}
           package-manager: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].package_manager }}
+          private_repo_token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
 
       - name: Java/Kotlin CI
         if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'java-kotlin'
-        uses: $/.github/actions/ci/java-kotlin
+        uses: Mooner510/workflows/.github/actions/ci/java-kotlin@v1
         with:
           components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
           version: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].version }}
@@ -624,12 +625,12 @@ jobs:
           profile: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].profile }}
 
       - name: Migration CI
-        uses: $/.github/actions/ci/migration
+        uses: Mooner510/workflows/.github/actions/ci/migration@v1
         with:
           components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
 
       - name: Go PostgreSQL integration CI
         if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'go'
-        uses: $/.github/actions/ci/go-postgres
+        uses: Mooner510/workflows/.github/actions/ci/go@v1-postgres
         with:
           components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
