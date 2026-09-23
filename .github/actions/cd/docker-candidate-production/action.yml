@@ -1,0 +1,424 @@
+name: Docker production candidate
+description: Build and register a verified production Docker image candidate without mutating production containers.
+
+inputs:
+  kind:
+    description: http or process.
+    required: true
+  working-directory:
+    description: Docker build context relative to the caller repository.
+    required: true
+  service-name:
+    description: Stable logical service name.
+    required: true
+  image-name:
+    description: Optional logical image repository name. Empty uses service-name.
+    required: false
+    default: ''
+  dockerfile:
+    description: Dockerfile relative to working-directory.
+    required: false
+    default: Dockerfile
+  target:
+    description: Optional Docker build target.
+    required: false
+    default: ''
+  build-args-json:
+    description: Static Docker build arguments.
+    required: false
+    default: '[]'
+  build-secret-env-names-json:
+    description: Caller environment names exposed to BuildKit as build secrets.
+    required: false
+    default: '[]'
+  build-arg-env-names-json:
+    description: Runtime config names resolved from production deploy.env and forwarded as Docker build args.
+    required: false
+    default: '[]'
+  container-port:
+    description: Internal HTTP port. Required when kind=http.
+    required: false
+    default: '0'
+  health-path:
+    description: HTTP readiness path.
+    required: false
+    default: /health
+  health-attempts:
+    description: HTTP readiness attempts.
+    required: false
+    default: '20'
+  migration-engine:
+    description: none, goose, go-command, prisma, drizzle, or flyway.
+    required: false
+    default: none
+  migration-working-directory:
+    description: Migration component path. Empty uses working-directory.
+    required: false
+    default: ''
+  migration-path:
+    description: Migration path. Empty uses the engine convention.
+    required: false
+    default: ''
+  migration-config:
+    description: Drizzle config path.
+    required: false
+    default: drizzle.config.ts
+  migration-package:
+    description: Go migration package for go-command.
+    required: false
+    default: './cmd/migrate'
+  migration-dialect:
+    description: Goose dialect.
+    required: false
+    default: postgres
+  goose-version:
+    description: Optional explicit Goose version.
+    required: false
+    default: ''
+  goose-default-version:
+    description: Goose fallback version.
+    required: false
+    default: v3.28.0
+  migration-package-manager:
+    description: npm, pnpm, yarn, or bun for Prisma/Drizzle.
+    required: false
+    default: ''
+  migration-build-tool:
+    description: gradle or maven for Flyway.
+    required: false
+    default: gradle
+  node-version:
+    description: Node version retained in the candidate contract.
+    required: false
+    default: '24.21.0'
+  java-version:
+    description: Java version retained in the candidate contract.
+    required: false
+    default: '17'
+  database:
+    description: Inject runtime DATABASE_URL even when migration-engine is none.
+    required: false
+    default: 'false'
+  env-files-json:
+    description: Additional repository-relative runtime env files.
+    required: false
+    default: '[]'
+  env-names-json:
+    description: Runtime environment names that must be provided by host config or canonical resolvers.
+    required: false
+    default: '[]'
+  volumes-json:
+    description: Docker volumes. Empty allows DEPLOY_VOLUMES_JSON from host runtime config.
+    required: false
+    default: '[]'
+  restart-policy:
+    description: Docker restart policy.
+    required: false
+    default: unless-stopped
+  init:
+    description: Use Docker init.
+    required: false
+    default: 'true'
+  security-opts-json:
+    description: Docker security options.
+    required: false
+    default: '["no-new-privileges:true"]'
+  cap-drop-json:
+    description: Linux capabilities to drop.
+    required: false
+    default: '["ALL"]'
+  stop-timeout:
+    description: Container stop timeout seconds.
+    required: false
+    default: '20'
+  readiness-command-json:
+    description: Process readiness command.
+    required: false
+    default: '[]'
+  readiness-jq:
+    description: Optional jq expression for process readiness output.
+    required: false
+    default: ''
+  readiness-attempts:
+    description: Process readiness attempts.
+    required: false
+    default: '20'
+  candidate-root:
+    description: Persistent production candidate root.
+    required: false
+    default: /var/lib/stacks/candidates
+
+outputs:
+  image:
+    description: Built image reference.
+    value: ${{ steps.build.outputs.image }}
+  image-id:
+    description: Built image ID.
+    value: ${{ steps.build.outputs['image-id'] }}
+  manifest:
+    description: Registered candidate manifest.
+    value: ${{ steps.register.outputs.manifest }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate production candidate source
+      shell: bash
+      env:
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        EVENT_NAME: ${{ github.event_name }}
+      run: |
+        set -euo pipefail
+        [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]] || {
+          echo "::error::Production candidates may only be created from push or workflow_dispatch."
+          exit 1
+        }
+        [[ -n "$DEFAULT_BRANCH" ]] || { echo "::error::Repository default branch is unavailable."; exit 1; }
+        [[ "$GITHUB_REF" == "refs/heads/$DEFAULT_BRANCH" ]] || {
+          echo "::error::Production candidates must come from the default branch '$DEFAULT_BRANCH'."
+          exit 1
+        }
+
+    - name: Checkout candidate revision
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+        ref: ${{ github.sha }}
+
+    - name: Verify candidate revision is in default branch
+      shell: bash
+      env:
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: |
+        set -euo pipefail
+        git show-ref --verify --quiet "refs/remotes/origin/$DEFAULT_BRANCH" || git fetch --no-tags origin "$DEFAULT_BRANCH"
+        [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]] || { echo "::error::Checked-out revision does not match github.sha."; exit 1; }
+        git merge-base --is-ancestor "$GITHUB_SHA" "refs/remotes/origin/$DEFAULT_BRANCH" || {
+          echo "::error::Candidate revision is not contained in the default branch."
+          exit 1
+        }
+
+    - name: Resolve production identity
+      id: identity
+      uses: Mooner510/workflows/.github/actions/cd/identity@v1
+      with:
+        environment: prod
+        service: ${{ inputs.service-name }}
+        image: ${{ inputs.image-name }}
+
+    - name: Validate candidate contract
+      id: contract
+      shell: bash
+      env:
+        KIND: ${{ inputs.kind }}
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        CONTAINER_PORT: ${{ inputs.container-port }}
+        HEALTH_PATH: ${{ inputs.health-path }}
+        MIGRATION_ENGINE: ${{ inputs.migration-engine }}
+        MIGRATION_WORKING_DIRECTORY: ${{ inputs.migration-working-directory }}
+        MIGRATION_PATH: ${{ inputs.migration-path }}
+        MIGRATION_PACKAGE_MANAGER: ${{ inputs.migration-package-manager }}
+        MIGRATION_BUILD_TOOL: ${{ inputs.migration-build-tool }}
+        ENV_FILES_JSON: ${{ inputs.env-files-json }}
+        ENV_NAMES_JSON: ${{ inputs.env-names-json }}
+        VOLUMES_JSON: ${{ inputs.volumes-json }}
+        SECURITY_OPTS_JSON: ${{ inputs.security-opts-json }}
+        CAP_DROP_JSON: ${{ inputs.cap-drop-json }}
+        READINESS_COMMAND_JSON: ${{ inputs.readiness-command-json }}
+      run: |
+        set -euo pipefail
+        command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
+        case "$KIND" in http|process) ;; *) echo "::error::kind must be http or process."; exit 1 ;; esac
+        if [[ "$KIND" == "http" ]]; then
+          [[ "$CONTAINER_PORT" =~ ^[0-9]+$ ]] && (( CONTAINER_PORT >= 1 && CONTAINER_PORT <= 65535 )) || {
+            echo "::error::container-port is required for HTTP candidates."
+            exit 1
+          }
+          [[ "$HEALTH_PATH" == /* ]] || { echo "::error::health-path must start with '/'."; exit 1; }
+        fi
+        case "$MIGRATION_ENGINE" in none|goose|go-command|prisma|drizzle|flyway) ;; *) echo "::error::Unsupported migration engine."; exit 1 ;; esac
+        case "$MIGRATION_ENGINE" in
+          prisma|drizzle) case "$MIGRATION_PACKAGE_MANAGER" in npm|pnpm|yarn|bun) ;; *) echo "::error::Prisma/Drizzle requires a package manager."; exit 1 ;; esac ;;
+          flyway) case "$MIGRATION_BUILD_TOOL" in gradle|maven) ;; *) echo "::error::Flyway build tool must be gradle or maven."; exit 1 ;; esac ;;
+        esac
+        for value in "$ENV_FILES_JSON" "$ENV_NAMES_JSON" "$VOLUMES_JSON" "$SECURITY_OPTS_JSON" "$CAP_DROP_JSON" "$READINESS_COMMAND_JSON"; do
+          jq -e 'type == "array" and all(.[]; type == "string")' <<<"$value" >/dev/null || {
+            echo "::error::Candidate JSON array input is invalid."
+            exit 1
+          }
+        done
+
+        migration_working_directory="$MIGRATION_WORKING_DIRECTORY"
+        [[ -n "$migration_working_directory" ]] || migration_working_directory="$WORKING_DIRECTORY"
+        migration_path="$MIGRATION_PATH"
+        case "$MIGRATION_ENGINE" in
+          goose|go-command) [[ -n "$migration_path" ]] || migration_path="db/migrations" ;;
+          prisma) [[ -n "$migration_path" ]] || migration_path="prisma/schema.prisma" ;;
+          drizzle) [[ -n "$migration_path" ]] || migration_path="drizzle" ;;
+          flyway) [[ -n "$migration_path" ]] || migration_path="src/main/resources/db/migration" ;;
+        esac
+        {
+          echo "migration_working_directory=$migration_working_directory"
+          echo "migration_path=$migration_path"
+        } >>"$GITHUB_OUTPUT"
+
+    - name: Resolve production runtime config for build arguments
+      id: runtime_env
+      if: inputs.build-arg-env-names-json != '[]'
+      uses: Mooner510/workflows/.github/actions/cd/resolve-runtime-env-files@v1
+      with:
+        environment: prod
+        project: ${{ steps.identity.outputs.project }}
+        service: ${{ inputs.service-name }}
+        env-files-json: ${{ inputs.env-files-json }}
+
+    - name: Resolve Docker build arguments
+      id: build_args
+      shell: bash
+      env:
+        STATIC_ARGS: ${{ inputs.build-args-json }}
+        ENV_NAMES: ${{ inputs.build-arg-env-names-json }}
+        ENV_FILES: ${{ steps.runtime_env.outputs.env-files-json || '[]' }}
+      run: |
+        set -euo pipefail
+        command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
+        jq -e 'type == "array" and all(.[]; type == "string")' <<<"$STATIC_ARGS" >/dev/null || exit 1
+        jq -e 'type == "array" and all(.[]; type == "string")' <<<"$ENV_NAMES" >/dev/null || exit 1
+        merged="$(jq -c '.' <<<"$STATIC_ARGS")"
+        while IFS= read -r name; do
+          [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "::error::Invalid build arg '$name'."; exit 1; }
+          found=false
+          value=""
+          while IFS= read -r env_file; do
+            line="$(grep -E "^[[:space:]]*$name=" "$env_file" | tail -n1 || true)"
+            if [[ -n "$line" ]]; then
+              value="${line#*=}"
+              value="$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              if (( ${#value} >= 2 )) && { [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] || [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; }; then
+                value="${value:1:${#value}-2}"
+              fi
+              found=true
+            fi
+          done < <(jq -r '.[]' <<<"$ENV_FILES")
+          [[ "$found" == "true" ]] || { echo "::error::Build arg '$name' is not present in production runtime config."; exit 1; }
+          merged="$(jq -c --arg item "$name=$value" '. + [$item]' <<<"$merged")"
+        done < <(jq -r '.[]' <<<"$ENV_NAMES")
+        echo "build_args_json=$merged" >>"$GITHUB_OUTPUT"
+
+    - name: Build and scan production image
+      id: build
+      uses: Mooner510/workflows/.github/actions/cd/docker/build@v1
+      with:
+        working-directory: ${{ inputs.working-directory }}
+        dockerfile: ${{ inputs.dockerfile }}
+        image-name: ${{ steps.identity.outputs.image }}
+        target: ${{ inputs.target }}
+        build-args-json: ${{ steps.build_args.outputs.build_args_json }}
+        secret-env-names-json: ${{ inputs.build-secret-env-names-json }}
+
+    - name: Register production candidate
+      id: register
+      shell: bash
+      env:
+        CANDIDATE_ROOT: ${{ inputs.candidate-root }}
+        PROJECT: ${{ steps.identity.outputs.project }}
+        SERVICE: ${{ inputs.service-name }}
+        KIND: ${{ inputs.kind }}
+        IMAGE: ${{ steps.build.outputs.image }}
+        IMAGE_ID: ${{ steps.build.outputs['image-id'] }}
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        CONTAINER_PORT: ${{ inputs.container-port }}
+        HEALTH_PATH: ${{ inputs.health-path }}
+        HEALTH_ATTEMPTS: ${{ inputs.health-attempts }}
+        MIGRATION_ENGINE: ${{ inputs.migration-engine }}
+        MIGRATION_WORKING_DIRECTORY: ${{ steps.contract.outputs.migration_working_directory }}
+        MIGRATION_PATH: ${{ steps.contract.outputs.migration_path }}
+        MIGRATION_CONFIG: ${{ inputs.migration-config }}
+        MIGRATION_PACKAGE: ${{ inputs.migration-package }}
+        MIGRATION_DIALECT: ${{ inputs.migration-dialect }}
+        GOOSE_VERSION: ${{ inputs.goose-version }}
+        GOOSE_DEFAULT_VERSION: ${{ inputs.goose-default-version }}
+        MIGRATION_PACKAGE_MANAGER: ${{ inputs.migration-package-manager }}
+        MIGRATION_BUILD_TOOL: ${{ inputs.migration-build-tool }}
+        NODE_VERSION: ${{ inputs.node-version }}
+        JAVA_VERSION: ${{ inputs.java-version }}
+        DATABASE: ${{ inputs.database }}
+        ENV_FILES_JSON: ${{ inputs.env-files-json }}
+        ENV_NAMES_JSON: ${{ inputs.env-names-json }}
+        VOLUMES_JSON: ${{ inputs.volumes-json }}
+        RESTART_POLICY: ${{ inputs.restart-policy }}
+        INIT: ${{ inputs.init }}
+        SECURITY_OPTS_JSON: ${{ inputs.security-opts-json }}
+        CAP_DROP_JSON: ${{ inputs.cap-drop-json }}
+        STOP_TIMEOUT: ${{ inputs.stop-timeout }}
+        READINESS_COMMAND_JSON: ${{ inputs.readiness-command-json }}
+        READINESS_JQ: ${{ inputs.readiness-jq }}
+        READINESS_ATTEMPTS: ${{ inputs.readiness-attempts }}
+      run: |
+        set -euo pipefail
+        command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
+
+        root="$CANDIDATE_ROOT/$PROJECT/$SERVICE"
+        mkdir -p "$root"
+        final="$root/$GITHUB_SHA"
+        tmp="$(mktemp -d "$root/.candidate.XXXXXX")"
+        cleanup() { rm -rf "$tmp"; }
+        trap cleanup EXIT
+
+        git archive --format=tar.gz --output="$tmp/source.tar.gz" "$GITHUB_SHA"
+
+        manifest="$tmp/manifest.json"
+        jq -n \
+          --argjson version 1 \
+          --arg project "$PROJECT" \
+          --arg service "$SERVICE" \
+          --arg kind "$KIND" \
+          --arg repository "$GITHUB_REPOSITORY" \
+          --arg revision "$GITHUB_SHA" \
+          --arg image "$IMAGE" \
+          --arg imageId "$IMAGE_ID" \
+          --arg createdAt "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+          --arg sourceArchive "$final/source.tar.gz" \
+          --arg workingDirectory "$WORKING_DIRECTORY" \
+          --argjson containerPort "$CONTAINER_PORT" \
+          --arg healthPath "$HEALTH_PATH" \
+          --argjson healthAttempts "$HEALTH_ATTEMPTS" \
+          --arg migrationEngine "$MIGRATION_ENGINE" \
+          --arg migrationWorkingDirectory "$MIGRATION_WORKING_DIRECTORY" \
+          --arg migrationPath "$MIGRATION_PATH" \
+          --arg migrationConfig "$MIGRATION_CONFIG" \
+          --arg migrationPackage "$MIGRATION_PACKAGE" \
+          --arg migrationDialect "$MIGRATION_DIALECT" \
+          --arg gooseVersion "$GOOSE_VERSION" \
+          --arg gooseDefaultVersion "$GOOSE_DEFAULT_VERSION" \
+          --arg migrationPackageManager "$MIGRATION_PACKAGE_MANAGER" \
+          --arg migrationBuildTool "$MIGRATION_BUILD_TOOL" \
+          --arg nodeVersion "$NODE_VERSION" \
+          --arg javaVersion "$JAVA_VERSION" \
+          --argjson database "$DATABASE" \
+          --argjson envFiles "$ENV_FILES_JSON" \
+          --argjson envNames "$ENV_NAMES_JSON" \
+          --argjson volumes "$VOLUMES_JSON" \
+          --arg restartPolicy "$RESTART_POLICY" \
+          --argjson init "$INIT" \
+          --argjson securityOpts "$SECURITY_OPTS_JSON" \
+          --argjson capDrop "$CAP_DROP_JSON" \
+          --argjson stopTimeout "$STOP_TIMEOUT" \
+          --argjson readinessCommand "$READINESS_COMMAND_JSON" \
+          --arg readinessJq "$READINESS_JQ" \
+          --argjson readinessAttempts "$READINESS_ATTEMPTS" \
+          '{version:$version,project:$project,service:$service,kind:$kind,repository:$repository,revision:$revision,image:$image,imageId:$imageId,createdAt:$createdAt,sourceArchive:$sourceArchive,workingDirectory:$workingDirectory,containerPort:$containerPort,healthPath:$healthPath,healthAttempts:$healthAttempts,migration:{engine:$migrationEngine,workingDirectory:$migrationWorkingDirectory,path:$migrationPath,config:$migrationConfig,package:$migrationPackage,dialect:$migrationDialect,gooseVersion:$gooseVersion,gooseDefaultVersion:$gooseDefaultVersion,packageManager:$migrationPackageManager,buildTool:$migrationBuildTool,nodeVersion:$nodeVersion,javaVersion:$javaVersion},runtime:{database:$database,envFiles:$envFiles,envNames:$envNames,volumes:$volumes,restartPolicy:$restartPolicy,init:$init,securityOpts:$securityOpts,capDrop:$capDrop,stopTimeout:$stopTimeout},readiness:{command:$readinessCommand,jq:$readinessJq,attempts:$readinessAttempts}}' >"$manifest"
+
+        chmod 0644 "$manifest" "$tmp/source.tar.gz"
+        rm -rf "$final"
+        mv "$tmp" "$final"
+        trap - EXIT
+
+        latest_tmp="$(mktemp "$root/.latest.XXXXXX")"
+        cp "$final/manifest.json" "$latest_tmp"
+        chmod 0644 "$latest_tmp"
+        mv -f "$latest_tmp" "$root/latest.json"
+
+        echo "manifest=$final/manifest.json" >>"$GITHUB_OUTPUT"
+        echo "Registered production candidate: $PROJECT/$SERVICE@$GITHUB_SHA"
