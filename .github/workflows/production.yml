@@ -1,0 +1,173 @@
+name: Canonical Production Deployment
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    name: Production request
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 10
+    outputs:
+      components: ${{ steps.contract.outputs.components }}
+      services: ${{ steps.contract.outputs.services }}
+      selected_services: ${{ steps.request.outputs.services }}
+      operation: ${{ steps.request.outputs.operation }}
+
+    steps:
+      - name: Validate repository dispatch
+        id: request
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          REQUESTED_SERVICE: ${{ github.event.client_payload.service }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$EVENT_NAME" == "repository_dispatch" ]] || {
+            echo "::error::Production deployment accepts repository_dispatch only."
+            exit 1
+          }
+          [[ -n "$DEFAULT_BRANCH" && "$REF_NAME" == "$DEFAULT_BRANCH" ]] || {
+            echo "::error::Production dispatch must resolve to the current repository default branch."
+            exit 1
+          }
+
+          case "$EVENT_ACTION" in
+            production_deploy) operation=deploy ;;
+            production_rollback) operation=rollback ;;
+            *) echo "::error::Unsupported repository dispatch type '$EVENT_ACTION'."; exit 1 ;;
+          esac
+          if [[ -n "$REQUESTED_SERVICE" && ! "$REQUESTED_SERVICE" =~ ^[a-z][a-z0-9-]{0,62}$ ]]; then
+            echo "::error::Invalid requested service '$REQUESTED_SERVICE'."
+            exit 1
+          fi
+          echo "operation=$operation" >>"$GITHUB_OUTPUT"
+
+      - name: Checkout exact default-branch revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Load canonical project contract
+        id: contract
+        uses: Mooner510/workflows/.github/actions/config/load@v1
+
+      - name: Select requested production services
+        id: select
+        shell: bash
+        env:
+          SERVICES_JSON: ${{ steps.contract.outputs.services }}
+          REQUESTED_SERVICE: ${{ github.event.client_payload.service }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$REQUESTED_SERVICE" ]]; then
+            services="$(jq -c --arg name "$REQUESTED_SERVICE" '[.[] | select(.name==$name)]' <<<"$SERVICES_JSON")"
+            [[ "$(jq 'length' <<<"$services")" -eq 1 ]] || {
+              echo "::error::Requested service '$REQUESTED_SERVICE' is not declared in .github/stacks.json."
+              exit 1
+            }
+          else
+            services="$(jq -c '.' <<<"$SERVICES_JSON")"
+            [[ "$(jq 'length' <<<"$services")" -gt 0 ]] || {
+              echo "::error::Project declares no production Docker services."
+              exit 1
+            }
+          fi
+          echo "services=$services" >>"$GITHUB_OUTPUT"
+
+  preflight:
+    name: Preflight - ${{ matrix.service.name }}
+    needs: contract
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.contract.outputs.selected_services) }}
+
+    steps:
+      - name: Verify exact production image
+        if: needs.contract.outputs.operation == 'deploy'
+        shell: bash
+        env:
+          SERVICE: ${{ matrix.service.name }}
+        run: |
+          set -euo pipefail
+          project="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+          image="$project/$SERVICE:$GITHUB_SHA"
+          docker image inspect "$image" >/dev/null 2>&1 || {
+            echo "::error::No fully verified image exists for the current default-branch revision: $image"
+            exit 1
+          }
+          revision="$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          image_project="$(docker image inspect "$image" --format '{{ index .Config.Labels "kr.mooner510.stacks.project" }}')"
+          image_service="$(docker image inspect "$image" --format '{{ index .Config.Labels "kr.mooner510.stacks.service" }}')"
+          [[ "$revision" == "$GITHUB_SHA" && "$image_project" == "$project" && "$image_service" == "$SERVICE" ]] || {
+            echo "::error::Production image provenance mismatch for $image."
+            exit 1
+          }
+
+      - name: Resolve rollback target
+        id: previous
+        if: needs.contract.outputs.operation == 'rollback'
+        uses: Mooner510/workflows/.github/actions/cd/state@v1
+        with:
+          environment: prod
+          operation: previous
+          project: ${{ lower(github.event.repository.name) }}
+          service: ${{ matrix.service.name }}
+
+      - name: Verify rollback image
+        if: needs.contract.outputs.operation == 'rollback'
+        shell: bash
+        env:
+          EXISTS: ${{ steps.previous.outputs.exists }}
+          IMAGE_ID: ${{ steps.previous.outputs.image-id }}
+        run: |
+          set -euo pipefail
+          [[ "$EXISTS" == "true" && -n "$IMAGE_ID" ]] || {
+            echo "::error::No previous known-good image exists for rollback."
+            exit 1
+          }
+          docker image inspect "$IMAGE_ID" >/dev/null 2>&1 || {
+            echo "::error::Previous known-good rollback image is no longer local: $IMAGE_ID"
+            exit 1
+          }
+
+  deploy:
+    name: ${{ needs.contract.outputs.operation }} - ${{ matrix.service.name }}
+    needs: [contract, preflight]
+    if: needs.preflight.result == 'success'
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.contract.outputs.selected_services) }}
+
+    steps:
+      - name: Checkout exact production revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Apply central production lifecycle
+        uses: Mooner510/workflows/.github/actions/cd/service@v1
+        with:
+          service: ${{ toJSON(matrix.service) }}
+          components: ${{ needs.contract.outputs.components }}
+          environment: prod
+          operation: ${{ needs.contract.outputs.operation }}
