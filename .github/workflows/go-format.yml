@@ -15,6 +15,16 @@ on:
         required: false
         type: string
         default: ''
+      ci_workflow:
+        description: Caller CI workflow file to dispatch after a maintenance commit. Empty disables dispatch.
+        required: false
+        type: string
+        default: ci.yml
+      ci_workflow:
+        description: Caller CI workflow file to dispatch after a maintenance commit. Empty disables dispatch.
+        required: false
+        type: string
+        default: ci.yml
     secrets:
       CI_PRIVATE_REPO_TOKEN:
         description: Optional GitHub token with read access to private Go module repositories.
@@ -34,6 +44,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: go-format-${{ github.repository }}-${{ github.ref_name }}
@@ -237,11 +248,13 @@ jobs:
 
           git config user.name "$COMMITTER_NAME"
           git config user.email "$COMMITTER_EMAIL"
+          base_sha="$(git rev-parse HEAD)"
           git commit -m "style: format and tidy Go"
           commit_sha="$(git rev-parse HEAD)"
 
           git push origin "HEAD:refs/heads/$TARGET_BRANCH"
 
+          echo "base_sha=$base_sha" >>"$GITHUB_OUTPUT"
           echo "commit_sha=$commit_sha" >>"$GITHUB_OUTPUT"
           echo "Pushed Go maintenance commit $commit_sha to $TARGET_BRANCH."
 
@@ -346,6 +359,32 @@ jobs:
           version: ${{ steps.go-ci.outputs.version }}
           go_private_patterns: ${{ inputs.go_private_patterns }}
           private_repo_token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
+
+      - name: Dispatch caller CI
+        if: steps.format.outputs.changed == 'true' && success() && inputs.ci_workflow != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: ${{ github.ref_name }}
+          CI_WORKFLOW: ${{ inputs.ci_workflow }}
+          DIFF_BASE: ${{ steps.push.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+
+          command -v curl >/dev/null || { echo "::error::curl is required on the self-hosted runner."; exit 1; }
+          command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+
+          payload="$(jq -cn --arg ref "$TARGET_BRANCH" --arg diff_base "$DIFF_BASE" '{ref: $ref, inputs: {diff_base: $diff_base}}')"
+
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/$CI_WORKFLOW/dispatches" \
+            --data "$payload"
+
+          echo "Dispatched $CI_WORKFLOW for $TARGET_BRANCH with diff base $DIFF_BASE."
 
       - name: Report result
         if: steps.format.outputs.changed == 'true' && success()
