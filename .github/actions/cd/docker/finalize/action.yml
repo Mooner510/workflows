@@ -80,17 +80,29 @@ runs:
           }
         done
 
-        created=()
+        declare -a previous_ids=()
+        declare -a changed_indexes=()
+        for canonical in "${canonicals[@]}"; do
+          previous_ids+=("$(docker image inspect "$canonical" --format '{{.Id}}' 2>/dev/null || true)")
+        done
+
         rollback_tags() {
-          for tag in "${created[@]}"; do
-            docker image rm -f "$tag" >/dev/null 2>&1 || true
+          local index canonical previous
+          for index in "${changed_indexes[@]}"; do
+            canonical="${canonicals[$index]}"
+            previous="${previous_ids[$index]}"
+            if [[ -n "$previous" ]]; then
+              docker tag "$previous" "$canonical" >/dev/null 2>&1 || true
+            else
+              docker image rm -f "$canonical" >/dev/null 2>&1 || true
+            fi
           done
         }
         trap rollback_tags ERR
 
         for ((i=0; i<${#temps[@]}; i++)); do
           docker tag "${temps[$i]}" "${canonicals[$i]}"
-          created+=("${canonicals[$i]}")
+          changed_indexes+=("$i")
           echo "Published ${canonicals[$i]}"
         done
 
