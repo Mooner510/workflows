@@ -107,9 +107,7 @@ runs:
         fi
 
         if [[ "$(jq 'length' <<<"$resolved")" -eq 0 ]]; then
-          echo "::error::No runtime env file is available for project '$PROJECT' and service '$SERVICE'."
-          echo "::error::Provide the selected environment's $env_file at project or service scope. Development never falls back to production env files."
-          exit 1
+          echo "No runtime env file is configured for project '$PROJECT' and service '$SERVICE'; using an empty runtime environment."
         fi
 
         keys='[]'
