@@ -317,6 +317,19 @@ runs:
         build-args-json: ${{ steps.build_args.outputs.build_args_json }}
         secret-env-names-json: ${{ inputs.build-secret-env-names-json }}
 
+    - name: Install production promotion runtime
+      shell: bash
+      env:
+        RUNTIME_SOURCE: ${{ github.action_path }}/runtime.sh
+      run: |
+        set -euo pipefail
+        [[ -f "$RUNTIME_SOURCE" ]] || { echo "::error::Production promotion runtime is missing: $RUNTIME_SOURCE"; exit 1; }
+        runtime_root="/var/lib/stacks/runtime"
+        mkdir -p "$runtime_root"
+        tmp="$(mktemp "$runtime_root/.production-runtime.XXXXXX")"
+        install -m 0755 "$RUNTIME_SOURCE" "$tmp"
+        mv -f "$tmp" "$runtime_root/production-runtime.sh"
+
     - name: Register production candidate
       id: register
       shell: bash
