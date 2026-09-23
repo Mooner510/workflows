@@ -147,7 +147,7 @@ jobs:
         shell: bash
         env:
           EXISTS: ${{ steps.previous.outputs.exists }}
-          IMAGE_ID: ${{ steps.previous.outputs.image-id }}
+          IMAGE_ID: ${{ steps.previous.outputs['image-id'] }}
         run: |
           set -euo pipefail
           [[ "$EXISTS" == "true" && -n "$IMAGE_ID" ]] || {
