@@ -91,7 +91,8 @@ jobs:
                 if [[ "$action" == Mooner510/workflows/* && "$version" =~ ^v[0-9]+$ ]]; then
                   continue
                 fi
-                echo "::error file=${file#$GITHUB_WORKSPACE/}::Mutable GitHub Actions ref '$ref' is not allowed."
+                relative_file="${file#"$GITHUB_WORKSPACE"/}"
+                echo "::error file=$relative_file::Mutable GitHub Actions ref '$ref' is not allowed."
                 invalid=1
               fi
             done <"$file"
