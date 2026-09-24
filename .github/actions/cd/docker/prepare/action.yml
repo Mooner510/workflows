@@ -31,6 +31,7 @@ runs:
         SERVICE_JSON: ${{ inputs.service }}
         DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
         CI_PRIVATE_REPO_TOKEN: ${{ inputs.private-repo-token }}
+        EVENT_NAME: ${{ github.event_name }}
       run: |
         set -euo pipefail
 
@@ -87,6 +88,10 @@ runs:
           elif read_env_value "$key" "$project_config" >/dev/null 2>&1; then
             value="$(read_env_value "$key" "$project_config")"
           else
+            if [[ "$EVENT_NAME" == "pull_request" ]]; then
+              echo "::warning::Build argument '$key' is absent from canonical $env_file config; PR validation will rely on the Dockerfile's CI-safe default."
+              continue
+            fi
             echo "::error::Build argument '$key' is not defined in canonical non-secret $env_file config."
             exit 1
           fi
@@ -107,6 +112,9 @@ runs:
           --label "kr.mooner510.stacks.environment=$DEPLOY_ENVIRONMENT"
         )
         args+=("${build_args[@]}")
+        if [[ "$EVENT_NAME" == "pull_request" ]]; then
+          args+=(--build-arg "CI=true")
+        fi
         if [[ -n "${CI_PRIVATE_REPO_TOKEN:-}" ]]; then
           echo "::add-mask::$CI_PRIVATE_REPO_TOKEN"
           args+=(--secret "id=CI_PRIVATE_REPO_TOKEN,env=CI_PRIVATE_REPO_TOKEN")
