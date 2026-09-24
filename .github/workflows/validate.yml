@@ -16,26 +16,10 @@ concurrency:
 jobs:
   validate:
     name: Central workflow validation
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
-      - name: Enforce trusted self-hosted execution
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-        run: |
-          set -euo pipefail
-          [[ "$EVENT_NAME" != "pull_request_target" ]] || {
-            echo "::error::pull_request_target is not allowed on the self-hosted runner."
-            exit 1
-          }
-          if [[ "$EVENT_NAME" == "pull_request" && "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" ]]; then
-            echo "::error::Fork pull requests are not allowed on the self-hosted runner."
-            exit 1
-          fi
-
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
