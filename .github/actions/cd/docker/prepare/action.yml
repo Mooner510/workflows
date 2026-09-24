@@ -140,11 +140,13 @@ runs:
         fi
 
         health_test="$(jq -c '.[0].Config.Healthcheck.Test // []' <<<"$inspect")"
-        jq -e 'type=="array" and length>0 and .[0] != "NONE"' <<<"$health_test" >/dev/null || {
-          docker image rm -f "$image" >/dev/null 2>&1 || true
-          echo "::error::Every deployable image must define a Docker HEALTHCHECK."
-          exit 1
-        }
+        if (( exposed_count == 1 )); then
+          jq -e 'type=="array" and length>0 and .[0] != "NONE"' <<<"$health_test" >/dev/null || {
+            docker image rm -f "$image" >/dev/null 2>&1 || true
+            echo "::error::Routable images must define a Docker HEALTHCHECK."
+            exit 1
+          }
+        fi
 
         echo "==> Trivy image vulnerability scan (HIGH/CRITICAL)"
         archive="$(mktemp "$RUNNER_TEMP/stacks-image-XXXXXX.tar")"
