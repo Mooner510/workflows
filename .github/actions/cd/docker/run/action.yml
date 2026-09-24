@@ -158,7 +158,7 @@ runs:
           [[ -z "$tls_gid" ]] || args+=(--group-add "$tls_gid")
           while IFS= read -r file; do args+=(--env-file "$file"); done < <(jq -r '.[]' <<<"$ENV_FILES_JSON")
           while IFS= read -r name; do args+=(-e "$name"); done < <(jq -r '.[]' <<<"$ENV_NAMES_JSON")
-          args+=(-e "STACKS_ENVIRONMENT=$DEPLOY_ENVIRONMENT")
+          args+=(-e "ENVIRONMENT=$DEPLOY_ENVIRONMENT")
           args+=("${volume_args[@]}")
           args+=("$image")
 
