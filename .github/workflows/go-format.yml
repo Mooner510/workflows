@@ -14,13 +14,6 @@ on:
       CI_PRIVATE_REPO_TOKEN:
         description: Optional GitHub token with read access to private Go module repositories.
         required: false
-  workflow_dispatch:
-    inputs:
-      path:
-        description: Repository-relative directory to format. / formats the whole repository.
-        required: false
-        type: string
-        default: /
 
 permissions:
   contents: write
