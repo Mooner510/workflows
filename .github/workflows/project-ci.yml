@@ -42,7 +42,9 @@ jobs:
       has_changes: ${{ steps.detect.outputs.has_changes }}
       git_log_opts: ${{ steps.detect.outputs.git_log_opts }}
       image_environment: ${{ steps.mode.outputs.environment }}
-      image_required: ${{ steps.mode.outputs.required }}
+      image_required: ${{ steps.mode.outputs.image_required }}
+      publish_required: ${{ steps.mode.outputs.publish_required }}
+      deploy_development_required: ${{ steps.mode.outputs.deploy_development_required }}
       ci_required: ${{ steps.mode.outputs.ci_required }}
       security_required: ${{ steps.mode.outputs.security_required }}
 
@@ -82,6 +84,7 @@ jobs:
         shell: bash
         env:
           REF_NAME: ${{ github.ref_name }}
+          BASE_REF: ${{ github.base_ref }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EVENT_NAME: ${{ github.event_name }}
           AFFECTED_SERVICES: ${{ steps.detect.outputs.affected_services }}
@@ -97,11 +100,28 @@ jobs:
             elif [[ -n "$DEFAULT_BRANCH" && "$REF_NAME" == "$DEFAULT_BRANCH" ]]; then
               environment=prod
             fi
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            if [[ "$BASE_REF" == "dev" ]]; then
+              environment=dev
+            elif [[ -n "$DEFAULT_BRANCH" && "$BASE_REF" == "$DEFAULT_BRANCH" ]]; then
+              environment=prod
+            fi
           fi
 
-          required=false
+          image_required=false
           if [[ -n "$environment" && "$(jq 'length' <<<"$AFFECTED_SERVICES")" -gt 0 ]]; then
-            required=true
+            image_required=true
+          fi
+
+          publish_required=false
+          deploy_development_required=false
+          if [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$image_required" == "true" ]]; then
+              publish_required=true
+              if [[ "$environment" == "dev" ]]; then
+                deploy_development_required=true
+              fi
+            fi
           fi
 
           if [[ "$CI_TARGETS" == "[]" ]]; then ci_required=false; else ci_required=true; fi
@@ -109,7 +129,9 @@ jobs:
 
           {
             echo "environment=$environment"
-            echo "required=$required"
+            echo "image_required=$image_required"
+            echo "publish_required=$publish_required"
+            echo "deploy_development_required=$deploy_development_required"
             echo "ci_required=$ci_required"
             echo "security_required=$security_required"
           } >>"$GITHUB_OUTPUT"
@@ -124,7 +146,7 @@ jobs:
       git_log_opts: ${{ needs.contract.outputs.git_log_opts }}
 
   ci:
-    name: CI - ${{ matrix.target }}
+    name: Component CI
     needs: contract
     if: needs.contract.outputs.ci_required == 'true'
     runs-on: [self-hosted, linux]
@@ -180,7 +202,7 @@ jobs:
           components: ${{ toJSON(fromJSON(needs.contract.outputs.ci_groups)[matrix.target].components) }}
 
   images:
-    name: Image - ${{ matrix.service.name }}
+    name: Docker image verification
     needs: contract
     if: needs.contract.outputs.image_required == 'true'
     runs-on: [self-hosted, linux]
@@ -237,7 +259,7 @@ jobs:
   finalize:
     name: Publish verified images
     needs: [contract, gate, images]
-    if: needs.gate.result == 'success' && needs.contract.outputs.image_required == 'true'
+    if: needs.gate.result == 'success' && needs.contract.outputs.publish_required == 'true'
     runs-on: [self-hosted, linux]
     timeout-minutes: 10
     steps:
@@ -250,9 +272,9 @@ jobs:
           operation: finalize
 
   deploy-development:
-    name: Deploy dev - ${{ matrix.service.name }}
+    name: Development deployment
     needs: [contract, gate, finalize]
-    if: needs.finalize.result == 'success' && needs.contract.outputs.image_environment == 'dev'
+    if: needs.finalize.result == 'success' && needs.contract.outputs.deploy_development_required == 'true'
     runs-on: [self-hosted, linux]
     timeout-minutes: 45
     strategy:
