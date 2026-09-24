@@ -120,6 +120,8 @@ manual
 - `database`: runtime `DATABASE_URL`이 필요한 service.
 - `migrate`: referenced component의 migration engine을 deploy 시 실행. `true`이면 database도 자동으로 필요하다.
 - `build_args`: build에 필요한 non-secret environment variable 이름. 값은 선택 environment의 canonical project/service `deploy.env`에서만 resolve한다.
+
+Pull request image validation은 실제 runtime mutation을 하지 않으므로, 선언된 build arg가 host env에 없을 때 Dockerfile의 명시적 CI-safe default를 사용할 수 있다. Central builder는 PR에만 `CI=true` build arg를 전달하고 누락된 host build arg를 건너뛴다. dev/default-branch push와 실제 deploy용 image build에서는 canonical env 값이 계속 필수다.
 - `manual`: `true`이면 CI image build/scan에는 포함하지만 dev automatic deployment와 service 미지정 production 전체 배포에서는 제외한다. Explicit service dispatch만 허용한다.
 
 Private dependency가 Docker build 중 필요한 경우 caller의 optional `CI_PRIVATE_REPO_TOKEN`을 central image builder가 BuildKit secret `CI_PRIVATE_REPO_TOKEN`으로만 전달한다. Token은 build arg, image layer, project metadata에 저장하지 않는다. Dockerfile이 해당 secret을 사용하지 않으면 아무 효과가 없다.
