@@ -19,7 +19,7 @@ Consumer는 위 reusable workflow만 호출한다. `.github/actions/**`는 centr
 
 기존 `pipeline.yml`, `docker-service-*`, `docker-process-*` 등은 active repositories를 새 contract로 이전하는 동안만 남기는 compatibility implementation이다. 신규 caller contract로 사용하지 않는다.
 
-`security.yml` reusable workflow는 제거했다. Security와 language/migration CI orchestration은 각각 `.github/actions/ci/security`, `.github/actions/ci/group` 내부 action으로 통합하여 `project-ci.yml`과 legacy `pipeline.yml`이 같은 구현을 공유한다. `.github/workflows/validate.yml`은 이 implementation repository 자체의 workflow syntax/reference policy만 검증한다.
+`security.yml` reusable workflow는 제거했다. Security와 language/migration CI orchestration은 각각 `.github/actions/ci/security`, `.github/actions/ci/group` 내부 action으로 통합하여 `project-ci.yml`과 legacy `pipeline.yml`이 같은 구현을 공유한다. `.github/workflows/validate.yml`은 이 implementation repository 자체의 workflow syntax/reference policy만 검증한다. `Mooner510/workflows`는 public repository이므로 이 repository 자체의 PR/push validation은 GitHub-hosted `ubuntu-latest`에서만 실행한다. Consumer repository에서 reusable workflow를 호출할 때의 canonical CI/CD는 기존 `[self-hosted, linux]` runner contract를 유지한다. Central `go-format.yml`도 `workflow_call` 전용이며 `workflows` repository 자체에서 직접 dispatch하지 않는다.
 
 ## One repository declaration
 
@@ -112,6 +112,7 @@ watch
 database
 migrate
 build_args
+manual
 ```
 
 - `component`: 해당 service의 language/migration contract를 소유하는 component.
@@ -119,6 +120,9 @@ build_args
 - `database`: runtime `DATABASE_URL`이 필요한 service.
 - `migrate`: referenced component의 migration engine을 deploy 시 실행. `true`이면 database도 자동으로 필요하다.
 - `build_args`: build에 필요한 non-secret environment variable 이름. 값은 선택 environment의 canonical project/service `deploy.env`에서만 resolve한다.
+- `manual`: `true`이면 CI image build/scan에는 포함하지만 dev automatic deployment와 service 미지정 production 전체 배포에서는 제외한다. Explicit service dispatch만 허용한다.
+
+Private dependency가 Docker build 중 필요한 경우 caller의 optional `CI_PRIVATE_REPO_TOKEN`을 central image builder가 BuildKit secret `CI_PRIVATE_REPO_TOKEN`으로만 전달한다. Token은 build arg, image layer, project metadata에 저장하지 않는다. Dockerfile이 해당 secret을 사용하지 않으면 아무 효과가 없다.
 
 Consumer가 다음 deployment controls를 선언하는 것은 금지한다.
 
@@ -177,11 +181,11 @@ kr.mooner510.stacks.container-port=<EXPOSE port>
 
 ### Readiness
 
-모든 deployable image는 Dockerfile에 유효한 `HEALTHCHECK`를 반드시 정의한다.
+1 TCP port를 EXPOSE하는 routable image는 Dockerfile에 유효한 `HEALTHCHECK`를 반드시 정의한다.
 
-Central runtime은 HTTP/process를 구분하는 `kind`를 사용하지 않는다. 모든 service를 같은 lifecycle로 처리하고 `docker inspect .State.Health.Status`가 `healthy`가 될 때만 성공으로 간주한다.
+0-port process image는 HEALTHCHECK를 생략할 수 있다. 이 경우 central runtime은 container가 시작 직후 종료하지 않고 안정적으로 running 상태를 유지하는지 확인한다. Process image가 HEALTHCHECK를 정의하면 해당 health status를 그대로 사용한다.
 
-`HEALTHCHECK`가 없거나 `unhealthy`이면 deployment는 실패한다.
+Routable image의 HEALTHCHECK가 없거나, health status가 `unhealthy`이거나, process container가 안정화 전에 종료되면 deployment는 실패한다.
 
 ## Canonical CI
 

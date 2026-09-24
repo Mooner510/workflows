@@ -92,9 +92,9 @@ jobs:
               exit 1
             }
           else
-            services="$(jq -c '.' <<<"$SERVICES_JSON")"
+            services="$(jq -c '[.[] | select(.manual != true)]' <<<"$SERVICES_JSON")"
             [[ "$(jq 'length' <<<"$services")" -gt 0 ]] || {
-              echo "::error::Project declares no production Docker services."
+              echo "::error::Project declares no automatic production Docker services."
               exit 1
             }
           fi

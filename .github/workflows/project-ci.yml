@@ -38,6 +38,7 @@ jobs:
       ci_targets: ${{ steps.detect.outputs.ci_targets }}
       ci_groups: ${{ steps.detect.outputs.ci_groups_by_target }}
       affected_services: ${{ steps.detect.outputs.affected_services }}
+      development_services: ${{ steps.mode.outputs.development_services }}
       git_log_opts: ${{ steps.detect.outputs.git_log_opts }}
       image_environment: ${{ steps.mode.outputs.environment }}
       image_required: ${{ steps.mode.outputs.image_required }}
@@ -91,6 +92,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EVENT_NAME: ${{ github.event_name }}
           AFFECTED_SERVICES: ${{ steps.detect.outputs.affected_services }}
+          SERVICES_JSON: ${{ steps.contract.outputs.services }}
           CI_TARGETS: ${{ steps.detect.outputs.ci_targets }}
           HAS_CHANGES: ${{ steps.detect.outputs.has_changes }}
         run: |
@@ -116,12 +118,14 @@ jobs:
             image_required=true
           fi
 
+          development_services="$(jq -c --argjson affected "$AFFECTED_SERVICES" '[.[] | select(.name as $name | ($affected | index($name))) | select(.manual != true) | .name]' <<<"$SERVICES_JSON")"
+
           publish_required=false
           deploy_development_required=false
           if [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]]; then
             if [[ "$image_required" == "true" ]]; then
               publish_required=true
-              if [[ "$environment" == "dev" ]]; then
+              if [[ "$environment" == "dev" && "$(jq 'length' <<<"$development_services")" -gt 0 ]]; then
                 deploy_development_required=true
               fi
             fi
@@ -134,6 +138,7 @@ jobs:
             echo "environment=$environment"
             echo "image_required=$image_required"
             echo "publish_required=$publish_required"
+            echo "development_services=$development_services"
             echo "deploy_development_required=$deploy_development_required"
             echo "ci_required=$ci_required"
             echo "security_required=$security_required"
@@ -217,6 +222,7 @@ jobs:
         with:
           service: ${{ steps.service.outputs.service }}
           environment: ${{ needs.contract.outputs.image_environment }}
+          private-repo-token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
 
   verify:
     name: Verification and publication
@@ -277,7 +283,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: ${{ fromJSON(needs.contract.outputs.affected_services) }}
+        service: ${{ fromJSON(needs.contract.outputs.development_services) }}
 
     steps:
       - name: Checkout exact verified revision

@@ -124,17 +124,26 @@ runs:
             [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || return 1
           fi
           health="$(jq -c '.[0].Config.Healthcheck.Test // []' <<<"$inspect")"
-          jq -e 'type=="array" and length>0 and .[0] != "NONE"' <<<"$health" >/dev/null || return 1
+          if (( count == 1 )); then
+            jq -e 'type=="array" and length>0 and .[0] != "NONE"' <<<"$health" >/dev/null || return 1
+          fi
           printf '%s' "$port"
         }
 
-        wait_healthy() {
-          local name="$1" status running
+        wait_ready() {
+          local name="$1" status running stable=0
           for ((attempt=1; attempt<=90; attempt++)); do
             status="$(docker inspect "$name" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' 2>/dev/null || true)"
             running="$(docker inspect "$name" --format '{{.State.Running}}' 2>/dev/null || true)"
+            [[ "$running" == "true" ]] || return 1
             if [[ "$status" == "healthy" ]]; then return 0; fi
-            if [[ "$running" != "true" || "$status" == "unhealthy" ]]; then return 1; fi
+            if [[ "$status" == "unhealthy" ]]; then return 1; fi
+            if [[ "$status" == "missing" ]]; then
+              stable=$((stable + 1))
+              if (( stable >= 3 )); then return 0; fi
+            else
+              stable=0
+            fi
             sleep 2
           done
           return 1
@@ -143,7 +152,7 @@ runs:
         create_and_start() {
           local image="$1" port args
           port="$(inspect_contract "$image")" || {
-            echo "::error::Image must define HEALTHCHECK and expose at most one TCP port: $image" >&2
+            echo "::error::Image must expose at most one TCP port, and routable images must define HEALTHCHECK: $image" >&2
             return 1
           }
 
@@ -172,7 +181,7 @@ runs:
             [[ "$NETWORK" == "caddy-shared" ]] || docker network connect caddy-shared "$container"
           fi
           docker start "$container" >/dev/null
-          wait_healthy "$container"
+          wait_ready "$container"
         }
 
         if docker container inspect "$container" >/dev/null 2>&1; then
@@ -191,7 +200,7 @@ runs:
               exit 1
             }
           fi
-          echo "::error::Requested image failed Docker HEALTHCHECK."
+          echo "::error::Requested image failed readiness verification."
           exit 1
         fi
 

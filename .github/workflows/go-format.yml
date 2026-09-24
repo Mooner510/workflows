@@ -14,13 +14,6 @@ on:
       CI_PRIVATE_REPO_TOKEN:
         description: Optional GitHub token with read access to private Go module repositories.
         required: false
-  workflow_dispatch:
-    inputs:
-      path:
-        description: Repository-relative directory to format. / formats the whole repository.
-        required: false
-        type: string
-        default: /
 
 permissions:
   contents: write
@@ -120,15 +113,17 @@ jobs:
           } >>"$GITHUB_OUTPUT"
 
           if (( ${#go_files[@]} == 0 )); then
-            echo "changed=false" >>"$GITHUB_OUTPUT"
-            echo "changed_count=0" >>"$GITHUB_OUTPUT"
-            echo "modules_tidied=0" >>"$GITHUB_OUTPUT"
+            {
+              echo "changed=false"
+              echo "changed_count=0"
+              echo "modules_tidied=0"
+            } >>"$GITHUB_OUTPUT"
             echo "No Go files found under $display_path."
             {
               echo "### Go Format & Tidy"
               echo
-              echo "- Branch: `$TARGET_BRANCH`"
-              echo "- Path: `$display_path`"
+              echo "- Branch: \`$TARGET_BRANCH\`"
+              echo "- Path: \`$display_path\`"
               echo "- Result: no Go files found"
             } >>"$GITHUB_STEP_SUMMARY"
             exit 0
@@ -206,10 +201,10 @@ jobs:
             {
               echo "### Go Format & Tidy"
               echo
-              echo "- Branch: `$TARGET_BRANCH`"
-              echo "- Path: `$display_path`"
-              echo "- Files scanned: `${#go_files[@]}`"
-              echo "- Modules tidied: `${#module_list[@]}`"
+              echo "- Branch: \`$TARGET_BRANCH\`"
+              echo "- Path: \`$display_path\`"
+              echo "- Files scanned: \`${#go_files[@]}\`"
+              echo "- Modules tidied: \`${#module_list[@]}\`"
               echo "- Result: no changes"
             } >>"$GITHUB_STEP_SUMMARY"
             exit 0

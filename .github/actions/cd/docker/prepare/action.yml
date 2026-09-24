@@ -8,6 +8,10 @@ inputs:
   environment:
     description: prod or dev; selects non-secret build-argument config only.
     required: true
+  private-repo-token:
+    description: Optional read-only GitHub token exposed only as the CI_PRIVATE_REPO_TOKEN BuildKit secret.
+    required: false
+    default: ''
 
 outputs:
   image:
@@ -26,6 +30,7 @@ runs:
       env:
         SERVICE_JSON: ${{ inputs.service }}
         DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+        CI_PRIVATE_REPO_TOKEN: ${{ inputs.private-repo-token }}
       run: |
         set -euo pipefail
 
@@ -102,6 +107,10 @@ runs:
           --label "kr.mooner510.stacks.environment=$DEPLOY_ENVIRONMENT"
         )
         args+=("${build_args[@]}")
+        if [[ -n "${CI_PRIVATE_REPO_TOKEN:-}" ]]; then
+          echo "::add-mask::$CI_PRIVATE_REPO_TOKEN"
+          args+=(--secret "id=CI_PRIVATE_REPO_TOKEN,env=CI_PRIVATE_REPO_TOKEN")
+        fi
         args+=("$workspace")
 
         echo "==> Building temporary image $image"
@@ -131,11 +140,13 @@ runs:
         fi
 
         health_test="$(jq -c '.[0].Config.Healthcheck.Test // []' <<<"$inspect")"
-        jq -e 'type=="array" and length>0 and .[0] != "NONE"' <<<"$health_test" >/dev/null || {
-          docker image rm -f "$image" >/dev/null 2>&1 || true
-          echo "::error::Every deployable image must define a Docker HEALTHCHECK."
-          exit 1
-        }
+        if (( exposed_count == 1 )); then
+          jq -e 'type=="array" and length>0 and .[0] != "NONE"' <<<"$health_test" >/dev/null || {
+            docker image rm -f "$image" >/dev/null 2>&1 || true
+            echo "::error::Routable images must define a Docker HEALTHCHECK."
+            exit 1
+          }
+        fi
 
         echo "==> Trivy image vulnerability scan (HIGH/CRITICAL)"
         archive="$(mktemp "$RUNNER_TEMP/stacks-image-XXXXXX.tar")"

@@ -127,10 +127,11 @@ runs:
           }
 
           jq -e '
-            (keys - ["name","path","component","watch","database","migrate","build_args"] | length) == 0
+            (keys - ["name","path","component","watch","database","migrate","build_args","manual"] | length) == 0
             and ((.watch == null) or ((.watch|type)=="array" and all(.watch[]; type=="string")))
             and ((.database == null) or (.database|type)=="boolean")
             and ((.migrate == null) or (.migrate|type)=="boolean")
+            and ((.manual == null) or (.manual|type)=="boolean")
             and ((.build_args == null) or ((.build_args|type)=="array" and all(.build_args[]; type=="string" and test("^[A-Za-z_][A-Za-z0-9_]*$"))))
           ' <<<"$service" >/dev/null || {
             echo "::error::Service '$name' contains unsupported deployment controls."
@@ -149,7 +150,8 @@ runs:
           database="$(jq -r '.database // false' <<<"$service")"
           [[ "$migrate" != "true" ]] || database=true
 
-          normalized="$(jq -c             --argjson database "$database"             --argjson migrate "$migrate"             '. + {database:$database,migrate:$migrate,build_args:(.build_args // []),watch:(.watch // [])}' <<<"$service")"
+          manual="$(jq -r '.manual // false' <<<"$service")"
+          normalized="$(jq -c             --argjson database "$database"             --argjson migrate "$migrate"             --argjson manual "$manual"             '. + {database:$database,migrate:$migrate,manual:$manual,build_args:(.build_args // []),watch:(.watch // [])}' <<<"$service")"
           normalized_services="$(jq -c --argjson item "$normalized" '. + [$item]' <<<"$normalized_services")"
         done < <(jq -c '.[]' <<<"$services")
 
