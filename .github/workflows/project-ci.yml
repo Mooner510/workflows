@@ -210,7 +210,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: ${{ fromJSON(needs.contract.outputs.affected_service_objects) }}
+        service: ${{ fromJSON(needs.contract.outputs.affected_services) }}
 
     steps:
       - name: Checkout caller repository
@@ -219,10 +219,22 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
+      - name: Select service contract
+        id: service
+        shell: bash
+        env:
+          SERVICES_JSON: ${{ needs.contract.outputs.services }}
+          SERVICE_NAME: ${{ matrix.service }}
+        run: |
+          set -euo pipefail
+          service="$(jq -c --arg name "$SERVICE_NAME" '.[] | select(.name == $name)' <<<"$SERVICES_JSON")"
+          [[ -n "$service" ]] || { echo "::error::Service '$SERVICE_NAME' is not declared."; exit 1; }
+          echo "service=$service" >>"$GITHUB_OUTPUT"
+
       - name: Build and scan temporary image
         uses: Mooner510/workflows/.github/actions/cd/docker/prepare@v1
         with:
-          service: ${{ toJSON(matrix.service) }}
+          service: ${{ steps.service.outputs.service }}
           environment: ${{ needs.contract.outputs.image_environment }}
 
   gate:
@@ -280,7 +292,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: ${{ fromJSON(needs.contract.outputs.affected_service_objects) }}
+        service: ${{ fromJSON(needs.contract.outputs.affected_services) }}
 
     steps:
       - name: Checkout exact verified revision
@@ -289,10 +301,22 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
+      - name: Select service contract
+        id: service
+        shell: bash
+        env:
+          SERVICES_JSON: ${{ needs.contract.outputs.services }}
+          SERVICE_NAME: ${{ matrix.service }}
+        run: |
+          set -euo pipefail
+          service="$(jq -c --arg name "$SERVICE_NAME" '.[] | select(.name == $name)' <<<"$SERVICES_JSON")"
+          [[ -n "$service" ]] || { echo "::error::Service '$SERVICE_NAME' is not declared."; exit 1; }
+          echo "service=$service" >>"$GITHUB_OUTPUT"
+
       - name: Deploy verified development service
         uses: Mooner510/workflows/.github/actions/cd/service@v1
         with:
-          service: ${{ toJSON(matrix.service) }}
+          service: ${{ steps.service.outputs.service }}
           components: ${{ needs.contract.outputs.components }}
           environment: dev
           operation: deploy
