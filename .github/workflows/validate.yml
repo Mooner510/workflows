@@ -87,6 +87,12 @@ jobs:
                 [[ "$ref" == *@* ]] || continue
                 action="${ref%@*}"
                 version="${ref##*@}"
+                if [[ "$action" == "Mooner510/workflows/.github/workflows/security.yml" ]]; then
+                  relative_file="${file#"$GITHUB_WORKSPACE"/}"
+                  echo "::error file=$relative_file::security.yml is no longer a reusable workflow entrypoint."
+                  invalid=1
+                  continue
+                fi
                 [[ "$version" =~ ^[0-9a-fA-F]{40}$ ]] && continue
                 if [[ "$action" == Mooner510/workflows/* && "$version" =~ ^v[0-9]+$ ]]; then
                   continue
@@ -97,11 +103,6 @@ jobs:
               fi
             done <"$file"
           done < <(find "$GITHUB_WORKSPACE/.github" -type f \( -name '*.yml' -o -name '*.yaml' \) -print)
-
-          if grep -R -nF "Mooner510/workflows/.github/workflows/security.yml@" "$GITHUB_WORKSPACE/.github" >/dev/null; then
-            echo "::error::security.yml is no longer a reusable workflow entrypoint."
-            invalid=1
-          fi
 
           while IFS= read -r ref; do
             path="${ref#Mooner510/workflows/}"
