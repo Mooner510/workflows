@@ -118,4 +118,23 @@ jobs:
             invalid=1
           fi
 
+          while IFS= read -r ref; do
+            path="${ref#Mooner510/workflows/}"
+            path="${path%@*}"
+            case "$path" in
+              .github/actions/*)
+                [[ -f "$GITHUB_WORKSPACE/$path/action.yml" ]] || {
+                  echo "::error::Missing internal composite action: $path/action.yml"
+                  invalid=1
+                }
+                ;;
+              .github/workflows/*)
+                [[ -f "$GITHUB_WORKSPACE/$path" ]] || {
+                  echo "::error::Missing internal reusable workflow: $path"
+                  invalid=1
+                }
+                ;;
+            esac
+          done < <(grep -RhoE 'Mooner510/workflows/[^[:space:]#]+@v[0-9]+' "$GITHUB_WORKSPACE/.github" | sort -u)
+
           (( invalid == 0 )) || exit 1
