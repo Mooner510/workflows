@@ -47,7 +47,6 @@ concurrency:
 jobs:
   detect:
     name: Detect changes
-    if: github.event_name != 'pull_request_target' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, linux]
     timeout-minutes: 10
 
@@ -60,6 +59,29 @@ jobs:
       git_log_opts: ${{ steps.detect.outputs.git_log_opts }}
 
     steps:
+      - name: Enforce trusted self-hosted execution
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -euo pipefail
+          [[ "$EVENT_NAME" != "pull_request_target" ]] || {
+            echo "::error::pull_request_target is not allowed on the self-hosted runner."
+            exit 1
+          }
+          if [[ "$EVENT_NAME" == "pull_request" && "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" ]]; then
+            echo "::error::Fork pull requests are not allowed on the self-hosted runner."
+            exit 1
+          fi
+
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
       - name: Detect affected components and services
         id: detect
         uses: Mooner510/workflows/.github/actions/ci/detect@v1
@@ -72,10 +94,14 @@ jobs:
     name: Security
     needs: detect
     if: needs.detect.outputs.has_changes == 'true'
-    uses: Mooner510/workflows/.github/workflows/security.yml@v1
-    with:
-      components: ${{ needs.detect.outputs.all_components }}
-      git_log_opts: ${{ needs.detect.outputs.git_log_opts }}
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 30
+    steps:
+      - name: Run security verification
+        uses: Mooner510/workflows/.github/actions/ci/security@v1
+        with:
+          components: ${{ needs.detect.outputs.all_components }}
+          git_log_opts: ${{ needs.detect.outputs.git_log_opts }}
 
   ci:
     name: CI - ${{ matrix.target }}
@@ -95,40 +121,14 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
-      - name: Go CI
-        if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'go'
-        uses: Mooner510/workflows/.github/actions/ci/go@v1
+      - name: Run component group CI
+        uses: Mooner510/workflows/.github/actions/ci/group@v1
         with:
           components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
+          type: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type }}
           version: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].version }}
-          go_private_patterns: ${{ inputs.go_private_patterns }}
-          private_repo_token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
-
-      - name: Node CI
-        if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'node'
-        uses: Mooner510/workflows/.github/actions/ci/node@v1
-        with:
-          components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
-          version: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].version }}
-          package-manager: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].package_manager }}
-          private_repo_token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
-
-      - name: Java/Kotlin CI
-        if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'java-kotlin'
-        uses: Mooner510/workflows/.github/actions/ci/java-kotlin@v1
-        with:
-          components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
-          version: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].version }}
-          build-tool: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].build_tool }}
-          profile: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].profile }}
-
-      - name: Migration CI
-        uses: Mooner510/workflows/.github/actions/ci/migration@v1
-        with:
-          components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
-
-      - name: Go PostgreSQL integration CI
-        if: fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type == 'go'
-        uses: Mooner510/workflows/.github/actions/ci/go-postgres@v1
-        with:
-          components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
+          package-manager: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].package_manager || '' }}
+          build-tool: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].build_tool || '' }}
+          profile: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].profile || '' }}
+          go-private-patterns: ${{ inputs.go_private_patterns }}
+          private-repo-token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
