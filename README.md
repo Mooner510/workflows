@@ -19,7 +19,7 @@ Consumer는 위 reusable workflow만 호출한다. `.github/actions/**`는 centr
 
 기존 `pipeline.yml`, `docker-service-*`, `docker-process-*` 등은 active repositories를 새 contract로 이전하는 동안만 남기는 compatibility implementation이다. 신규 caller contract로 사용하지 않는다.
 
-`security.yml` reusable workflow는 제거했다. Security와 language/migration CI orchestration은 각각 `.github/actions/ci/security`, `.github/actions/ci/group` 내부 action으로 통합하여 `project-ci.yml`과 legacy `pipeline.yml`이 같은 구현을 공유한다. `.github/workflows/validate.yml`은 이 implementation repository 자체의 workflow syntax/reference policy만 검증한다. `Mooner510/workflows`는 public repository이므로 이 repository 자체의 PR/push validation은 GitHub-hosted `ubuntu-latest`에서만 실행한다. Consumer repository에서 reusable workflow를 호출할 때의 canonical CI/CD는 기존 `[self-hosted, linux]` runner contract를 유지한다.
+`security.yml` reusable workflow는 제거했다. Security와 language/migration CI orchestration은 각각 `.github/actions/ci/security`, `.github/actions/ci/group` 내부 action으로 통합하여 `project-ci.yml`과 legacy `pipeline.yml`이 같은 구현을 공유한다. `.github/workflows/validate.yml`은 이 implementation repository 자체의 workflow syntax/reference policy만 검증한다. `Mooner510/workflows`는 public repository이므로 이 repository 자체의 PR/push validation은 GitHub-hosted `ubuntu-latest`에서만 실행한다. Consumer repository에서 reusable workflow를 호출할 때의 canonical CI/CD는 기존 `[self-hosted, linux]` runner contract를 유지한다. Central `go-format.yml`도 `workflow_call` 전용이며 `workflows` repository 자체에서 직접 dispatch하지 않는다.
 
 ## One repository declaration
 
