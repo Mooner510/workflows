@@ -31,13 +31,6 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Checkout caller repository
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        fetch-depth: 0
-        persist-credentials: false
-        ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-
     - name: Validate, detect, and normalize affected components
       id: detect
       shell: bash
@@ -48,6 +41,7 @@ runs:
         HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         PUSH_BEFORE_SHA: ${{ github.event.before }}
+        DIFF_BASE: ${{ inputs.diff_base }}
       run: |
         set -euo pipefail
 
@@ -212,6 +206,19 @@ runs:
         if [[ "$FORCE_ALL" == "true" ]]; then
           force_all=true
           echo "force_all=true: every configured component is affected."
+        elif [[ -n "${DIFF_BASE:-}" ]]; then
+          [[ "$DIFF_BASE" =~ ^[0-9a-fA-F]{40}$ ]] || {
+            echo "::error::diff_base must be a full 40-character commit SHA."
+            exit 1
+          }
+          git cat-file -e "${DIFF_BASE}^{commit}" 2>/dev/null || git fetch --no-tags origin "$DIFF_BASE"
+          git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null || git fetch --no-tags origin "$HEAD_SHA"
+          git merge-base --is-ancestor "$DIFF_BASE" "$HEAD_SHA" || {
+            echo "::error::diff_base must be an ancestor of the current revision."
+            exit 1
+          }
+          git diff --name-only --no-renames --diff-filter=ACMRD "$DIFF_BASE" "$HEAD_SHA" >"$changed_file_list"
+          git_log_opts="${DIFF_BASE}..${HEAD_SHA}"
         elif [[ "$EVENT_NAME" == "pull_request" ]]; then
           base_sha="$PR_BASE_SHA"
           head_sha="$HEAD_SHA"
@@ -227,6 +234,11 @@ runs:
         else
           force_all=true
           echo "No reliable diff base for event '$EVENT_NAME'; every configured component is affected."
+        fi
+
+        if [[ "$force_all" != "true" ]] && grep -Fxq ".github/stacks.json" "$changed_file_list"; then
+          force_all=true
+          echo ".github/stacks.json changed: every configured component and service is affected."
         fi
 
         if [[ "$force_all" != "true" ]]; then

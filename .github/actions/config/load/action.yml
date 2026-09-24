@@ -99,6 +99,14 @@ runs:
             exit 1
           }
           while IFS= read -r watch; do safe_path "$watch" "Component '$name' watch"; done < <(jq -r '.watch // [] | .[]' <<<"$component")
+
+          if [[ "$type" == "node" ]]; then
+            node_version="$(jq -r '.node_version // empty' <<<"$component")"
+            if [[ -n "$node_version" && ! "$node_version" =~ ^[0-9]+.[0-9]+.[0-9]+$ ]]; then
+              echo "::error::Node component '$name' node_version must be an exact x.y.z version."
+              exit 1
+            fi
+          fi
         done < <(jq -c '.[]' <<<"$components")
 
         normalized_services='[]'

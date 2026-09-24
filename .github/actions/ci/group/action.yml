@@ -1,0 +1,69 @@
+name: Component group CI
+description: Run the canonical language, migration, and optional PostgreSQL integration checks for one normalized CI group.
+
+inputs:
+  components:
+    description: JSON array of normalized components in this CI group.
+    required: true
+  type:
+    description: go, node, or java-kotlin.
+    required: true
+  version:
+    description: Canonical language runtime version for this group.
+    required: true
+  package-manager:
+    required: false
+    default: ''
+  build-tool:
+    required: false
+    default: ''
+  profile:
+    required: false
+    default: ''
+  go-private-patterns:
+    required: false
+    default: ''
+  private-repo-token:
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Go CI
+      if: inputs.type == 'go'
+      uses: Mooner510/workflows/.github/actions/ci/go@v1
+      with:
+        components: ${{ inputs.components }}
+        version: ${{ inputs.version }}
+        go_private_patterns: ${{ inputs.go-private-patterns }}
+        private_repo_token: ${{ inputs.private-repo-token }}
+
+    - name: Node CI
+      if: inputs.type == 'node'
+      uses: Mooner510/workflows/.github/actions/ci/node@v1
+      with:
+        components: ${{ inputs.components }}
+        version: ${{ inputs.version }}
+        package-manager: ${{ inputs.package-manager }}
+        private_repo_token: ${{ inputs.private-repo-token }}
+
+    - name: Java/Kotlin CI
+      if: inputs.type == 'java-kotlin'
+      uses: Mooner510/workflows/.github/actions/ci/java-kotlin@v1
+      with:
+        components: ${{ inputs.components }}
+        version: ${{ inputs.version }}
+        build-tool: ${{ inputs.build-tool }}
+        profile: ${{ inputs.profile }}
+
+    - name: Migration CI
+      uses: Mooner510/workflows/.github/actions/ci/migration@v1
+      with:
+        components: ${{ inputs.components }}
+
+    - name: Go PostgreSQL integration CI
+      if: inputs.type == 'go'
+      uses: Mooner510/workflows/.github/actions/ci/go-postgres@v1
+      with:
+        components: ${{ inputs.components }}

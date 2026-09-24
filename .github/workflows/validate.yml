@@ -1,0 +1,106 @@
+name: Validate Central Workflows
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workflows-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Central workflow validation
+    if: github.event_name != 'pull_request_target' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install pinned actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v curl >/dev/null || { echo "::error::curl is required."; exit 1; }
+          command -v sha256sum >/dev/null || { echo "::error::sha256sum is required."; exit 1; }
+          command -v tar >/dev/null || { echo "::error::tar is required."; exit 1; }
+
+          version="1.7.12"
+          case "$(uname -m)" in
+            x86_64|amd64)
+              asset="actionlint_${version}_linux_amd64.tar.gz"
+              checksum="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+              ;;
+            aarch64|arm64)
+              asset="actionlint_${version}_linux_arm64.tar.gz"
+              checksum="325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6"
+              ;;
+            *)
+              echo "::error::Unsupported runner architecture: $(uname -m)"
+              exit 1
+              ;;
+          esac
+
+          cache_root="${RUNNER_TOOL_CACHE:-$HOME/.cache/github-actions-tool-cache}/actionlint/$version"
+          binary="$cache_root/actionlint"
+          if [[ ! -x "$binary" ]]; then
+            tmp="$(mktemp -d)"
+            trap 'rm -rf "$tmp"' EXIT
+            archive="$tmp/$asset"
+            curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v$version/$asset" -o "$archive"
+            printf '%s  %s\n' "$checksum" "$archive" | sha256sum -c -
+            tar -xzf "$archive" -C "$tmp" actionlint
+            mkdir -p "$cache_root"
+            install -m 0755 "$tmp/actionlint" "$binary"
+          fi
+          echo "$cache_root" >>"$GITHUB_PATH"
+
+      - name: Validate workflow syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          actionlint -color
+
+      - name: Validate central reference policy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          invalid=0
+          while IFS= read -r file; do
+            while IFS= read -r line; do
+              if [[ "$line" =~ ^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*([^#[:space:]]+) ]]; then
+                ref="${BASH_REMATCH[2]}"
+                ref="${ref#\"}"; ref="${ref%\"}"; ref="${ref#\'}"; ref="${ref%\'}"
+                [[ "$ref" == ./* ]] && continue
+                [[ "$ref" == docker://* ]] && continue
+                [[ "$ref" == *@* ]] || continue
+                action="${ref%@*}"
+                version="${ref##*@}"
+                [[ "$version" =~ ^[0-9a-fA-F]{40}$ ]] && continue
+                if [[ "$action" == Mooner510/workflows/* && "$version" =~ ^v[0-9]+$ ]]; then
+                  continue
+                fi
+                echo "::error file=${file#$GITHUB_WORKSPACE/}::Mutable GitHub Actions ref '$ref' is not allowed."
+                invalid=1
+              fi
+            done <"$file"
+          done < <(find "$GITHUB_WORKSPACE/.github" -type f \( -name '*.yml' -o -name '*.yaml' \) -print)
+
+          if grep -R -nF "Mooner510/workflows/.github/workflows/security.yml@" "$GITHUB_WORKSPACE/.github" >/dev/null; then
+            echo "::error::security.yml is no longer a reusable workflow entrypoint."
+            invalid=1
+          fi
+
+          (( invalid == 0 )) || exit 1

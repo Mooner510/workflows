@@ -19,6 +19,8 @@ Consumer는 위 reusable workflow만 호출한다. `.github/actions/**`는 centr
 
 기존 `pipeline.yml`, `docker-service-*`, `docker-process-*` 등은 active repositories를 새 contract로 이전하는 동안만 남기는 compatibility implementation이다. 신규 caller contract로 사용하지 않는다.
 
+`security.yml` reusable workflow는 제거했다. Security와 language/migration CI orchestration은 각각 `.github/actions/ci/security`, `.github/actions/ci/group` 내부 action으로 통합하여 `project-ci.yml`과 legacy `pipeline.yml`이 같은 구현을 공유한다. `.github/workflows/validate.yml`은 이 implementation repository 자체의 workflow syntax/reference policy만 검증한다.
+
 ## One repository declaration
 
 모든 project-specific CI/CD metadata의 유일한 source는 고정 경로다.
@@ -191,7 +193,7 @@ Load .github/stacks.json
 ├─ Security
 ├─ Language / migration CI
 └─ affected Docker image build + Trivy image scan
-→ final gate
+→ verification + optional canonical image publication + temporary image cleanup
 ```
 
 Security:
@@ -219,8 +221,10 @@ Go:
   go build
 
 Node:
-  canonical Node.js 24.21.0
-  canonical pnpm 11.27.1
+  canonical default Node.js 24.21.0
+  explicit node_version은 exact x.y.z만 허용
+  package manager version은 repository packageManager exact pin을 사용
+  canonical preferred pnpm은 11.27.1이며 예외는 project SOT에 기록
   locked install
   lint
   type check
@@ -233,6 +237,10 @@ Java/Kotlin:
 ```
 
 Migration validation은 configured migration source가 affected일 때 disposable PostgreSQL에서 수행한다. Production DB를 CI validation에 사용하지 않는다.
+
+Explicit maintenance dispatch의 `diff_base`는 full 40-character ancestor SHA만 허용하며 실제 `diff_base..HEAD` change detection에 사용한다. `.github/stacks.json`이 변경되면 contract 자체가 달라졌으므로 모든 declared component/service를 affected 처리한다.
+
+Public/fork/untrusted pull request는 self-hosted runner에서 checkout/build하지 않는다. Canonical CI의 최초 contract job과 compatibility pipeline detector가 caller repository ownership을 확인한 뒤에만 trusted source code를 실행한다.
 
 ## Production image gate
 
@@ -398,6 +406,8 @@ repository_dispatch production_rollback
 ```
 
 Rollback은 DB down migration을 실행하지 않는다.
+
+Project-only production deploy는 모든 selected service image/rollback target을 먼저 preflight한 뒤 service별 lifecycle을 수행한다. Runtime mutation은 distributed transaction이 아니며 service별로 독립적이다. 각 service replacement 실패는 해당 service의 직전 known-good image로 자동 restore하지만, 다른 service의 이미 성공한 deployment를 연쇄 rollback하지 않는다.
 
 State는 기존 canonical path를 유지한다.
 
