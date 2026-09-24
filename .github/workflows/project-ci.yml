@@ -217,6 +217,7 @@ jobs:
         with:
           service: ${{ steps.service.outputs.service }}
           environment: ${{ needs.contract.outputs.image_environment }}
+          private-repo-token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
 
   verify:
     name: Verification and publication
