@@ -112,6 +112,7 @@ watch
 database
 migrate
 build_args
+manual
 ```
 
 - `component`: 해당 service의 language/migration contract를 소유하는 component.
@@ -119,6 +120,7 @@ build_args
 - `database`: runtime `DATABASE_URL`이 필요한 service.
 - `migrate`: referenced component의 migration engine을 deploy 시 실행. `true`이면 database도 자동으로 필요하다.
 - `build_args`: build에 필요한 non-secret environment variable 이름. 값은 선택 environment의 canonical project/service `deploy.env`에서만 resolve한다.
+- `manual`: `true`이면 CI image build/scan에는 포함하지만 dev automatic deployment와 service 미지정 production 전체 배포에서는 제외한다. Explicit service dispatch만 허용한다.
 
 Private dependency가 Docker build 중 필요한 경우 caller의 optional `CI_PRIVATE_REPO_TOKEN`을 central image builder가 BuildKit secret `CI_PRIVATE_REPO_TOKEN`으로만 전달한다. Token은 build arg, image layer, project metadata에 저장하지 않는다. Dockerfile이 해당 secret을 사용하지 않으면 아무 효과가 없다.
 
@@ -179,11 +181,11 @@ kr.mooner510.stacks.container-port=<EXPOSE port>
 
 ### Readiness
 
-모든 deployable image는 Dockerfile에 유효한 `HEALTHCHECK`를 반드시 정의한다.
+1 TCP port를 EXPOSE하는 routable image는 Dockerfile에 유효한 `HEALTHCHECK`를 반드시 정의한다.
 
-Central runtime은 HTTP/process를 구분하는 `kind`를 사용하지 않는다. 모든 service를 같은 lifecycle로 처리하고 `docker inspect .State.Health.Status`가 `healthy`가 될 때만 성공으로 간주한다.
+0-port process image는 HEALTHCHECK를 생략할 수 있다. 이 경우 central runtime은 container가 시작 직후 종료하지 않고 안정적으로 running 상태를 유지하는지 확인한다. Process image가 HEALTHCHECK를 정의하면 해당 health status를 그대로 사용한다.
 
-`HEALTHCHECK`가 없거나 `unhealthy`이면 deployment는 실패한다.
+Routable image의 HEALTHCHECK가 없거나, health status가 `unhealthy`이거나, process container가 안정화 전에 종료되면 deployment는 실패한다.
 
 ## Canonical CI
 
