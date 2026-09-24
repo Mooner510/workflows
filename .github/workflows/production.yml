@@ -112,6 +112,30 @@ jobs:
         service: ${{ fromJSON(needs.contract.outputs.selected_services) }}
 
     steps:
+      - name: Select service database contract
+        id: service
+        shell: bash
+        env:
+          SERVICES_JSON: ${{ needs.contract.outputs.services }}
+          SERVICE_NAME: ${{ matrix.service }}
+        run: |
+          set -euo pipefail
+          service="$(jq -c --arg name "$SERVICE_NAME" '.[] | select(.name == $name)' <<<"$SERVICES_JSON")"
+          [[ -n "$service" ]] || { echo "::error::Service '$SERVICE_NAME' is not declared."; exit 1; }
+          echo "database=$(jq -r '.database // false' <<<"$service")" >>"$GITHUB_OUTPUT"
+          echo "database_scope=$(jq -r '.database_scope // "project"' <<<"$service")" >>"$GITHUB_OUTPUT"
+
+      - name: Verify database credentials
+        if: steps.service.outputs.database == 'true'
+        uses: Mooner510/workflows/.github/actions/cd/resolve-db-credentials@v1
+        with:
+          environment: prod
+          project: ${{ needs.contract.outputs.project }}
+          service: ${{ matrix.service }}
+          database-scope: ${{ steps.service.outputs.database_scope }}
+          migration-engine: none
+          env-names-json: '["DATABASE_URL"]'
+
       - name: Verify exact production image
         if: needs.contract.outputs.operation == 'deploy'
         shell: bash
