@@ -498,9 +498,9 @@ runs:
             (map(select(.type == "node"))
               | group_by([(.node_version // "24.21.0"), .package_manager])[]
               | {
-                  target: ("Node " + (.[0].node_version // "24") + " / " + .[0].package_manager),
+                  target: ("Node " + (.[0].node_version // "24.21.0") + " / " + .[0].package_manager),
                   type: "node",
-                  version: (.[0].node_version // "24"),
+                  version: (.[0].node_version // "24.21.0"),
                   package_manager: .[0].package_manager,
                   components: .
                 }),
