@@ -147,6 +147,10 @@ runs:
         trap cleanup EXIT
 
         docker save "$image" -o "$archive"
+        # docker cp preserves the source mode. mktemp creates 0600 files, while
+        # the pinned Trivy image runs as a non-root user and must be able to
+        # read the archive inside the scanner container.
+        chmod 0644 "$archive"
         scan_args=(--cap-drop=ALL --security-opt=no-new-privileges)
         if [[ "${RUNNER_TOOL_CACHE:-}" == "/opt/cache/tool-cache" ]]; then
           mkdir -p /opt/cache/tool-cache/trivy
