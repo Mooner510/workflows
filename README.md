@@ -215,6 +215,15 @@ Trivy built-image HIGH/CRITICAL vulnerabilities
 
 Image scan은 CI 밖의 후처리가 아니다. Docker build와 built-image Trivy gate까지 성공해야 해당 revision의 CI가 성공한다.
 
+Language CI job names are kept compact and symmetric in the GitHub Actions sidebar:
+
+```text
+CI (Go 1.27.1)
+CI (pnpm 11.27.1)
+```
+
+Node job display names intentionally show the exact package-manager version rather than repeating the Node runtime version. The runtime version remains part of the actual CI group configuration.
+
 Language CI:
 
 ```text
