@@ -13,7 +13,7 @@ concurrency:
 jobs:
   contract:
     name: Production request
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-production-request-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 10
     outputs:
       components: ${{ steps.contract.outputs.components }}
@@ -104,7 +104,7 @@ jobs:
   preflight:
     name: Production preflight
     needs: contract
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-production-preflight-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -188,7 +188,7 @@ jobs:
     name: Production deployment
     needs: [contract, preflight]
     if: needs.preflight.result == 'success'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-production-deploy-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 45
     strategy:
       fail-fast: false
