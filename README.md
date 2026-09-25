@@ -53,6 +53,7 @@ Consumer는 위 reusable workflow만 호출한다. `.github/actions/**`는 centr
       "path": "services/api",
       "component": "api",
       "database": true,
+      "database_scope": "service",
       "migrate": true,
       "build_args": ["PUBLIC_ORIGIN"]
     }
@@ -110,6 +111,7 @@ path
 component
 watch
 database
+database_scope
 migrate
 build_args
 manual
@@ -118,7 +120,8 @@ manual
 - `component`: 해당 service의 language/migration contract를 소유하는 component.
 - `watch`: 없으면 component가 affected일 때 service도 affected. 있으면 해당 repository-relative path가 변경됐을 때만 service가 affected.
 - `database`: runtime `DATABASE_URL`이 필요한 service.
-- `migrate`: referenced component의 migration engine을 deploy 시 실행. `true`이면 database도 자동으로 필요하다.
+- `database_scope`: `project`(default) 또는 `service`. `project`는 기존 `/opt/stacks/projects/<project>/db[.dev].env`, `service`는 `/opt/stacks/projects/<project>/<service>/db[.dev].env`를 사용한다. 기존 consumer 호환성을 위해 default는 `project`다.
+- `migrate`: referenced component의 migration engine을 deploy 시 실행. `true`이면 database도 자동으로 필요하다. Migration credential scope는 같은 service의 `database_scope`를 따른다.
 - `build_args`: build에 필요한 non-secret environment variable 이름. 값은 선택 environment의 canonical project/service `deploy.env`에서만 resolve한다.
 - `manual`: `true`이면 CI image build/scan에는 포함하지만 dev automatic deployment와 service 미지정 production 전체 배포에서는 제외한다. Explicit service dispatch만 허용한다.
 
@@ -309,7 +312,7 @@ Central service deployment이 다음을 소유한다.
 project/service identity
 prod/dev network identity
 runtime env overlay
-DB credential resolution
+DB credential resolution (project/service scope)
 CORS metadata injection
 managed TLS identity/trust mounts
 migration execution

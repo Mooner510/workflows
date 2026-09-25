@@ -9,6 +9,14 @@ inputs:
   project:
     description: Stable project identifier matching /opt/stacks/projects/<repository-name>.
     required: true
+  service:
+    description: Logical service name used when database-scope is service.
+    required: false
+    default: ''
+  database-scope:
+    description: project or service. Service scope resolves credentials below the service directory.
+    required: false
+    default: project
   migration-engine:
     description: none, goose, go-command, prisma, drizzle, or flyway.
     required: false
@@ -32,6 +40,8 @@ runs:
       env:
         DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
         PROJECT: ${{ inputs.project }}
+        SERVICE: ${{ inputs.service }}
+        DATABASE_SCOPE: ${{ inputs.database-scope }}
         MIGRATION_ENGINE: ${{ inputs.migration-engine }}
         ENV_NAMES_JSON: ${{ inputs.env-names-json }}
       run: |
@@ -49,6 +59,11 @@ runs:
         esac
         case "$MIGRATION_ENGINE" in none|goose|go-command|prisma|drizzle|flyway) ;; *)
           echo "::error::migration-engine must be none, goose, go-command, prisma, drizzle, or flyway."
+          exit 1
+        ;;
+        esac
+        case "$DATABASE_SCOPE" in project|service) ;; *)
+          echo "::error::database-scope must be project or service."
           exit 1
         ;;
         esac
@@ -82,10 +97,18 @@ runs:
 
         db_file="db.env"
         [[ "$DEPLOY_ENVIRONMENT" != "dev" ]] || db_file="db.dev.env"
-        db_env="/opt/stacks/projects/$PROJECT/$db_file"
+        db_target="$PROJECT"
+        if [[ "$DATABASE_SCOPE" == "service" ]]; then
+          [[ "$SERVICE" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
+            echo "::error::Service-scoped database requires a valid service name."
+            exit 1
+          }
+          db_target="$PROJECT/$SERVICE"
+        fi
+        db_env="/opt/stacks/projects/$db_target/$db_file"
         [[ -f "$db_env" ]] || {
           echo "::error::Canonical host database credential file $db_env is not visible to this runner."
-          echo "::error::The active self-hosted runner must expose the production host filesystem. Verify with: sudo db info $PROJECT"
+          echo "::error::The active self-hosted runner must expose the production host filesystem. Verify with: sudo db info $db_target"
           exit 1
         }
 
@@ -130,14 +153,14 @@ runs:
           database_url="postgresql://${values[DB_USER]}:${encoded_password}@${values[DB_HOST]}:${values[DB_PORT]}/${values[DB_NAME]}"
           write_env DATABASE_URL "$database_url"
           resolved+=("DATABASE_URL")
-          echo "Resolved runtime DATABASE_URL from $db_env for project '$PROJECT'."
+          echo "Resolved runtime DATABASE_URL from $db_env for database target '$db_target'."
         fi
 
         case "$MIGRATION_ENGINE" in
           goose|go-command|prisma|drizzle)
             migration_database_url="postgresql://${values[DB_USER]}:${encoded_password}@127.0.0.1:${values[DB_PORT]}/${values[DB_NAME]}"
             write_env MIGRATION_DATABASE_URL "$migration_database_url"
-            echo "Resolved host-loopback migration DATABASE_URL from $db_env for project '$PROJECT'."
+            echo "Resolved host-loopback migration DATABASE_URL from $db_env for database target '$db_target'."
             ;;
         esac
 
@@ -146,7 +169,7 @@ runs:
           write_env FLYWAY_USER "${values[DB_USER]}"
           write_env FLYWAY_PASSWORD "${values[DB_PASSWORD]}"
           resolved+=("FLYWAY_URL" "FLYWAY_USER" "FLYWAY_PASSWORD")
-          echo "Resolved Flyway credentials from $db_env for project '$PROJECT'."
+          echo "Resolved Flyway credentials from $db_env for database target '$db_target'."
         fi
 
         if ((${#resolved[@]} == 0)); then

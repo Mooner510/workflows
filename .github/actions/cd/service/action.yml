@@ -48,6 +48,7 @@ runs:
 
         migrate="$(jq -r '.migrate // false' <<<"$SERVICE_JSON")"
         database="$(jq -r '.database // false' <<<"$SERVICE_JSON")"
+        database_scope="$(jq -r '.database_scope // "project"' <<<"$SERVICE_JSON")"
         engine="none"
         if [[ "$migrate" == "true" ]]; then
           engine="$(jq -r '.migration_engine // "none"' <<<"$component")"
@@ -105,6 +106,7 @@ runs:
           echo "service=$service"
           echo "network=$network"
           echo "database=$database"
+          echo "database_scope=$database_scope"
           echo "migrate=$migrate"
           echo "migration_engine=$engine"
           echo "component_path=$component_path"
@@ -150,6 +152,8 @@ runs:
       with:
         environment: ${{ inputs.environment }}
         project: ${{ steps.contract.outputs.project }}
+        service: ${{ steps.contract.outputs.service }}
+        database-scope: ${{ steps.contract.outputs.database_scope }}
         migration-engine: ${{ steps.contract.outputs.migration_engine }}
         env-names-json: ${{ steps.contract.outputs.database == 'true' && '["DATABASE_URL"]' || '[]' }}
 
