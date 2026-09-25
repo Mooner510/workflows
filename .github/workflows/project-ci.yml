@@ -28,7 +28,7 @@ concurrency:
 jobs:
   contract:
     name: Contract and changes
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-contract-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 10
     outputs:
       components: ${{ steps.contract.outputs.components }}
@@ -148,7 +148,7 @@ jobs:
     name: Security
     needs: contract
     if: needs.contract.outputs.security_required == 'true'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-security-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 30
     steps:
       - name: Run security verification
@@ -161,7 +161,7 @@ jobs:
     name: Component CI
     needs: contract
     if: needs.contract.outputs.ci_required == 'true'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-ci-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -191,7 +191,7 @@ jobs:
     name: Docker image verification
     needs: contract
     if: needs.contract.outputs.image_required == 'true'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-image-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -228,7 +228,7 @@ jobs:
     name: Verification and publication
     needs: [contract, security, ci, images]
     if: always() && needs.contract.result == 'success'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-verify-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 10
 
     steps:
@@ -278,7 +278,7 @@ jobs:
     name: Development deployment
     needs: [contract, verify]
     if: needs.verify.result == 'success' && needs.contract.outputs.deploy_development_required == 'true'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-deploy-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 45
     strategy:
       fail-fast: false
