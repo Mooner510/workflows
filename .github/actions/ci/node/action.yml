@@ -79,25 +79,25 @@ runs:
 
     - name: Install npm dependencies
       if: inputs.package-manager == 'npm'
-      uses: Mooner510/workflows/.github/actions/ci/node/npm@v1
+      uses: Mooner510/workflows/.github/actions/ci/node/npm@feature/isolated-ci-build-plane
       with:
         components: ${{ inputs.components }}
 
     - name: Install pnpm dependencies
       if: inputs.package-manager == 'pnpm'
-      uses: Mooner510/workflows/.github/actions/ci/node/pnpm@v1
+      uses: Mooner510/workflows/.github/actions/ci/node/pnpm@feature/isolated-ci-build-plane
       with:
         components: ${{ inputs.components }}
 
     - name: Install Yarn dependencies
       if: inputs.package-manager == 'yarn'
-      uses: Mooner510/workflows/.github/actions/ci/node/yarn@v1
+      uses: Mooner510/workflows/.github/actions/ci/node/yarn@feature/isolated-ci-build-plane
       with:
         components: ${{ inputs.components }}
 
     - name: Install Bun dependencies
       if: inputs.package-manager == 'bun'
-      uses: Mooner510/workflows/.github/actions/ci/node/bun@v1
+      uses: Mooner510/workflows/.github/actions/ci/node/bun@feature/isolated-ci-build-plane
       with:
         components: ${{ inputs.components }}
 
