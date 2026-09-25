@@ -1,5 +1,5 @@
 name: Goose migration CI
-description: Validate and apply Goose SQL migrations against an isolated PostgreSQL instance, independent of the application language.
+description: Validate and apply Goose SQL migrations inside the isolated BuildKit execution boundary.
 
 inputs:
   components:
@@ -9,27 +9,25 @@ inputs:
     description: Goose version used when a component does not explicitly select one and its nearest go.mod does not pin Goose.
     required: false
     default: v3.28.0
-  postgres-image:
-    description: PostgreSQL image used for disposable migration validation.
-    required: false
-    default: postgres:17-alpine
 
 runs:
   using: composite
   steps:
+    - name: Set up isolated BuildKit
+      uses: Mooner510/workflows/.github/actions/ci/buildkit@feature/isolated-ci-build-plane
+
     - name: Validate Goose SQL migrations
       shell: bash
       env:
         COMPONENTS_JSON: ${{ inputs.components }}
         DEFAULT_GOOSE_VERSION: ${{ inputs.default-version }}
-        POSTGRES_IMAGE: ${{ inputs.postgres-image }}
       run: |
         set -euo pipefail
 
-        command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
-        command -v curl >/dev/null || { echo "::error::curl is required on the self-hosted runner."; exit 1; }
-        command -v sha256sum >/dev/null || { echo "::error::sha256sum is required on the self-hosted runner."; exit 1; }
-        command -v docker >/dev/null || { echo "::error::docker is required for Goose migration CI."; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
+        command -v curl >/dev/null || { echo "::error::curl is required."; exit 1; }
+        command -v sha256sum >/dev/null || { echo "::error::sha256sum is required."; exit 1; }
+        command -v buildctl >/dev/null || { echo "::error::buildctl is required."; exit 1; }
 
         workspace="$(realpath "$GITHUB_WORKSPACE")"
         components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
@@ -104,7 +102,7 @@ runs:
               ;;
           esac
 
-          cache_root="${RUNNER_TOOL_CACHE:-$HOME/.cache/github-actions-tool-cache}/goose/$version/$arch"
+          cache_root="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/goose/$version/$arch"
           binary="$cache_root/goose"
           if [[ -x "$binary" ]]; then
             printf '%s' "$binary"
@@ -113,9 +111,7 @@ runs:
 
           mkdir -p "$cache_root"
           tmp="$(mktemp -d)"
-
-          if ! curl -fsSL "https://github.com/pressly/goose/releases/download/$version/checksums.txt" -o "$tmp/checksums.txt" || \
-             ! curl -fsSL "https://github.com/pressly/goose/releases/download/$version/$asset" -o "$tmp/$asset"; then
+          if ! curl -fsSL "https://github.com/pressly/goose/releases/download/$version/checksums.txt" -o "$tmp/checksums.txt" ||              ! curl -fsSL "https://github.com/pressly/goose/releases/download/$version/$asset" -o "$tmp/$asset"; then
             rm -rf "$tmp"
             echo "::error::Failed to download Goose $version." >&2
             return 1
@@ -140,46 +136,6 @@ runs:
           printf '%s' "$binary"
         }
 
-        cleanup_container() {
-          local container="$1"
-          docker rm -f "$container" >/dev/null 2>&1 || true
-        }
-
-        start_postgres() {
-          local container="$1"
-          local port=""
-
-          docker run -d --rm \
-            --name "$container" \
-            -e POSTGRES_USER=goose \
-            -e POSTGRES_PASSWORD=goose \
-            -e POSTGRES_DB=goose \
-            -p 127.0.0.1::5432 \
-            "$POSTGRES_IMAGE" >/dev/null
-
-          for _ in {1..60}; do
-            if docker exec -e PGPASSWORD=goose "$container" \
-              psql -h 127.0.0.1 -U goose -d goose -tAc 'SELECT 1' 2>/dev/null | grep -qx '1'; then
-              break
-            fi
-            sleep 1
-          done
-
-          if ! docker exec -e PGPASSWORD=goose "$container" \
-            psql -h 127.0.0.1 -U goose -d goose -tAc 'SELECT 1' 2>/dev/null | grep -qx '1'; then
-            docker logs "$container" >&2 || true
-            echo "::error::PostgreSQL did not become ready for Goose migration CI." >&2
-            return 1
-          fi
-
-          port="$(docker port "$container" 5432/tcp | awk -F: 'NR == 1 { print $NF }')"
-          if [[ ! "$port" =~ ^[0-9]+$ ]]; then
-            echo "::error::Unable to resolve the temporary PostgreSQL port." >&2
-            return 1
-          fi
-          printf '%s' "$port"
-        }
-
         while IFS= read -r component_json; do
           name="$(jq -r '.name // empty' <<<"$component_json")"
           path="$(jq -r '.path // empty' <<<"$component_json")"
@@ -192,7 +148,7 @@ runs:
           fi
 
           migrations="$(realpath -e "$component/$migrations_path" 2>/dev/null || true)"
-          if [[ -z "$migrations" ]] || [[ ! -d "$migrations" ]] || { [[ "$migrations" != "$component" ]] && [[ "$migrations" != "$component/"* ]]; }; then
+          if [[ -z "$migrations" || ! -d "$migrations" ]] || { [[ "$migrations" != "$component" ]] && [[ "$migrations" != "$component/"* ]]; }; then
             echo "::error::Goose migrations directory '$migrations_path' does not resolve inside component '$name'."
             exit 1
           fi
@@ -209,18 +165,24 @@ runs:
           goose_version="$(resolve_goose_version "$component_json" "$component")" || exit 1
           goose="$(goose_binary "$goose_version")" || exit 1
 
-          echo "==> Goose $goose_version: validating $name"
+          echo "==> Goose $goose_version: static validation $name"
           "$goose" -dir "$migrations" validate
 
-          safe_name="$(tr -cs 'A-Za-z0-9_.-' '-' <<<"$name" | sed 's/^-*//; s/-*$//' | cut -c1-40)"
-          container="goose-ci-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${safe_name}-${RANDOM}"
-          trap 'cleanup_container "$container"' EXIT
+          safe_name="$(printf '%s' "$name" | tr -cs 'A-Za-z0-9_.-' '-' | sed 's/^-*//; s/-*$//' | cut -c1-40)"
+          context="$RUNNER_TEMP/goose-build-$safe_name"
+          dockerfile_dir="$RUNNER_TEMP/goose-dockerfile-$safe_name"
+          rm -rf "$context" "$dockerfile_dir"
+          mkdir -p "$context/migrations" "$dockerfile_dir"
+          cp -a "$migrations/." "$context/migrations/"
+          install -m 0755 "$goose" "$context/goose"
 
-          echo "==> Goose $goose_version: applying $name to disposable PostgreSQL"
-          port="$(start_postgres "$container")" || exit 1
-          database_url="postgres://goose:goose@127.0.0.1:${port}/goose?sslmode=disable"
-          "$goose" -dir "$migrations" postgres "$database_url" up
+          cat >"$dockerfile_dir/Dockerfile" <<'DOCKERFILE'
+        FROM postgres@sha256:aa90e97ee862e558111d34cfb8b2c4bec768c2b039fb791341686928560263b3
+        COPY goose /usr/local/bin/goose
+        COPY migrations /migrations
+        RUN set -eux;             export POSTGRES_USER=goose POSTGRES_PASSWORD=goose POSTGRES_DB=goose;             docker-entrypoint.sh postgres -c listen_addresses=127.0.0.1 &             pid=$!;             trap 'kill "$pid" >/dev/null 2>&1 || true' EXIT;             ready=false;             for i in $(seq 1 60); do               if pg_isready -h 127.0.0.1 -U goose -d goose >/dev/null 2>&1; then ready=true; break; fi;               sleep 1;             done;             test "$ready" = true;             goose -dir /migrations postgres 'postgres://goose:goose@127.0.0.1:5432/goose?sslmode=disable' up;             kill "$pid";             wait "$pid" || true;             trap - EXIT
+        DOCKERFILE
 
-          cleanup_container "$container"
-          trap - EXIT
+          echo "==> Goose $goose_version: isolated disposable PostgreSQL $name"
+          buildctl --addr "$BUILDKIT_HOST" build             --frontend dockerfile.v0             --local "context=$context"             --local "dockerfile=$dockerfile_dir"             --opt filename=Dockerfile             --output type=cacheonly
         done < <(jq -c '.[]' <<<"$components")
