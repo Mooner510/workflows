@@ -1,15 +1,15 @@
-name: Prepare canonical Docker image
-description: Build and scan one deployable service using the fixed service-path Dockerfile and repository-root build context.
+name: Prepare isolated OCI image
+description: Build and scan one deployable service through the Gharp rootless BuildKit boundary without host runtime access.
 
 inputs:
   service:
     description: Canonical normalized service JSON from the project contract loader.
     required: true
   environment:
-    description: prod or dev; selects non-secret build-argument config only.
+    description: prod or dev; used only as artifact metadata.
     required: true
   private-repo-token:
-    description: Optional read-only GitHub token exposed only as the CI_PRIVATE_REPO_TOKEN BuildKit secret.
+    description: Optional read-only GitHub token exposed only as a BuildKit secret.
     required: false
     default: ''
 
@@ -18,13 +18,20 @@ outputs:
     value: ${{ steps.build.outputs.image }}
   image-id:
     value: ${{ steps.build.outputs.image_id }}
+  manifest-digest:
+    value: ${{ steps.build.outputs.manifest_digest }}
   exposed-port:
     value: ${{ steps.build.outputs.exposed_port }}
+  artifact-path:
+    value: ${{ steps.build.outputs.artifact_path }}
 
 runs:
   using: composite
   steps:
-    - name: Build and scan temporary image
+    - name: Set up isolated BuildKit
+      uses: Mooner510/workflows/.github/actions/ci/buildkit@feature/isolated-ci-build-plane
+
+    - name: Build and scan OCI artifact
       id: build
       shell: bash
       env:
@@ -34,18 +41,40 @@ runs:
       run: |
         set -euo pipefail
 
-        command -v docker >/dev/null || { echo "::error::Docker is required."; exit 1; }
+        command -v buildctl >/dev/null || { echo "::error::buildctl is required."; exit 1; }
         command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
+        command -v curl >/dev/null || { echo "::error::curl is required."; exit 1; }
+        command -v sha256sum >/dev/null || { echo "::error::sha256sum is required."; exit 1; }
 
-        case "$DEPLOY_ENVIRONMENT" in prod|dev) ;; *) echo "::error::environment must be prod or dev."; exit 1 ;; esac
+        case "$DEPLOY_ENVIRONMENT" in
+          prod|dev) ;;
+          *) echo "::error::environment must be prod or dev."; exit 1 ;;
+        esac
 
         service="$(jq -r '.name' <<<"$SERVICE_JSON")"
         path="$(jq -r '.path' <<<"$SERVICE_JSON")"
-        [[ "$service" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { echo "::error::Invalid service '$service'."; exit 1; }
+        [[ "$service" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
+          echo "::error::Invalid service '$service'."
+          exit 1
+        }
+
+        build_args="$(jq -c '.build_args // []' <<<"$SERVICE_JSON")"
+        jq -e 'type=="array" and all(.[]; type=="string")' <<<"$build_args" >/dev/null || {
+          echo "::error::service.build_args must be a string array."
+          exit 1
+        }
+        if [[ "$(jq 'length' <<<"$build_args")" -ne 0 ]]; then
+          echo "::error::Isolated CI does not read build arguments from host /opt/stacks state."
+          echo "::error::Move non-secret build configuration into a repository-owned build contract before enabling this service."
+          exit 1
+        fi
 
         repository_name="${GITHUB_REPOSITORY#*/}"
         project="$(printf '%s' "$repository_name" | tr '[:upper:]' '[:lower:]')"
-        [[ "$project" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { echo "::error::Invalid canonical project '$project'."; exit 1; }
+        [[ "$project" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
+          echo "::error::Invalid canonical project '$project'."
+          exit 1
+        }
 
         workspace="$(realpath -e "$GITHUB_WORKSPACE")"
         service_root="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
@@ -53,141 +82,104 @@ runs:
           echo "::error::Service path must resolve inside the repository: $path"
           exit 1
         }
-        dockerfile="$service_root/Dockerfile"
-        [[ -f "$dockerfile" ]] || { echo "::error::Canonical Dockerfile is missing: $path/Dockerfile"; exit 1; }
-
-        env_file="deploy.env"
-        [[ "$DEPLOY_ENVIRONMENT" != "dev" ]] || env_file="deploy.dev.env"
-        project_config="/opt/stacks/projects/$project/$env_file"
-        service_config="/opt/stacks/projects/$project/$service/$env_file"
-
-        read_env_value() {
-          local key="$1" file="$2" line value
-          [[ -f "$file" ]] || return 1
-          line="$(grep -E "^[[:space:]]*${key}=" "$file" | tail -n1 || true)"
-          [[ -n "$line" ]] || return 1
-          value="${line#*=}"
-          value="$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-          if (( ${#value} >= 2 )); then
-            if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]]; then
-              value="${value:1:${#value}-2}"
-            elif [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
-              value="${value:1:${#value}-2}"
-            fi
-          fi
-          printf '%s' "$value"
+        [[ -f "$service_root/Dockerfile" ]] || {
+          echo "::error::Canonical Dockerfile is missing: $path/Dockerfile"
+          exit 1
         }
 
-        build_args=()
-        while IFS= read -r key; do
-          [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "::error::Invalid build argument '$key'."; exit 1; }
-          value=""
-          if read_env_value "$key" "$service_config" >/dev/null 2>&1; then
-            value="$(read_env_value "$key" "$service_config")"
-          elif read_env_value "$key" "$project_config" >/dev/null 2>&1; then
-            value="$(read_env_value "$key" "$project_config")"
-          else
-            echo "::error::Build argument '$key' is not defined in canonical non-secret $env_file config."
-            exit 1
-          fi
-          build_args+=(--build-arg "$key=$value")
-        done < <(jq -r '.build_args[]' <<<"$SERVICE_JSON")
-
-        temp_tag="ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA}"
-        [[ "$DEPLOY_ENVIRONMENT" != "dev" ]] || temp_tag="dev-$temp_tag"
-        image="$project/$service:$temp_tag"
+        artifact_root="$RUNNER_TEMP/oci-$service"
+        archive="$artifact_root/image.oci.tar"
+        layout="$artifact_root/layout"
+        metadata="$artifact_root/metadata.json"
+        rm -rf "$artifact_root"
+        mkdir -p "$artifact_root" "$layout"
 
         args=(
-          docker build
-          -f "$dockerfile"
-          -t "$image"
-          --label "org.opencontainers.image.revision=$GITHUB_SHA"
-          --label "kr.mooner510.stacks.project=$project"
-          --label "kr.mooner510.stacks.service=$service"
-          --label "kr.mooner510.stacks.environment=$DEPLOY_ENVIRONMENT"
+          buildctl
+          --addr "$BUILDKIT_HOST"
+          build
+          --frontend dockerfile.v0
+          --local "context=$workspace"
+          --local "dockerfile=$service_root"
+          --opt filename=Dockerfile
+          --metadata-file "$metadata"
+          --output "type=oci,dest=$archive,name=$project/$service:$GITHUB_SHA"
         )
-        args+=("${build_args[@]}")
         if [[ -n "${CI_PRIVATE_REPO_TOKEN:-}" ]]; then
           echo "::add-mask::$CI_PRIVATE_REPO_TOKEN"
-          args+=(--secret "id=CI_PRIVATE_REPO_TOKEN,env=CI_PRIVATE_REPO_TOKEN")
+          args+=(--secret id=CI_PRIVATE_REPO_TOKEN,env=CI_PRIVATE_REPO_TOKEN)
         fi
-        args+=("$workspace")
 
-        echo "==> Building temporary image $image"
-        DOCKER_BUILDKIT=1 "${args[@]}"
+        echo "==> Building isolated OCI artifact $project/$service@$GITHUB_SHA"
+        "${args[@]}"
 
-        inspect="$(docker image inspect "$image")"
-        exposed="$(jq -c '.[0].Config.ExposedPorts // {} | keys' <<<"$inspect")"
+        tar -xf "$archive" -C "$layout"
+
+        manifest_digest="$(jq -r '.["containerimage.digest"] // empty' "$metadata")"
+        config_digest="$(jq -r '.["containerimage.config.digest"] // empty' "$metadata")"
+        [[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+          echo "::error::BuildKit did not emit a valid manifest digest."
+          exit 1
+        }
+        [[ "$config_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+          echo "::error::BuildKit did not emit a valid config digest."
+          exit 1
+        }
+
+        config_blob="$layout/blobs/sha256/${config_digest#sha256:}"
+        [[ -f "$config_blob" ]] || {
+          echo "::error::OCI config blob is missing from exported artifact."
+          exit 1
+        }
+
+        exposed="$(jq -c '.config.ExposedPorts // {} | keys' "$config_blob")"
         if jq -e 'any(.[]; endswith("/tcp") | not)' <<<"$exposed" >/dev/null; then
-          docker image rm -f "$image" >/dev/null 2>&1 || true
-          echo "::error::Deployable images may expose only the single canonical TCP service port."
+          echo "::error::Deployable images may expose only TCP service ports."
           exit 1
         fi
         exposed_count="$(jq 'length' <<<"$exposed")"
         (( exposed_count <= 1 )) || {
-          docker image rm -f "$image" >/dev/null 2>&1 || true
-          echo "::error::Deployable image exposes more than one TCP port; exactly zero or one is allowed."
+          echo "::error::Deployable image exposes more than one TCP port."
           exit 1
         }
+
         exposed_port=""
         if (( exposed_count == 1 )); then
           exposed_port="$(jq -r '.[0] | sub("/tcp$";"")' <<<"$exposed")"
           [[ "$exposed_port" =~ ^[0-9]+$ ]] && (( exposed_port >= 1 && exposed_port <= 65535 )) || {
-            docker image rm -f "$image" >/dev/null 2>&1 || true
             echo "::error::Invalid canonical EXPOSE port '$exposed_port'."
             exit 1
           }
-        fi
-
-        health_test="$(jq -c '.[0].Config.Healthcheck.Test // []' <<<"$inspect")"
-        if (( exposed_count == 1 )); then
-          jq -e 'type=="array" and length>0 and .[0] != "NONE"' <<<"$health_test" >/dev/null || {
-            docker image rm -f "$image" >/dev/null 2>&1 || true
-            echo "::error::Routable images must define a Docker HEALTHCHECK."
+          jq -e '.config.Healthcheck.Test | type=="array" and length>0 and .[0] != "NONE"' "$config_blob" >/dev/null || {
+            echo "::error::Routable images must define a HEALTHCHECK."
             exit 1
           }
         fi
 
-        echo "==> Trivy image vulnerability scan (HIGH/CRITICAL)"
-        archive="$(mktemp "$RUNNER_TEMP/stacks-image-XXXXXX.tar")"
-        scanner=""
-        cleanup() {
-          rm -f "$archive"
-          [[ -z "$scanner" ]] || docker rm -f "$scanner" >/dev/null 2>&1 || true
-        }
-        trap cleanup EXIT
-
-        docker save "$image" -o "$archive"
-        # docker cp preserves the source mode. mktemp creates 0600 files, while
-        # the pinned Trivy image runs as a non-root user and must be able to
-        # read the archive inside the scanner container.
-        chmod 0644 "$archive"
-        scan_args=(--cap-drop=ALL --security-opt=no-new-privileges)
-        if [[ "${RUNNER_TOOL_CACHE:-}" == "/opt/cache/tool-cache" ]]; then
-          mkdir -p /opt/cache/tool-cache/trivy
-          scan_args+=(-v /opt/cache/tool-cache/trivy:/root/.cache/trivy)
-        fi
-        scanner="$(docker create "${scan_args[@]}"           ghcr.io/aquasecurity/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969           image --input /image.tar --scanners vuln --severity HIGH,CRITICAL --exit-code 1           --no-progress --skip-version-check)"
-        docker cp "$archive" "$scanner:/image.tar"
-
-        set +e
-        docker start --attach "$scanner"
-        scan_rc=$?
-        set -e
-        docker rm -f "$scanner" >/dev/null 2>&1 || true
-        scanner=""
-        rm -f "$archive"
-        trap - EXIT
-
-        if (( scan_rc != 0 )); then
-          docker image rm -f "$image" >/dev/null 2>&1 || true
-          echo "::error::Temporary image failed the HIGH/CRITICAL vulnerability gate."
-          exit "$scan_rc"
+        trivy_version="0.74.0"
+        trivy_expected="2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
+        trivy_root="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/trivy/$trivy_version"
+        trivy="$trivy_root/trivy"
+        if [[ ! -x "$trivy" ]]; then
+          trivy_archive="$(mktemp "$RUNNER_TEMP/trivy-XXXXXX.tar.gz")"
+          trap 'rm -f "$trivy_archive"' EXIT
+          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v$trivy_version/trivy_${trivy_version}_Linux-64bit.tar.gz" -o "$trivy_archive"
+          printf '%s  %s\n' "$trivy_expected" "$trivy_archive" | sha256sum -c -
+          mkdir -p "$trivy_root"
+          tar -xzf "$trivy_archive" -C "$trivy_root" trivy
+          chmod 0755 "$trivy"
+          rm -f "$trivy_archive"
+          trap - EXIT
         fi
 
-        image_id="$(docker image inspect "$image" --format '{{.Id}}')"
+        echo "==> Trivy isolated OCI vulnerability scan (HIGH/CRITICAL)"
+        "$trivy" image           --input "$layout"           --scanners vuln           --severity HIGH,CRITICAL           --exit-code 1           --no-progress           --skip-version-check
+
+        image="$project/$service:$GITHUB_SHA"
         {
           echo "image=$image"
-          echo "image_id=$image_id"
+          echo "image_id=$config_digest"
+          echo "manifest_digest=$manifest_digest"
           echo "exposed_port=$exposed_port"
+          echo "artifact_path=$archive"
         } >>"$GITHUB_OUTPUT"
