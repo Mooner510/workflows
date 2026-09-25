@@ -47,7 +47,7 @@ concurrency:
 jobs:
   detect:
     name: Detect changes
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-detect-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 10
 
     outputs:
@@ -94,7 +94,7 @@ jobs:
     name: Security
     needs: detect
     if: needs.detect.outputs.has_changes == 'true'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-security-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 30
     steps:
       - name: Run security verification
@@ -107,7 +107,7 @@ jobs:
     name: CI - ${{ matrix.target }}
     needs: detect
     if: needs.detect.outputs.ci_targets != '[]'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-ci-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 45
     strategy:
       fail-fast: false
