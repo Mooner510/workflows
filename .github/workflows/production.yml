@@ -11,20 +11,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  contract:
-    name: Production request
+  request:
+    name: Validate production request
     runs-on: [self-hosted, linux, "gharp-production-request-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 10
-    outputs:
-      components: ${{ steps.contract.outputs.components }}
-      services: ${{ steps.contract.outputs.services }}
-      selected_services: ${{ steps.select.outputs.services }}
-      operation: ${{ steps.request.outputs.operation }}
-      project: ${{ steps.project.outputs.project }}
 
     steps:
       - name: Validate repository dispatch
-        id: request
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -34,6 +27,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+
           [[ "$EVENT_NAME" == "repository_dispatch" ]] || {
             echo "::error::Production deployment accepts repository_dispatch only."
             exit 1
@@ -44,180 +38,18 @@ jobs:
           }
 
           case "$EVENT_ACTION" in
-            production_deploy) operation=deploy ;;
-            production_rollback) operation=rollback ;;
+            production_deploy|production_rollback) ;;
             *) echo "::error::Unsupported repository dispatch type '$EVENT_ACTION'."; exit 1 ;;
           esac
+
           if [[ -n "$REQUESTED_SERVICE" && ! "$REQUESTED_SERVICE" =~ ^[a-z][a-z0-9-]{0,62}$ ]]; then
             echo "::error::Invalid requested service '$REQUESTED_SERVICE'."
             exit 1
           fi
-          echo "operation=$operation" >>"$GITHUB_OUTPUT"
 
-      - name: Resolve canonical project id
-        id: project
+      - name: Refuse repository-runner production mutation
         shell: bash
         run: |
-          set -euo pipefail
-          project="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
-          [[ "$project" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
-            echo "::error::Repository name cannot be normalized to a canonical project id."
-            exit 1
-          }
-          echo "project=$project" >>"$GITHUB_OUTPUT"
-
-      - name: Checkout exact default-branch revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-          ref: ${{ github.sha }}
-
-      - name: Load canonical project contract
-        id: contract
-        uses: Mooner510/workflows/.github/actions/config/load@v1
-
-      - name: Select requested production services
-        id: select
-        shell: bash
-        env:
-          SERVICES_JSON: ${{ steps.contract.outputs.services }}
-          REQUESTED_SERVICE: ${{ github.event.client_payload.service }}
-        run: |
-          set -euo pipefail
-          if [[ -n "$REQUESTED_SERVICE" ]]; then
-            services="$(jq -c --arg name "$REQUESTED_SERVICE" '[.[] | select(.name==$name)]' <<<"$SERVICES_JSON")"
-            [[ "$(jq 'length' <<<"$services")" -eq 1 ]] || {
-              echo "::error::Requested service '$REQUESTED_SERVICE' is not declared in .github/stacks.json."
-              exit 1
-            }
-          else
-            services="$(jq -c '[.[] | select(.manual != true)]' <<<"$SERVICES_JSON")"
-            [[ "$(jq 'length' <<<"$services")" -gt 0 ]] || {
-              echo "::error::Project declares no automatic production Docker services."
-              exit 1
-            }
-          fi
-          service_names="$(jq -c '[.[].name]' <<<"$services")"
-          echo "services=$service_names" >>"$GITHUB_OUTPUT"
-
-  preflight:
-    name: Production preflight
-    needs: contract
-    runs-on: [self-hosted, linux, "gharp-production-preflight-${{ github.run_id }}-${{ github.run_attempt }}"]
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        service: ${{ fromJSON(needs.contract.outputs.selected_services) }}
-
-    steps:
-      - name: Select service database contract
-        id: service
-        shell: bash
-        env:
-          SERVICES_JSON: ${{ needs.contract.outputs.services }}
-          SERVICE_NAME: ${{ matrix.service }}
-        run: |
-          set -euo pipefail
-          service="$(jq -c --arg name "$SERVICE_NAME" '.[] | select(.name == $name)' <<<"$SERVICES_JSON")"
-          [[ -n "$service" ]] || { echo "::error::Service '$SERVICE_NAME' is not declared."; exit 1; }
-          echo "database=$(jq -r '.database // false' <<<"$service")" >>"$GITHUB_OUTPUT"
-          echo "database_scope=$(jq -r '.database_scope // "project"' <<<"$service")" >>"$GITHUB_OUTPUT"
-
-      - name: Verify database credentials
-        if: steps.service.outputs.database == 'true'
-        uses: Mooner510/workflows/.github/actions/cd/resolve-db-credentials@v1
-        with:
-          environment: prod
-          project: ${{ needs.contract.outputs.project }}
-          service: ${{ matrix.service }}
-          database-scope: ${{ steps.service.outputs.database_scope }}
-          migration-engine: none
-          env-names-json: '["DATABASE_URL"]'
-
-      - name: Verify exact production image
-        if: needs.contract.outputs.operation == 'deploy'
-        shell: bash
-        env:
-          SERVICE: ${{ matrix.service }}
-        run: |
-          set -euo pipefail
-          project="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
-          image="$project/$SERVICE:$GITHUB_SHA"
-          docker image inspect "$image" >/dev/null 2>&1 || {
-            echo "::error::No fully verified image exists for the current default-branch revision: $image"
-            exit 1
-          }
-          revision="$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
-          image_project="$(docker image inspect "$image" --format '{{ index .Config.Labels "kr.mooner510.stacks.project" }}')"
-          image_service="$(docker image inspect "$image" --format '{{ index .Config.Labels "kr.mooner510.stacks.service" }}')"
-          [[ "$revision" == "$GITHUB_SHA" && "$image_project" == "$project" && "$image_service" == "$SERVICE" ]] || {
-            echo "::error::Production image provenance mismatch for $image."
-            exit 1
-          }
-
-      - name: Resolve rollback target
-        id: previous
-        if: needs.contract.outputs.operation == 'rollback'
-        uses: Mooner510/workflows/.github/actions/cd/state@v1
-        with:
-          environment: prod
-          operation: previous
-          project: ${{ needs.contract.outputs.project }}
-          service: ${{ matrix.service }}
-
-      - name: Verify rollback image
-        if: needs.contract.outputs.operation == 'rollback'
-        shell: bash
-        env:
-          EXISTS: ${{ steps.previous.outputs.exists }}
-          IMAGE_ID: ${{ steps.previous.outputs['image-id'] }}
-        run: |
-          set -euo pipefail
-          [[ "$EXISTS" == "true" && -n "$IMAGE_ID" ]] || {
-            echo "::error::No previous known-good image exists for rollback."
-            exit 1
-          }
-          docker image inspect "$IMAGE_ID" >/dev/null 2>&1 || {
-            echo "::error::Previous known-good rollback image is no longer local: $IMAGE_ID"
-            exit 1
-          }
-
-  deploy:
-    name: Production deployment
-    needs: [contract, preflight]
-    if: needs.preflight.result == 'success'
-    runs-on: [self-hosted, linux, "gharp-production-deploy-${{ github.run_id }}-${{ github.run_attempt }}"]
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        service: ${{ fromJSON(needs.contract.outputs.selected_services) }}
-
-    steps:
-      - name: Checkout exact production revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ github.sha }}
-
-      - name: Select service contract
-        id: service
-        shell: bash
-        env:
-          SERVICES_JSON: ${{ needs.contract.outputs.services }}
-          SERVICE_NAME: ${{ matrix.service }}
-        run: |
-          set -euo pipefail
-          service="$(jq -c --arg name "$SERVICE_NAME" '.[] | select(.name == $name)' <<<"$SERVICES_JSON")"
-          [[ -n "$service" ]] || { echo "::error::Service '$SERVICE_NAME' is not declared."; exit 1; }
-          echo "service=$service" >>"$GITHUB_OUTPUT"
-
-      - name: Apply central production lifecycle
-        uses: Mooner510/workflows/.github/actions/cd/service@v1
-        with:
-          service: ${{ steps.service.outputs.service }}
-          components: ${{ needs.contract.outputs.components }}
-          environment: prod
-          operation: ${{ needs.contract.outputs.operation }}
+          echo "::error::Production runtime mutation is disabled on isolated repository runners."
+          echo "::error::A trusted deployment controller with short-lived workload identity must consume the verified artifact."
+          exit 1
