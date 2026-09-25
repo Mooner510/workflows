@@ -27,7 +27,7 @@ jobs:
   format:
     name: Format, push, and verify Go
     if: github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-format-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 45
 
     steps:
