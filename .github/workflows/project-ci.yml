@@ -158,7 +158,7 @@ jobs:
           git_log_opts: ${{ needs.contract.outputs.git_log_opts }}
 
   ci:
-    name: Component CI
+    name: CI
     needs: contract
     if: needs.contract.outputs.ci_required == 'true'
     runs-on: [self-hosted, linux]

@@ -382,6 +382,52 @@ runs:
           return 1
         }
 
+        resolve_node_manager_version() {
+          local component="$1"
+          local manager="$2"
+          local cursor="$component"
+          local lock_found=false
+          local package_manager=""
+          local version=""
+
+          while :; do
+            lock_found=false
+            case "$manager" in
+              npm)  [[ -f "$cursor/package-lock.json" ]] && lock_found=true ;;
+              pnpm) [[ -f "$cursor/pnpm-lock.yaml" ]] && lock_found=true ;;
+              yarn) [[ -f "$cursor/yarn.lock" ]] && lock_found=true ;;
+              bun)  [[ -f "$cursor/bun.lock" || -f "$cursor/bun.lockb" ]] && lock_found=true ;;
+            esac
+
+            if [[ "$lock_found" == "true" ]]; then
+              [[ -f "$cursor/package.json" ]] || {
+                echo "::error::Node package-manager root '$cursor' must contain package.json." >&2
+                return 1
+              }
+
+              package_manager="$(jq -r '.packageManager // ""' "$cursor/package.json")"
+              if [[ "$package_manager" =~ ^${manager}@([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+                version="${BASH_REMATCH[1]}"
+                printf '%s' "$version"
+                return 0
+              fi
+
+              if [[ "$manager" == "npm" && -z "$package_manager" ]]; then
+                return 0
+              fi
+
+              echo "::error::$manager roots must pin packageManager exactly, for example \"$manager@1.2.3\"." >&2
+              return 1
+            fi
+
+            [[ "$cursor" == "$workspace" ]] && break
+            cursor="$(dirname "$cursor")"
+          done
+
+          echo "::error::Unable to resolve $manager package-manager root from '$component'." >&2
+          return 1
+        }
+
         resolve_java_build_tool() {
           local component="$1"
           local gradle=false
@@ -456,7 +502,8 @@ runs:
                 echo "::error::Node component '$name' declares '$configured_manager' but lockfile detection found '$detected_manager'."
                 exit 1
               fi
-              component="$(jq -c --arg manager "$detected_manager" '.package_manager = $manager' <<<"$component")"
+              manager_version="$(resolve_node_manager_version "$component_path" "$detected_manager")" || exit 1
+              component="$(jq -c --arg manager "$detected_manager" --arg manager_version "$manager_version" '.package_manager = $manager | .package_manager_version = $manager_version' <<<"$component")"
               ;;
             java-kotlin)
               configured_tool="$(jq -r '.build_tool // empty' <<<"$component")"
@@ -496,12 +543,13 @@ runs:
                   components: .
                 }),
             (map(select(.type == "node"))
-              | group_by([(.node_version // "24.21.0"), .package_manager])[]
+              | group_by([(.node_version // "24.21.0"), .package_manager, .package_manager_version])[]
               | {
-                  target: ("Node " + (.[0].node_version // "24.21.0") + " / " + .[0].package_manager),
+                  target: (.[0].package_manager + (if (.[0].package_manager_version // "") == "" then "" else " " + .[0].package_manager_version end)),
                   type: "node",
                   version: (.[0].node_version // "24.21.0"),
                   package_manager: .[0].package_manager,
+                  package_manager_version: (.[0].package_manager_version // ""),
                   components: .
                 }),
             (map(select(.type == "java-kotlin"))
