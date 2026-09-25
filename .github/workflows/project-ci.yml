@@ -73,11 +73,11 @@ jobs:
 
       - name: Load canonical project contract
         id: contract
-        uses: Mooner510/workflows/.github/actions/config/load@v1
+        uses: Mooner510/workflows/.github/actions/config/load@feature/isolated-ci-build-plane
 
       - name: Detect affected components and services
         id: detect
-        uses: Mooner510/workflows/.github/actions/ci/detect@v1
+        uses: Mooner510/workflows/.github/actions/ci/detect@feature/isolated-ci-build-plane
         with:
           components: ${{ steps.contract.outputs.components }}
           force_all: ${{ inputs.force_all }}
@@ -152,7 +152,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Run security verification
-        uses: Mooner510/workflows/.github/actions/ci/security@v1
+        uses: Mooner510/workflows/.github/actions/ci/security@feature/isolated-ci-build-plane
         with:
           components: ${{ needs.contract.outputs.affected_components }}
           git_log_opts: ${{ needs.contract.outputs.git_log_opts }}
@@ -176,7 +176,7 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Run component group CI
-        uses: Mooner510/workflows/.github/actions/ci/group@v1
+        uses: Mooner510/workflows/.github/actions/ci/group@feature/isolated-ci-build-plane
         with:
           components: ${{ toJSON(fromJSON(needs.contract.outputs.ci_groups)[matrix.target].components) }}
           type: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].type }}
@@ -218,7 +218,7 @@ jobs:
           echo "service=$service" >>"$GITHUB_OUTPUT"
 
       - name: Build and scan temporary image
-        uses: Mooner510/workflows/.github/actions/cd/docker/prepare@v1
+        uses: Mooner510/workflows/.github/actions/cd/docker/prepare@feature/isolated-ci-build-plane
         with:
           service: ${{ steps.service.outputs.service }}
           environment: ${{ needs.contract.outputs.image_environment }}
@@ -256,23 +256,13 @@ jobs:
             exit 1
           fi
 
-      - name: Publish canonical revision tags
+      - name: Require trusted artifact controller for publication
         if: needs.contract.outputs.publish_required == 'true'
-        uses: Mooner510/workflows/.github/actions/cd/docker/finalize@v1
-        with:
-          services: ${{ needs.contract.outputs.services }}
-          affected-services: ${{ needs.contract.outputs.affected_services }}
-          environment: ${{ needs.contract.outputs.image_environment }}
-          operation: finalize
-
-      - name: Remove run-scoped temporary tags
-        if: always() && needs.contract.outputs.image_required == 'true'
-        uses: Mooner510/workflows/.github/actions/cd/docker/finalize@v1
-        with:
-          services: ${{ needs.contract.outputs.services }}
-          affected-services: ${{ needs.contract.outputs.affected_services }}
-          environment: ${{ needs.contract.outputs.image_environment }}
-          operation: cleanup
+        shell: bash
+        run: |
+          echo "::error::Artifact publication/deployment is intentionally disabled on repository runners."
+          echo "::error::Promote the trusted deployment controller before enabling push-based publication."
+          exit 1
 
   deploy-development:
     name: Development deployment
@@ -305,7 +295,7 @@ jobs:
           echo "service=$service" >>"$GITHUB_OUTPUT"
 
       - name: Deploy verified development service
-        uses: Mooner510/workflows/.github/actions/cd/service@v1
+        uses: Mooner510/workflows/.github/actions/cd/service@feature/isolated-ci-build-plane
         with:
           service: ${{ steps.service.outputs.service }}
           components: ${{ needs.contract.outputs.components }}
