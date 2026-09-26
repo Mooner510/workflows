@@ -27,7 +27,7 @@ jobs:
   format:
     name: Format, push, and verify Go
     if: github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-format-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 45
 
     steps:
@@ -52,7 +52,7 @@ jobs:
 
       - name: Load canonical project contract
         id: contract
-        uses: Mooner510/workflows/.github/actions/config/load@v1
+        uses: Mooner510/workflows/.github/actions/config/load@feature/isolated-ci-build-plane
 
       - name: Set up Go for formatting
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

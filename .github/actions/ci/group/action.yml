@@ -32,7 +32,7 @@ runs:
   steps:
     - name: Go CI
       if: inputs.type == 'go'
-      uses: Mooner510/workflows/.github/actions/ci/go@v1
+      uses: Mooner510/workflows/.github/actions/ci/go@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
       with:
         components: ${{ inputs.components }}
         version: ${{ inputs.version }}
@@ -41,7 +41,7 @@ runs:
 
     - name: Node CI
       if: inputs.type == 'node'
-      uses: Mooner510/workflows/.github/actions/ci/node@v1
+      uses: Mooner510/workflows/.github/actions/ci/node@1472bb45cca916cf0b138fb6e0de01c099f4704f
       with:
         components: ${{ inputs.components }}
         version: ${{ inputs.version }}
@@ -50,7 +50,7 @@ runs:
 
     - name: Java/Kotlin CI
       if: inputs.type == 'java-kotlin'
-      uses: Mooner510/workflows/.github/actions/ci/java-kotlin@v1
+      uses: Mooner510/workflows/.github/actions/ci/java-kotlin@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
       with:
         components: ${{ inputs.components }}
         version: ${{ inputs.version }}
@@ -58,12 +58,12 @@ runs:
         profile: ${{ inputs.profile }}
 
     - name: Migration CI
-      uses: Mooner510/workflows/.github/actions/ci/migration@v1
+      uses: Mooner510/workflows/.github/actions/ci/migration@aec67007556dfa1ec112ac635baf6904f18f069a
       with:
         components: ${{ inputs.components }}
 
     - name: Go PostgreSQL integration CI
       if: inputs.type == 'go'
-      uses: Mooner510/workflows/.github/actions/ci/go-postgres@v1
+      uses: Mooner510/workflows/.github/actions/ci/go-postgres@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
       with:
         components: ${{ inputs.components }}

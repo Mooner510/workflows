@@ -28,7 +28,7 @@ concurrency:
 jobs:
   contract:
     name: Contract and changes
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-contract-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 10
     outputs:
       components: ${{ steps.contract.outputs.components }}
@@ -73,11 +73,11 @@ jobs:
 
       - name: Load canonical project contract
         id: contract
-        uses: Mooner510/workflows/.github/actions/config/load@v1
+        uses: Mooner510/workflows/.github/actions/config/load@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
 
       - name: Detect affected components and services
         id: detect
-        uses: Mooner510/workflows/.github/actions/ci/detect@v1
+        uses: Mooner510/workflows/.github/actions/ci/detect@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
         with:
           components: ${{ steps.contract.outputs.components }}
           force_all: ${{ inputs.force_all }}
@@ -148,11 +148,11 @@ jobs:
     name: Security
     needs: contract
     if: needs.contract.outputs.security_required == 'true'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-security-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 30
     steps:
       - name: Run security verification
-        uses: Mooner510/workflows/.github/actions/ci/security@v1
+        uses: Mooner510/workflows/.github/actions/ci/security@d7a376d1a2cd066084ddaf2a8ae52ad204097243
         with:
           components: ${{ needs.contract.outputs.affected_components }}
           git_log_opts: ${{ needs.contract.outputs.git_log_opts }}
@@ -161,7 +161,7 @@ jobs:
     name: CI
     needs: contract
     if: needs.contract.outputs.ci_required == 'true'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-ci-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -176,7 +176,7 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Run component group CI
-        uses: Mooner510/workflows/.github/actions/ci/group@v1
+        uses: Mooner510/workflows/.github/actions/ci/group@37b9dab6a521173c148cf6a85703e5438a546a6a
         with:
           components: ${{ toJSON(fromJSON(needs.contract.outputs.ci_groups)[matrix.target].components) }}
           type: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].type }}
@@ -191,7 +191,7 @@ jobs:
     name: Docker image verification
     needs: contract
     if: needs.contract.outputs.image_required == 'true'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-image-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -218,7 +218,7 @@ jobs:
           echo "service=$service" >>"$GITHUB_OUTPUT"
 
       - name: Build and scan temporary image
-        uses: Mooner510/workflows/.github/actions/cd/docker/prepare@v1
+        uses: Mooner510/workflows/.github/actions/cd/docker/prepare@1472bb45cca916cf0b138fb6e0de01c099f4704f
         with:
           service: ${{ steps.service.outputs.service }}
           environment: ${{ needs.contract.outputs.image_environment }}
@@ -228,7 +228,7 @@ jobs:
     name: Verification and publication
     needs: [contract, security, ci, images]
     if: always() && needs.contract.result == 'success'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-verify-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 10
 
     steps:
@@ -256,29 +256,19 @@ jobs:
             exit 1
           fi
 
-      - name: Publish canonical revision tags
+      - name: Require trusted artifact controller for publication
         if: needs.contract.outputs.publish_required == 'true'
-        uses: Mooner510/workflows/.github/actions/cd/docker/finalize@v1
-        with:
-          services: ${{ needs.contract.outputs.services }}
-          affected-services: ${{ needs.contract.outputs.affected_services }}
-          environment: ${{ needs.contract.outputs.image_environment }}
-          operation: finalize
-
-      - name: Remove run-scoped temporary tags
-        if: always() && needs.contract.outputs.image_required == 'true'
-        uses: Mooner510/workflows/.github/actions/cd/docker/finalize@v1
-        with:
-          services: ${{ needs.contract.outputs.services }}
-          affected-services: ${{ needs.contract.outputs.affected_services }}
-          environment: ${{ needs.contract.outputs.image_environment }}
-          operation: cleanup
+        shell: bash
+        run: |
+          echo "::error::Artifact publication/deployment is intentionally disabled on repository runners."
+          echo "::error::Promote the trusted deployment controller before enabling push-based publication."
+          exit 1
 
   deploy-development:
     name: Development deployment
     needs: [contract, verify]
     if: needs.verify.result == 'success' && needs.contract.outputs.deploy_development_required == 'true'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, "gharp-deploy-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -305,7 +295,7 @@ jobs:
           echo "service=$service" >>"$GITHUB_OUTPUT"
 
       - name: Deploy verified development service
-        uses: Mooner510/workflows/.github/actions/cd/service@v1
+        uses: Mooner510/workflows/.github/actions/cd/service@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
         with:
           service: ${{ steps.service.outputs.service }}
           components: ${{ needs.contract.outputs.components }}

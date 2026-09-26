@@ -51,11 +51,19 @@ runs:
           pnpm_version="${BASH_REMATCH[1]}"
 
           if [[ -z "${installed[$root]+x}" ]]; then
+            tool_root="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/pnpm/$pnpm_version"
+            pnpm_bin="$tool_root/bin/pnpm"
+            if [[ ! -x "$pnpm_bin" ]]; then
+              echo "==> Installing pnpm $pnpm_version"
+              mkdir -p "$tool_root"
+              npm install --global --prefix "$tool_root" "pnpm@$pnpm_version"
+            fi
+            echo "$tool_root/bin" >>"$GITHUB_PATH"
+
             echo "==> pnpm install: $(realpath --relative-to="$workspace" "$root") (pnpm $pnpm_version)"
             (
               cd "$root"
-              npm exec --yes --package="pnpm@$pnpm_version" -- \
-                pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_DIR"
+              "$pnpm_bin" install --frozen-lockfile --store-dir "$PNPM_STORE_DIR"
             )
             installed[$root]=1
           fi

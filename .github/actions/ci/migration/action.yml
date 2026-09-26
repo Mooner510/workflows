@@ -46,9 +46,17 @@ runs:
           echo "has_flyway=$([[ $(jq 'length' <<<"$flyway") -gt 0 ]] && echo true || echo false)"
         } >>"$GITHUB_OUTPUT"
 
+    - name: Enforce isolated migration adapters
+      if: steps.migration.outputs.has_go_command == 'true' || steps.migration.outputs.has_prisma == 'true' || steps.migration.outputs.has_drizzle == 'true' || steps.migration.outputs.has_flyway == 'true'
+      shell: bash
+      run: |
+        echo "::error::This migration engine still depends on the retired host-Docker CI path."
+        echo "::error::No Docker/Podman runtime socket fallback is permitted on isolated runners."
+        exit 1
+
     - name: Goose migration CI
       if: steps.migration.outputs.has_goose == 'true'
-      uses: Mooner510/workflows/.github/actions/ci/migration/goose@v1
+      uses: Mooner510/workflows/.github/actions/ci/migration/goose@2c61131329dd166ffbe29c8bab565653a33b09c2
       with:
         components: ${{ steps.migration.outputs.goose }}
 

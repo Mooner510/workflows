@@ -1,0 +1,50 @@
+name: Set up isolated BuildKit client
+description: Install a pinned buildctl client and verify the Gharp rootless BuildKit boundary.
+
+runs:
+  using: composite
+  steps:
+    - name: Install pinned buildctl
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        [[ "${BUILDKIT_HOST:-}" == "unix:///run/gharp-buildkit/buildkitd.sock" ]] || {
+          echo "::error::BUILDKIT_HOST must point to the Gharp-isolated BuildKit socket."
+          exit 1
+        }
+        [[ ! -S /var/run/docker.sock ]] || {
+          echo "::error::Host Docker socket is forbidden on the isolated CI runner."
+          exit 1
+        }
+        [[ ! -S /run/user/993/podman/podman.sock ]] || {
+          echo "::error::Host Podman socket is forbidden on the isolated CI runner."
+          exit 1
+        }
+
+        arch="$(uname -m)"
+        [[ "$arch" == "x86_64" ]] || {
+          echo "::error::Pinned BuildKit client is currently verified only for linux/amd64; got $arch."
+          exit 1
+        }
+
+        version="v0.33.0"
+        expected="b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead"
+        url="https://github.com/moby/buildkit/releases/download/$version/buildkit-$version.linux-amd64.tar.gz"
+        tool_root="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/buildkit/$version"
+        buildctl="$tool_root/bin/buildctl"
+
+        if [[ ! -x "$buildctl" ]]; then
+          archive="$(mktemp "$RUNNER_TEMP/buildkit-XXXXXX.tar.gz")"
+          trap 'rm -f "$archive"' EXIT
+          curl -fsSL "$url" -o "$archive"
+          printf '%s  %s\n' "$expected" "$archive" | sha256sum -c -
+          mkdir -p "$tool_root"
+          tar -xzf "$archive" -C "$tool_root" bin/buildctl
+          chmod 0755 "$buildctl"
+          rm -f "$archive"
+          trap - EXIT
+        fi
+
+        echo "$tool_root/bin" >>"$GITHUB_PATH"
+        "$buildctl" --addr "$BUILDKIT_HOST" debug workers >/dev/null

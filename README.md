@@ -19,7 +19,7 @@ Consumer는 위 reusable workflow만 호출한다. `.github/actions/**`는 centr
 
 기존 `pipeline.yml`, `docker-service-*`, `docker-process-*` 등은 active repositories를 새 contract로 이전하는 동안만 남기는 compatibility implementation이다. 신규 caller contract로 사용하지 않는다.
 
-`security.yml` reusable workflow는 제거했다. Security와 language/migration CI orchestration은 각각 `.github/actions/ci/security`, `.github/actions/ci/group` 내부 action으로 통합하여 `project-ci.yml`과 legacy `pipeline.yml`이 같은 구현을 공유한다. `.github/workflows/validate.yml`은 이 implementation repository 자체의 workflow syntax/reference policy만 검증한다. `Mooner510/workflows`는 public repository이므로 이 repository 자체의 PR/push validation은 GitHub-hosted `ubuntu-latest`에서만 실행한다. Consumer repository에서 reusable workflow를 호출할 때의 canonical CI/CD는 기존 `[self-hosted, linux]` runner contract를 유지한다. Central `go-format.yml`도 `workflow_call` 전용이며 `workflows` repository 자체에서 직접 dispatch하지 않는다.
+`security.yml` reusable workflow는 제거했다. Security와 language/migration CI orchestration은 각각 `.github/actions/ci/security`, `.github/actions/ci/group` 내부 action으로 통합하여 `project-ci.yml`과 legacy `pipeline.yml`이 같은 구현을 공유한다. `.github/workflows/validate.yml`은 이 implementation repository 자체의 workflow syntax/reference policy만 검증한다. `Mooner510/workflows`는 public repository이므로 이 repository 자체의 PR/push validation은 GitHub-hosted `ubuntu-latest`에서만 실행한다. Private consumer repository의 canonical CI는 Gharp가 job마다 발급하는 disposable repository-scoped JIT runner에서 실행한다. Public implementation repository인 `Mooner510/workflows` 자체 검증만 GitHub-hosted `ubuntu-latest`를 사용한다. Central `go-format.yml`도 `workflow_call` 전용이며 `workflows` repository 자체에서 직접 dispatch하지 않는다.
 
 ## One repository declaration
 
@@ -548,10 +548,19 @@ Consumer workflow에 별도 `run:` deployment/CI implementation을 추가하지 
 
 ## Runner
 
-CI/CD는 모두 canonical selector를 사용한다.
+Private personal/organization repositories는 모두 Gharp의 disposable repository-scoped JIT runner를 사용한다. 상주형 personal/organization self-hosted runner는 canonical execution plane이 아니다.
 
-```yaml
-runs-on: [self-hosted, linux]
+각 job은 generic `[self-hosted, linux]`만으로 배정하지 않고 run-scoped Gharp label을 함께 요구한다.
+
+```text
+gharp-contract-<run-id>-<attempt>
+gharp-security-<run-id>-<attempt>
+gharp-ci-<run-id>-<attempt>
+gharp-image-<run-id>-<attempt>
+gharp-verify-<run-id>-<attempt>
+gharp-deploy-<run-id>-<attempt>
 ```
 
-Personal repositories는 Gharp, organization repositories는 organization-scoped self-hosted runner를 사용한다. CI/CD 역할별 별도 runner는 만들지 않는다.
+Repository job은 Docker/Podman/containerd socket, `/opt/stacks`, `/var/lib/stacks`, deployment secret, production runtime mutation 권한을 받지 않는다. OCI build는 runner에 의도적으로 노출된 rootless BuildKit socket만 사용한다.
+
+Public repository는 self-hosted runner를 사용하지 않고 GitHub-hosted runner를 사용한다. Production/development host mutation은 repository runner와 분리된 trusted deployment controller가 소유하며, controller가 준비되기 전 publication/deployment는 fail closed한다.
