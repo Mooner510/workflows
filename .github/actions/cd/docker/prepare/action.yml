@@ -29,7 +29,7 @@ runs:
   using: composite
   steps:
     - name: Set up isolated BuildKit
-      uses: Mooner510/workflows/.github/actions/ci/buildkit@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
+      uses: Mooner510/workflows/.github/actions/ci/buildkit@v1
 
     - name: Build and scan OCI artifact
       id: build
