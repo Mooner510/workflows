@@ -260,177 +260,69 @@ Public/fork/untrusted pull request는 self-hosted runner에서 checkout/build하
 
 ## Production image gate
 
-Production default-branch CI에서는 Security/Language CI와 Docker image preparation을 병렬로 수행할 수 있다. 실제 production service는 이 단계에서 변경하지 않는다.
-
-각 affected service는 먼저 run-scoped temporary tag로 build/scan한다.
+Production/default-branch CI is verification-only while the trusted deployment controller is not yet active.
 
 ```text
-<project>/<service>:ci-<run-id>-<attempt>-<sha>
+Security + Language/Migration CI + rootless BuildKit OCI build + Trivy
+→ Verification
+→ END
 ```
 
-모든 requested validation이 성공한 뒤에만 affected service 전체를 canonical revision tag로 publish한다.
+Repository runners do not publish canonical host images, import images into the trusted Docker runtime, read host deployment configuration, or mutate production state. A successful CI therefore means the revision and its OCI image were verified; it does not mean a production artifact was published.
 
-```text
-<project>/<service>:<sha>
-```
-
-Affected service 집합은 revision 단위 all-or-nothing이다. 하나라도 build/scan/CI/security에 실패하면 canonical tag를 새로 publish하지 않고 해당 run의 temporary tag를 정리한다.
-
-재실행에서 기존 canonical SHA tag가 이미 존재하면 finalize 실패 시 이전 tag target을 복원한다.
-
-Production CI는 다음을 절대 수행하지 않는다.
-
-```text
-production migration
-production container stop/create/start
-production deployment state mutation
-production Caddy mutation
-```
+Artifact publication will be re-enabled only through the separate trusted deployment controller.
 
 ## Development deployment
 
-`dev` branch도 Security/Language CI와 image build/Trivy가 모두 성공해야 한다.
+Automatic development host mutation is temporarily disabled under the isolated-runner model.
 
-Dev canonical tag:
+A push to `dev` still runs the complete Gharp verification plane:
 
 ```text
-<project>/<service>:dev-<sha>
+Security
+Language / migration validation
+rootless BuildKit OCI build
+Trivy image scan
+Verification
 ```
 
-Flow:
+It does not read `/opt/stacks`, migrate the real development database, import an image into the host Docker runtime, or replace a development container. Those operations move to the trusted deployment controller.
+
+## Trusted runtime ownership
+
+The trusted deployment controller is the only future component allowed to own host mutation:
 
 ```text
-dev revision
-→ central CI/security/image gate
-→ all success
-→ canonical dev image finalize
-→ affected service automatic migration/deploy
-→ Docker HEALTHCHECK healthy
-→ dev state record
-```
-
-실패한 검증이 하나라도 있으면 running development service를 변경하지 않는다.
-
-`/opt/stacks/projects/<project>/.dev-disabled` 또는 service `.dev-disabled` marker는 automatic dev deploy만 skip한다.
-
-## Runtime ownership
-
-Central service deployment이 다음을 소유한다.
-
-```text
-project/service identity
-prod/dev network identity
-runtime env overlay
-DB credential resolution (project/service scope)
-CORS metadata injection
-managed TLS identity/trust mounts
-migration execution
+runtime env / secret resolution
+DB credential resolution
+migration against real dev/prod DB
+trusted image import/publication
 container replacement
 Docker hardening
-HEALTHCHECK wait
-state/history
-automatic restore after failed replacement
-manual rollback
+HEALTHCHECK / readiness
+state/history/rollback
 ```
 
-Fixed hardening:
+Repository JIT runners never receive Docker/Podman/containerd runtime sockets, `/opt/stacks`, `/var/lib/stacks`, deployment secrets, or production/development database credentials.
 
-```text
---init
---security-opt no-new-privileges:true
---cap-drop ALL
---restart unless-stopped
-stop timeout = 20 seconds
-```
-
-Consumer override는 제공하지 않는다.
-
-Runtime env:
-
-```text
-prod:
-  project deploy.env
-  service deploy.env
-  service secret/deploy.env
-
-dev:
-  project deploy.dev.env
-  service deploy.dev.env
-  service secret/deploy.dev.env
-```
-
-Environment file이 하나도 없는 service도 허용한다. Development는 production config로 fallback하지 않는다.
-
-Mutable volume은 selected runtime config의 `DEPLOY_VOLUMES_JSON`만 사용한다.
+Until the controller is implemented and verified, these runtime operations are intentionally unavailable from GitHub repository jobs.
 
 ## Production control plane
 
-Production Docker mutation은 GitHub UI `workflow_dispatch`로 시작하지 않는다.
+The thin consumer `deploy.yml` may continue to accept server-originated `repository_dispatch` events so the public API contract does not need another migration later.
 
-Consumer의 thin `deploy.yml`은 다음 event만 받는다.
-
-```yaml
-on:
-  repository_dispatch:
-    types: [production_deploy, production_rollback]
-```
-
-그리고 `Mooner510/workflows/.github/workflows/production.yml@v1`만 호출한다.
-
-`repository_dispatch`는 GitHub 규약상 default branch의 최신 commit을 `GITHUB_SHA`와 `GITHUB_REF`로 사용한다. Central workflow는 이를 다시 검증한다.
-
-Payload:
-
-```text
-event_type = production_deploy | production_rollback
-client_payload.service = optional logical service
-```
-
-- service가 있으면 해당 service 하나.
-- service가 없으면 declared Docker services 전체.
-- repository-local deployment logic은 허용하지 않는다.
-
-### Deploy
+Current behavior is fail closed:
 
 ```text
 repository_dispatch
-→ current default-branch SHA checkout
-→ all selected exact-SHA images preflight
-→ migration
-→ central runtime replace
-→ HEALTHCHECK
-→ state/history
+→ production.yml@v1
+→ validate request/default branch/service
+→ refuse host runtime mutation
 ```
 
-Expected production image:
+No repository-runner production migration, container replacement, Docker image import, state mutation, or Caddy mutation is permitted.
 
-```text
-<project>/<service>:<current-default-branch-sha>
-```
-
-Image가 없거나 revision/project/service provenance label이 맞지 않으면 mutation 전에 실패한다. 이전 성공 SHA나 `latest`를 추측하지 않는다.
-
-### Rollback
-
-```text
-repository_dispatch production_rollback
-→ state/history previous known-good imageId
-→ all selected rollback images preflight
-→ replace
-→ HEALTHCHECK
-→ rollback state record
-```
-
-Rollback은 DB down migration을 실행하지 않는다.
-
-Project-only production deploy는 모든 selected service image/rollback target을 먼저 preflight한 뒤 service별 lifecycle을 수행한다. Runtime mutation은 distributed transaction이 아니며 service별로 독립적이다. 각 service replacement 실패는 해당 service의 직전 known-good image로 자동 restore하지만, 다른 service의 이미 성공한 deployment를 연쇄 rollback하지 않는다.
-
-State는 기존 canonical path를 유지한다.
-
-```text
-prod: /var/lib/stacks/projects/<project>/<service>/deploy/
-dev : /var/lib/stacks/projects/<project>/<service>/dev/deploy/
-```
+When the trusted deployment controller is implemented, the same operator surface can hand the verified revision/artifact to that controller using short-lived, narrowly scoped authority.
 
 ## Migration engines
 

@@ -120,16 +120,11 @@ jobs:
 
           development_services="$(jq -c --argjson affected "$AFFECTED_SERVICES" '[.[] | select(.name as $name | ($affected | index($name))) | select(.manual != true) | .name]' <<<"$SERVICES_JSON")"
 
+          # Repository runners are verification-only. Artifact publication and
+          # host runtime mutation remain disabled until the trusted deployment
+          # controller is available.
           publish_required=false
           deploy_development_required=false
-          if [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            if [[ "$image_required" == "true" ]]; then
-              publish_required=true
-              if [[ "$environment" == "dev" && "$(jq 'length' <<<"$development_services")" -gt 0 ]]; then
-                deploy_development_required=true
-              fi
-            fi
-          fi
 
           if [[ "$CI_TARGETS" == "[]" ]]; then ci_required=false; else ci_required=true; fi
           if [[ "$HAS_CHANGES" == "true" ]]; then security_required=true; else security_required=false; fi
