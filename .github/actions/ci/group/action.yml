@@ -58,7 +58,7 @@ runs:
         profile: ${{ inputs.profile }}
 
     - name: Migration CI
-      uses: Mooner510/workflows/.github/actions/ci/migration@1472bb45cca916cf0b138fb6e0de01c099f4704f
+      uses: Mooner510/workflows/.github/actions/ci/migration@aec67007556dfa1ec112ac635baf6904f18f069a
       with:
         components: ${{ inputs.components }}
 
