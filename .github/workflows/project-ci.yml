@@ -73,11 +73,11 @@ jobs:
 
       - name: Load canonical project contract
         id: contract
-        uses: Mooner510/workflows/.github/actions/config/load@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
+        uses: Mooner510/workflows/.github/actions/config/load@v1
 
       - name: Detect affected components and services
         id: detect
-        uses: Mooner510/workflows/.github/actions/ci/detect@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
+        uses: Mooner510/workflows/.github/actions/ci/detect@v1
         with:
           components: ${{ steps.contract.outputs.components }}
           force_all: ${{ inputs.force_all }}
@@ -147,7 +147,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Run security verification
-        uses: Mooner510/workflows/.github/actions/ci/security@d7a376d1a2cd066084ddaf2a8ae52ad204097243
+        uses: Mooner510/workflows/.github/actions/ci/security@v1
         with:
           components: ${{ needs.contract.outputs.affected_components }}
           git_log_opts: ${{ needs.contract.outputs.git_log_opts }}
@@ -171,7 +171,7 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Run component group CI
-        uses: Mooner510/workflows/.github/actions/ci/group@37b9dab6a521173c148cf6a85703e5438a546a6a
+        uses: Mooner510/workflows/.github/actions/ci/group@v1
         with:
           components: ${{ toJSON(fromJSON(needs.contract.outputs.ci_groups)[matrix.target].components) }}
           type: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].type }}
@@ -213,7 +213,7 @@ jobs:
           echo "service=$service" >>"$GITHUB_OUTPUT"
 
       - name: Build and scan temporary image
-        uses: Mooner510/workflows/.github/actions/cd/docker/prepare@1472bb45cca916cf0b138fb6e0de01c099f4704f
+        uses: Mooner510/workflows/.github/actions/cd/docker/prepare@v1
         with:
           service: ${{ steps.service.outputs.service }}
           environment: ${{ needs.contract.outputs.image_environment }}
@@ -290,7 +290,7 @@ jobs:
           echo "service=$service" >>"$GITHUB_OUTPUT"
 
       - name: Deploy verified development service
-        uses: Mooner510/workflows/.github/actions/cd/service@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
+        uses: Mooner510/workflows/.github/actions/cd/service@v1
         with:
           service: ${{ steps.service.outputs.service }}
           components: ${{ needs.contract.outputs.components }}
