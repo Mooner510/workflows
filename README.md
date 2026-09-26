@@ -6,6 +6,7 @@
 - stable consumer ref: `v1`
 - shared implementation 변경은 `master`에 반영한 같은 작업에서 `v1`을 동일 commit으로 이동한다.
 - consumer repository는 CI/CD 로직을 직접 구현하지 않는다.
+- central reusable workflow와 composite action 내부의 `Mooner510/workflows` 참조는 모두 `@v1`을 사용한다.
 
 ## Canonical entrypoints
 
