@@ -56,7 +56,7 @@ runs:
 
     - name: Goose migration CI
       if: steps.migration.outputs.has_goose == 'true'
-      uses: Mooner510/workflows/.github/actions/ci/migration/goose@2c61131329dd166ffbe29c8bab565653a33b09c2
+      uses: Mooner510/workflows/.github/actions/ci/migration/goose@v1
       with:
         components: ${{ steps.migration.outputs.goose }}
 
