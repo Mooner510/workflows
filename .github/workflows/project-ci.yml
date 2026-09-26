@@ -176,7 +176,7 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Run component group CI
-        uses: Mooner510/workflows/.github/actions/ci/group@6f7c55cf9c42ad74f28c60da2fb09853ca723ae7
+        uses: Mooner510/workflows/.github/actions/ci/group@37b9dab6a521173c148cf6a85703e5438a546a6a
         with:
           components: ${{ toJSON(fromJSON(needs.contract.outputs.ci_groups)[matrix.target].components) }}
           type: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].type }}
