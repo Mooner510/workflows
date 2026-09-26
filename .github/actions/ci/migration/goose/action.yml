@@ -14,7 +14,7 @@ runs:
   using: composite
   steps:
     - name: Set up isolated BuildKit
-      uses: Mooner510/workflows/.github/actions/ci/buildkit@feature/isolated-ci-build-plane
+      uses: Mooner510/workflows/.github/actions/ci/buildkit@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
 
     - name: Validate Goose SQL migrations
       shell: bash
@@ -184,5 +184,5 @@ runs:
         DOCKERFILE
 
           echo "==> Goose $goose_version: isolated disposable PostgreSQL $name"
-          buildctl --addr "$BUILDKIT_HOST" build             --frontend dockerfile.v0             --local "context=$context"             --local "dockerfile=$dockerfile_dir"             --opt filename=Dockerfile             --output type=cacheonly
+          buildctl --addr "$BUILDKIT_HOST" build             --frontend dockerfile.v0             --local "context=$context"             --local "dockerfile=$dockerfile_dir"             --opt filename=Dockerfile
         done < <(jq -c '.[]' <<<"$components")
