@@ -129,3 +129,43 @@ jobs:
           done < <(grep -RhoE 'Mooner510/workflows/[^[:space:]#]+@v[0-9]+' "$GITHUB_WORKSPACE/.github" | sort -u)
 
           (( invalid == 0 )) || exit 1
+
+      - name: Validate Gharp JIT runner policy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          invalid=0
+          workflows=(
+            "$GITHUB_WORKSPACE/.github/workflows/project-ci.yml"
+            "$GITHUB_WORKSPACE/.github/workflows/pipeline.yml"
+            "$GITHUB_WORKSPACE/.github/workflows/production.yml"
+            "$GITHUB_WORKSPACE/.github/workflows/go-format.yml"
+          )
+
+          for workflow in "${workflows[@]}"; do
+            relative_file="${workflow#"$GITHUB_WORKSPACE"/}"
+            [[ -f "$workflow" ]] || {
+              echo "::error file=$relative_file::Canonical reusable workflow is missing."
+              invalid=1
+              continue
+            }
+
+            mapfile -t assignments < <(awk '/^[[:space:]]*runs-on:/ { print NR ":" $0 }' "$workflow")
+            if (( ${#assignments[@]} == 0 )); then
+              echo "::error file=$relative_file::Canonical reusable workflow has no runner assignment."
+              invalid=1
+              continue
+            fi
+
+            for assignment in "${assignments[@]}"; do
+              line="${assignment#*:}"
+              if [[ "$line" != *"self-hosted"* || "$line" != *"linux"* || "$line" != *"gharp-"* ]]; then
+                echo "::error file=$relative_file::Every canonical reusable job must require self-hosted, linux, and a run-scoped gharp-* label: $line"
+                invalid=1
+              fi
+            done
+          done
+
+          (( invalid == 0 )) || exit 1
+
