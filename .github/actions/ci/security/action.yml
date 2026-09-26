@@ -218,7 +218,7 @@ runs:
             exit 1
           }
           echo "==> Semgrep: $target"
-          buildctl --addr "$BUILDKIT_HOST" build             --frontend dockerfile.v0             --local "context=$context"             --local "dockerfile=$dockerfile_dir"             --opt filename=Dockerfile             --opt "build-arg:TARGET=$target"             --opt "build-arg:SCAN_NONCE=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"             --output type=cacheonly
+          buildctl --addr "$BUILDKIT_HOST" build             --frontend dockerfile.v0             --local "context=$context"             --local "dockerfile=$dockerfile_dir"             --opt filename=Dockerfile             --opt "build-arg:TARGET=$target"             --opt "build-arg:SCAN_NONCE=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
         done <"$TARGET_FILE"
 
     - name: OSV dependency vulnerabilities
