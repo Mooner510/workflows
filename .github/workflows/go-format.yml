@@ -52,7 +52,7 @@ jobs:
 
       - name: Load canonical project contract
         id: contract
-        uses: Mooner510/workflows/.github/actions/config/load@feature/isolated-ci-build-plane
+        uses: Mooner510/workflows/.github/actions/config/load@v1
 
       - name: Set up Go for formatting
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
