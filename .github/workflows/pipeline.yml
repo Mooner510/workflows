@@ -84,7 +84,7 @@ jobs:
 
       - name: Detect affected components and services
         id: detect
-        uses: Mooner510/workflows/.github/actions/ci/detect@feature/isolated-ci-build-plane
+        uses: Mooner510/workflows/.github/actions/ci/detect@v1
         with:
           components: ${{ inputs.components }}
           force_all: ${{ inputs.force_all }}
@@ -98,13 +98,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Run security verification
-        uses: Mooner510/workflows/.github/actions/ci/security@feature/isolated-ci-build-plane
+        uses: Mooner510/workflows/.github/actions/ci/security@v1
         with:
           components: ${{ needs.detect.outputs.all_components }}
           git_log_opts: ${{ needs.detect.outputs.git_log_opts }}
 
   ci:
-    name: CI - ${{ matrix.target }}
+    name: CI
     needs: detect
     if: needs.detect.outputs.ci_targets != '[]'
     runs-on: [self-hosted, linux, "gharp-ci-${{ github.run_id }}-${{ github.run_attempt }}"]
@@ -122,7 +122,7 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Run component group CI
-        uses: Mooner510/workflows/.github/actions/ci/group@feature/isolated-ci-build-plane
+        uses: Mooner510/workflows/.github/actions/ci/group@v1
         with:
           components: ${{ toJSON(fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].components) }}
           type: ${{ fromJSON(needs.detect.outputs.ci_groups_by_target)[matrix.target].type }}
