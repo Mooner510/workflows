@@ -79,25 +79,25 @@ runs:
 
     - name: Install npm dependencies
       if: inputs.package-manager == 'npm'
-      uses: Mooner510/workflows/.github/actions/ci/node/npm@feature/isolated-ci-build-plane
+      uses: Mooner510/workflows/.github/actions/ci/node/npm@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
       with:
         components: ${{ inputs.components }}
 
     - name: Install pnpm dependencies
       if: inputs.package-manager == 'pnpm'
-      uses: Mooner510/workflows/.github/actions/ci/node/pnpm@feature/isolated-ci-build-plane
+      uses: Mooner510/workflows/.github/actions/ci/node/pnpm@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
       with:
         components: ${{ inputs.components }}
 
     - name: Install Yarn dependencies
       if: inputs.package-manager == 'yarn'
-      uses: Mooner510/workflows/.github/actions/ci/node/yarn@feature/isolated-ci-build-plane
+      uses: Mooner510/workflows/.github/actions/ci/node/yarn@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
       with:
         components: ${{ inputs.components }}
 
     - name: Install Bun dependencies
       if: inputs.package-manager == 'bun'
-      uses: Mooner510/workflows/.github/actions/ci/node/bun@feature/isolated-ci-build-plane
+      uses: Mooner510/workflows/.github/actions/ci/node/bun@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
       with:
         components: ${{ inputs.components }}
 

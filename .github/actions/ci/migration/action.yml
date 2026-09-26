@@ -56,7 +56,7 @@ runs:
 
     - name: Goose migration CI
       if: steps.migration.outputs.has_goose == 'true'
-      uses: Mooner510/workflows/.github/actions/ci/migration/goose@feature/isolated-ci-build-plane
+      uses: Mooner510/workflows/.github/actions/ci/migration/goose@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
       with:
         components: ${{ steps.migration.outputs.goose }}
 
