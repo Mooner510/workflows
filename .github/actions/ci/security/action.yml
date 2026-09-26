@@ -37,10 +37,10 @@ runs:
         ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
     - name: Set up isolated BuildKit
-      uses: Mooner510/workflows/.github/actions/ci/buildkit@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
+      uses: Mooner510/workflows/.github/actions/ci/buildkit@v1
 
     - name: Set up pinned security scanners
-      uses: Mooner510/workflows/.github/actions/ci/security-tools@d57afcd9d167b3ac6dd9b6851acbb5dec1b7475e
+      uses: Mooner510/workflows/.github/actions/ci/security-tools@v1
 
     - name: Resolve unique scan targets
       id: targets
