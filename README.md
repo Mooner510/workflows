@@ -11,7 +11,7 @@
 ## Canonical entrypoints
 
 ```text
-.github/workflows/project-ci.yml   # PR / dev / production CI + dev automatic deployment
+.github/workflows/project-ci.yml   # PR / dev / production verification CI
 .github/workflows/production.yml   # repository_dispatch production deploy / rollback
 .github/workflows/go-format.yml    # manual Go formatting + canonical CI redispatch
 ```
@@ -357,8 +357,8 @@ format/tidy
 
 따라서 Go Format commit도 일반 commit과 동일하게:
 
-- dev: full CI/security/image gate → automatic deploy
-- production branch: full CI/security/image gate → verified production image only
+- dev: full CI/security/image gate → verified revision only; host deployment remains disabled
+- production branch: full CI/security/image gate → verified revision/image only
 
 를 수행한다.
 
@@ -442,6 +442,8 @@ Consumer workflow에 별도 `run:` deployment/CI implementation을 추가하지 
 ## Runner
 
 Private personal/organization repositories는 모두 Gharp의 disposable repository-scoped JIT runner를 사용한다. 상주형 personal/organization self-hosted runner는 canonical execution plane이 아니다.
+
+Central validation은 `project-ci.yml`, compatibility `pipeline.yml`, `production.yml`, `go-format.yml`의 모든 job이 `self-hosted`, `linux`, run-scoped `gharp-*` label을 함께 요구하는지 검사한다.
 
 각 job은 generic `[self-hosted, linux]`만으로 배정하지 않고 run-scoped Gharp label을 함께 요구한다.
 
