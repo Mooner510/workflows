@@ -1,0 +1,176 @@
+name: Package trusted deployment artifact
+description: Package one verified OCI image plus canonical deployment metadata for the trusted Gharp controller.
+
+inputs:
+  service:
+    required: true
+    description: Canonical normalized service JSON.
+  components:
+    required: true
+    description: Canonical normalized components JSON.
+  environment:
+    required: true
+    description: prod or dev.
+  artifact-path:
+    required: true
+    description: OCI layout tar produced by the isolated BuildKit action.
+  manifest-digest:
+    required: true
+  config-digest:
+    required: true
+  exposed-port:
+    required: false
+    default: ''
+
+outputs:
+  bundle-path:
+    value: ${{ steps.package.outputs.bundle_path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Package immutable deployment bundle
+      id: package
+      shell: bash
+      env:
+        SERVICE_JSON: ${{ inputs.service }}
+        COMPONENTS_JSON: ${{ inputs.components }}
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+        OCI_ARCHIVE: ${{ inputs.artifact-path }}
+        MANIFEST_DIGEST: ${{ inputs.manifest-digest }}
+        CONFIG_DIGEST: ${{ inputs.config-digest }}
+        EXPOSED_PORT: ${{ inputs.exposed-port }}
+      run: |
+        set -euo pipefail
+
+        command -v jq >/dev/null
+        command -v sha256sum >/dev/null
+        command -v tar >/dev/null
+
+        case "$DEPLOY_ENVIRONMENT" in
+          prod|dev) ;;
+          *) echo "::error::environment must be prod or dev."; exit 1 ;;
+        esac
+
+        [[ -f "$OCI_ARCHIVE" ]] || {
+          echo "::error::OCI archive is missing: $OCI_ARCHIVE"
+          exit 1
+        }
+        [[ "$MANIFEST_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+          echo "::error::Invalid manifest digest."
+          exit 1
+        }
+        [[ "$CONFIG_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+          echo "::error::Invalid config digest."
+          exit 1
+        }
+
+        service="$(jq -r '.name' <<<"$SERVICE_JSON")"
+        component_name="$(jq -r '.component' <<<"$SERVICE_JSON")"
+        component="$(jq -c --arg name "$component_name" '.[] | select(.name == $name)' <<<"$COMPONENTS_JSON")"
+        [[ -n "$component" ]] || {
+          echo "::error::Service component '$component_name' was not found."
+          exit 1
+        }
+
+        repository_name="${GITHUB_REPOSITORY#*/}"
+        project="$(printf '%s' "$repository_name" | tr '[:upper:]' '[:lower:]')"
+        archive_digest="sha256:$(sha256sum "$OCI_ARCHIVE" | awk '{print $1}')"
+
+        component_path="$(jq -r '.path' <<<"$component")"
+        migrate="$(jq -r '.migrate // false' <<<"$SERVICE_JSON")"
+        migration_engine="$(jq -r '.migration_engine // "none"' <<<"$component")"
+        migration_path="$(jq -r '.migration_path // ""' <<<"$component")"
+        migration_schema="$(jq -r '.migration_schema // ""' <<<"$component")"
+        migration_config="$(jq -r '.migration_config // ""' <<<"$component")"
+        migration_package="$(jq -r '.migration_package // ""' <<<"$component")"
+        migration_package_manager="$(jq -r '.migration_package_manager // ""' <<<"$component")"
+        migration_build_tool="$(jq -r '.migration_build_tool // ""' <<<"$component")"
+        goose_version="$(jq -r '.goose_version // ""' <<<"$component")"
+
+        if [[ "$migrate" == "true" && "$migration_engine" == "goose" && -z "$migration_path" ]]; then
+          migration_path="db/migrations"
+        fi
+
+        bundle="$RUNNER_TEMP/gharp-deploy-$service"
+        rm -rf "$bundle"
+        mkdir -p "$bundle"
+        cp -- "$OCI_ARCHIVE" "$bundle/image.oci.tar"
+
+        source_digest=""
+        if [[ "$migrate" == "true" ]]; then
+          if [[ "$migration_engine" != "goose" ]]; then
+            echo "::notice::Executable migration engine '$migration_engine' is packaged without host source; trusted deployment remains fail-closed until an isolated migration sandbox exists."
+          else
+            workspace="$(realpath -e "$GITHUB_WORKSPACE")"
+            component_root="$(realpath -e "$workspace/$component_path")"
+            migration_root="$(realpath -e "$component_root/$migration_path")"
+            [[ "$component_root" == "$workspace" || "$component_root" == "$workspace/"* ]] || {
+              echo "::error::Component path escapes repository."
+              exit 1
+            }
+            [[ "$migration_root" == "$component_root" || "$migration_root" == "$component_root/"* ]] || {
+              echo "::error::Migration path escapes component."
+              exit 1
+            }
+            [[ -d "$migration_root" ]] || {
+              echo "::error::Goose migration directory is missing: $migration_path"
+              exit 1
+            }
+
+            source_stage="$RUNNER_TEMP/gharp-source-$service"
+            rm -rf "$source_stage"
+            mkdir -p "$source_stage/$component_path"
+
+            if [[ -f "$component_root/go.mod" ]]; then
+              cp -- "$component_root/go.mod" "$source_stage/$component_path/go.mod"
+            fi
+            mkdir -p "$source_stage/$component_path/$migration_path"
+            cp -a -- "$migration_root/." "$source_stage/$component_path/$migration_path/"
+
+            find "$source_stage" -type l -print -quit | grep -q . && {
+              echo "::error::Migration source bundle must not contain symlinks."
+              exit 1
+            }
+
+            tar -czf "$bundle/source.tar.gz" -C "$source_stage" .
+            source_digest="sha256:$(sha256sum "$bundle/source.tar.gz" | awk '{print $1}')"
+            rm -rf "$source_stage"
+          fi
+        fi
+
+        service_contract="$(
+          jq -cn             --arg name "$service"             --argjson manual "$(jq '.manual // false' <<<"$SERVICE_JSON")"             --argjson database "$(jq '.database // false' <<<"$SERVICE_JSON")"             --arg database_scope "$(jq -r '.database_scope // "project"' <<<"$SERVICE_JSON")"             --argjson migrate "$migrate"             --arg migration_engine "$migration_engine"             --arg component_path "$component_path"             --arg migration_path "$migration_path"             --arg migration_schema "$migration_schema"             --arg migration_config "$migration_config"             --arg migration_package "$migration_package"             --arg migration_package_manager "$migration_package_manager"             --arg migration_build_tool "$migration_build_tool"             --arg goose_version "$goose_version"             '{
+              name:$name,
+              manual:$manual,
+              database:$database,
+              database_scope:$database_scope,
+              migrate:$migrate,
+              migration_engine:$migration_engine,
+              component_path:$component_path,
+              migration_path:$migration_path,
+              migration_schema:$migration_schema,
+              migration_config:$migration_config,
+              migration_package:$migration_package,
+              migration_package_manager:$migration_package_manager,
+              migration_build_tool:$migration_build_tool,
+              goose_version:$goose_version
+            }'
+        )"
+
+        jq -n           --arg repository "$GITHUB_REPOSITORY"           --arg project "$project"           --arg service "$service"           --arg environment "$DEPLOY_ENVIRONMENT"           --arg revision "$GITHUB_SHA"           --argjson workflow_run_id "$GITHUB_RUN_ID"           --arg manifest_digest "$MANIFEST_DIGEST"           --arg config_digest "$CONFIG_DIGEST"           --arg archive_digest "$archive_digest"           --arg exposed_port "$EXPOSED_PORT"           --arg source_digest "$source_digest"           --argjson service_contract "$service_contract"           '{
+            repository:$repository,
+            project:$project,
+            service:$service,
+            environment:$environment,
+            revision:$revision,
+            workflow_run_id:$workflow_run_id,
+            manifest_digest:$manifest_digest,
+            config_digest:$config_digest,
+            archive_digest:$archive_digest,
+            exposed_port:$exposed_port,
+            source_digest:$source_digest,
+            service_contract:$service_contract
+          }' >"$bundle/metadata.json"
+
+        echo "bundle_path=$bundle" >>"$GITHUB_OUTPUT"

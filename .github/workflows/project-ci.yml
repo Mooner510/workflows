@@ -120,10 +120,13 @@ jobs:
 
           development_services="$(jq -c --argjson affected "$AFFECTED_SERVICES" '[.[] | select(.name as $name | ($affected | index($name))) | select(.manual != true) | .name]' <<<"$SERVICES_JSON")"
 
-          # Repository runners are verification-only. Artifact publication and
-          # host runtime mutation remain disabled until the trusted deployment
-          # controller is available.
           publish_required=false
+          if [[ "$EVENT_NAME" == "push" && -n "$environment" && "$image_required" == "true" ]]; then
+            publish_required=true
+          fi
+
+          # Host mutation is never performed by a repository runner.
+          # Successful push artifacts are consumed by the trusted Gharp controller.
           deploy_development_required=false
 
           if [[ "$CI_TARGETS" == "[]" ]]; then ci_required=false; else ci_required=true; fi
@@ -213,11 +216,35 @@ jobs:
           echo "service=$service" >>"$GITHUB_OUTPUT"
 
       - name: Build and scan temporary image
+        id: prepare
         uses: Mooner510/workflows/.github/actions/cd/docker/prepare@v1
         with:
           service: ${{ steps.service.outputs.service }}
           environment: ${{ needs.contract.outputs.image_environment }}
           private-repo-token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
+
+      - name: Package trusted deployment artifact
+        if: needs.contract.outputs.publish_required == 'true'
+        id: package
+        uses: Mooner510/workflows/.github/actions/cd/artifact@v1
+        with:
+          service: ${{ steps.service.outputs.service }}
+          components: ${{ needs.contract.outputs.components }}
+          environment: ${{ needs.contract.outputs.image_environment }}
+          artifact-path: ${{ steps.prepare.outputs.artifact-path }}
+          manifest-digest: ${{ steps.prepare.outputs.manifest-digest }}
+          config-digest: ${{ steps.prepare.outputs.config-digest }}
+          exposed-port: ${{ steps.prepare.outputs.exposed-port }}
+
+      - name: Publish trusted deployment artifact
+        if: needs.contract.outputs.publish_required == 'true'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: gharp-deploy-${{ matrix.service }}
+          path: ${{ steps.package.outputs.bundle-path }}
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
 
   verify:
     name: Verification and publication
@@ -251,13 +278,10 @@ jobs:
             exit 1
           fi
 
-      - name: Require trusted artifact controller for publication
+      - name: Confirm trusted artifact publication
         if: needs.contract.outputs.publish_required == 'true'
         shell: bash
-        run: |
-          echo "::error::Artifact publication/deployment is intentionally disabled on repository runners."
-          echo "::error::Promote the trusted deployment controller before enabling push-based publication."
-          exit 1
+        run: echo "Verified deployment artifacts were published for trusted-controller consumption."
 
   deploy-development:
     name: Development deployment

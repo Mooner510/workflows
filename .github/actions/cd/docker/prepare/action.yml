@@ -20,6 +20,8 @@ outputs:
     value: ${{ steps.build.outputs.image_id }}
   manifest-digest:
     value: ${{ steps.build.outputs.manifest_digest }}
+  config-digest:
+    value: ${{ steps.build.outputs.config_digest }}
   exposed-port:
     value: ${{ steps.build.outputs.exposed_port }}
   artifact-path:
@@ -102,6 +104,9 @@ runs:
           --local "context=$workspace"
           --local "dockerfile=$service_root"
           --opt filename=Dockerfile
+          --opt "label:org.opencontainers.image.revision=$GITHUB_SHA"
+          --opt "label:kr.mooner510.stacks.project=$project"
+          --opt "label:kr.mooner510.stacks.service=$service"
           --metadata-file "$metadata"
           --output "type=oci,dest=$archive,name=$project/$service:$GITHUB_SHA"
         )
@@ -180,6 +185,7 @@ runs:
           echo "image=$image"
           echo "image_id=$config_digest"
           echo "manifest_digest=$manifest_digest"
+          echo "config_digest=$config_digest"
           echo "exposed_port=$exposed_port"
           echo "artifact_path=$archive"
         } >>"$GITHUB_OUTPUT"
