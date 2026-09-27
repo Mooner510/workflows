@@ -38,6 +38,7 @@ jobs:
       ci_targets: ${{ steps.detect.outputs.ci_targets }}
       ci_groups: ${{ steps.detect.outputs.ci_groups_by_target }}
       affected_services: ${{ steps.detect.outputs.affected_services }}
+      image_services: ${{ steps.mode.outputs.image_services }}
       development_services: ${{ steps.mode.outputs.development_services }}
       git_log_opts: ${{ steps.detect.outputs.git_log_opts }}
       image_environment: ${{ steps.mode.outputs.environment }}
@@ -113,8 +114,13 @@ jobs:
             fi
           fi
 
+          image_services="$AFFECTED_SERVICES"
+          if [[ "$EVENT_NAME" == "push" && "$environment" == "prod" ]]; then
+            image_services="$(jq -c '[.[].name]' <<<"$SERVICES_JSON")"
+          fi
+
           image_required=false
-          if [[ -n "$environment" && "$(jq 'length' <<<"$AFFECTED_SERVICES")" -gt 0 ]]; then
+          if [[ -n "$environment" && "$(jq 'length' <<<"$image_services")" -gt 0 ]]; then
             image_required=true
           fi
 
@@ -135,6 +141,7 @@ jobs:
           {
             echo "environment=$environment"
             echo "image_required=$image_required"
+            echo "image_services=$image_services"
             echo "publish_required=$publish_required"
             echo "development_services=$development_services"
             echo "deploy_development_required=$deploy_development_required"
@@ -194,7 +201,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: ${{ fromJSON(needs.contract.outputs.affected_services) }}
+        service: ${{ fromJSON(needs.contract.outputs.image_services) }}
 
     steps:
       - name: Checkout caller repository
