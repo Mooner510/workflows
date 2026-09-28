@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   contract:
-    name: Contract and changes
+    name: Contract
     runs-on: [self-hosted, linux, "gharp-contract-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 10
     outputs:
@@ -153,7 +153,7 @@ jobs:
           git_log_opts: ${{ needs.contract.outputs.git_log_opts }}
 
   ci:
-    name: CI
+    name: ${{ matrix.target }}
     needs: contract
     if: needs.contract.outputs.ci_required == 'true'
     runs-on: [self-hosted, linux, "gharp-ci-${{ github.run_id }}-${{ github.run_attempt }}"]
@@ -183,7 +183,7 @@ jobs:
           private-repo-token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
 
   images:
-    name: Docker image verification
+    name: Docker (${{ matrix.service }})
     needs: contract
     if: needs.contract.outputs.image_required == 'true'
     runs-on: [self-hosted, linux, "gharp-image-${{ github.run_id }}-${{ github.run_attempt }}"]
@@ -244,7 +244,7 @@ jobs:
           compression-level: 0
 
   verify:
-    name: Verification and publication
+    name: Verify
     needs: [contract, security, ci, images]
     if: always() && needs.contract.result == 'success'
     runs-on: [self-hosted, linux, "gharp-verify-${{ github.run_id }}-${{ github.run_attempt }}"]
