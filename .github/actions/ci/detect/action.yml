@@ -62,6 +62,15 @@ runs:
 
         workspace="$(realpath "$GITHUB_WORKSPACE")"
 
+        require_local_commit() {
+          local sha="$1"
+          local label="$2"
+          if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+            echo "::error::${label} commit '${sha}' is not available in the checkout. CI uses credential-free fetch-depth: 0 checkout and will not fetch arbitrary commits after credentials are removed."
+            exit 1
+          fi
+        }
+
         validate_relative_path() {
           local value="$1"
           local label="$2"
@@ -211,8 +220,8 @@ runs:
             echo "::error::diff_base must be a full 40-character commit SHA."
             exit 1
           }
-          git cat-file -e "${DIFF_BASE}^{commit}" 2>/dev/null || git fetch --no-tags origin "$DIFF_BASE"
-          git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null || git fetch --no-tags origin "$HEAD_SHA"
+          require_local_commit "$DIFF_BASE" "diff_base"
+          require_local_commit "$HEAD_SHA" "HEAD_SHA"
           git merge-base --is-ancestor "$DIFF_BASE" "$HEAD_SHA" || {
             echo "::error::diff_base must be an ancestor of the current revision."
             exit 1
@@ -222,13 +231,13 @@ runs:
         elif [[ "$EVENT_NAME" == "pull_request" ]]; then
           base_sha="$PR_BASE_SHA"
           head_sha="$HEAD_SHA"
-          git cat-file -e "${base_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$base_sha"
-          git cat-file -e "${head_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$head_sha"
+          require_local_commit "$base_sha" "pull request base"
+          require_local_commit "$head_sha" "pull request head"
           merge_base="$(git merge-base "$base_sha" "$head_sha")"
           git diff --name-only --no-renames --diff-filter=ACMRD "$merge_base" "$head_sha" >"$changed_file_list"
           git_log_opts="${merge_base}..${head_sha}"
         elif [[ "$EVENT_NAME" == "push" ]] && [[ -n "${PUSH_BEFORE_SHA:-}" ]] && [[ ! "$PUSH_BEFORE_SHA" =~ ^0+$ ]]; then
-          git cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2>/dev/null || git fetch --no-tags origin "$PUSH_BEFORE_SHA"
+          require_local_commit "$PUSH_BEFORE_SHA" "push before"
           git diff --name-only --no-renames --diff-filter=ACMRD "$PUSH_BEFORE_SHA" "$HEAD_SHA" >"$changed_file_list"
           git_log_opts="${PUSH_BEFORE_SHA}..${HEAD_SHA}"
         else
