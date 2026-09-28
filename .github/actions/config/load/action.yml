@@ -1,5 +1,5 @@
 name: Load stacks project contract
-description: Load and validate the single canonical repository CI/CD declaration at .github/stacks.json.
+description: Load and validate the repository CI/CD declaration from .github/stacks.yml, .github/stacks.yaml, or .github/stacks.json.
 
 outputs:
   components:
@@ -18,13 +18,74 @@ runs:
       run: |
         set -euo pipefail
 
-        command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required on the runner."; exit 1; }
+        command -v curl >/dev/null || { echo "::error::curl is required on the runner."; exit 1; }
+        command -v sha256sum >/dev/null || { echo "::error::sha256sum is required on the runner."; exit 1; }
 
-        contract="$GITHUB_WORKSPACE/.github/stacks.json"
-        [[ -f "$contract" ]] || {
-          echo "::error::Canonical project contract is missing: .github/stacks.json"
+        candidates=(
+          "$GITHUB_WORKSPACE/.github/stacks.yml"
+          "$GITHUB_WORKSPACE/.github/stacks.yaml"
+          "$GITHUB_WORKSPACE/.github/stacks.json"
+        )
+        contracts=()
+        for candidate in "${candidates[@]}"; do
+          [[ -f "$candidate" ]] && contracts+=("$candidate")
+        done
+
+        if (( ${#contracts[@]} == 0 )); then
+          echo "::error::Project contract is missing. Preferred path: .github/stacks.yml; compatible paths: .github/stacks.yaml, .github/stacks.json."
           exit 1
-        }
+        fi
+        if (( ${#contracts[@]} > 1 )); then
+          printf '::error::Multiple stacks contracts found; keep exactly one:' >&2
+          printf ' %s' "${contracts[@]#"$GITHUB_WORKSPACE"/}" >&2
+          printf '\n' >&2
+          exit 1
+        fi
+
+        contract="${contracts[0]}"
+        contract_json="$RUNNER_TEMP/stacks-contract.json"
+
+        case "$contract" in
+          *.json)
+            jq -e '.' "$contract" >"$contract_json" || {
+              echo "::error::Invalid JSON project contract: ${contract#"$GITHUB_WORKSPACE"/}"
+              exit 1
+            }
+            ;;
+          *.yml|*.yaml)
+            version="v4.53.6"
+            arch="$(uname -m)"
+            case "$arch" in
+              x86_64|amd64)
+                asset="yq_linux_amd64"
+                checksum="c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385"
+                ;;
+              aarch64|arm64)
+                asset="yq_linux_arm64"
+                checksum="88a1016bc1d657375a35864e4f44b6f333df8ff97b559f51bba0adcb2169df09"
+                ;;
+              *)
+                echo "::error::Unsupported runner architecture for yq: $arch"
+                exit 1
+                ;;
+            esac
+            tool_root="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/yq/$version"
+            yq="$tool_root/yq"
+            if [[ ! -x "$yq" ]]; then
+              mkdir -p "$tool_root"
+              tmp="$(mktemp "$RUNNER_TEMP/yq-XXXXXX")"
+              trap 'rm -f "$tmp"' EXIT
+              curl -fsSL "https://github.com/mikefarah/yq/releases/download/$version/$asset" -o "$tmp"
+              printf '%s  %s\n' "$checksum" "$tmp" | sha256sum -c -
+              install -m 0755 "$tmp" "$yq"
+            fi
+            "$yq" -o=json '.' "$contract" >"$contract_json" || {
+              echo "::error::Invalid YAML project contract: ${contract#"$GITHUB_WORKSPACE"/}"
+              exit 1
+            }
+            ;;
+        esac
 
         jq -e '
           type == "object"
@@ -33,14 +94,14 @@ runs:
           and (.components | type == "array" and length > 0)
           and ((.services // []) | type == "array")
           and ((.go_private_patterns == null) or (.go_private_patterns|type)=="string")
-        ' "$contract" >/dev/null || {
-          echo "::error::.github/stacks.json must be a version 1 object containing only version, components, and services."
+        ' "$contract_json" >/dev/null || {
+          echo "::error::Stacks contract must be a version 1 object containing only version, components, services, and optional go_private_patterns."
           exit 1
         }
 
-        components="$(jq -c '.components' "$contract")"
-        services="$(jq -c '.services // []' "$contract")"
-        go_private_patterns="$(jq -r '.go_private_patterns // ""' "$contract")"
+        components="$(jq -c '.components' "$contract_json")"
+        services="$(jq -c '.services // []' "$contract_json")"
+        go_private_patterns="$(jq -r '.go_private_patterns // ""' "$contract_json")"
 
         duplicate_components="$(jq -r 'group_by(.name)[] | select(length > 1) | .[0].name // empty' <<<"$components")"
         [[ -z "$duplicate_components" ]] || {
