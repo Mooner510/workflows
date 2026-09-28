@@ -24,13 +24,13 @@ Consumer는 위 reusable workflow만 호출한다. `.github/actions/**`는 centr
 
 ## One repository declaration
 
-모든 project-specific CI/CD metadata의 유일한 source는 고정 경로다.
+모든 project-specific CI/CD metadata의 기본 canonical source는 다음 경로다.
 
 ```text
-.github/stacks.json
+.github/stacks.yml
 ```
 
-경로 자체는 변경할 수 없다. CI와 production deployment 모두 실행 중인 exact revision의 이 파일을 읽는다.
+호환 경로로 `.github/stacks.yaml`, `.github/stacks.json`도 지원한다. 세 파일 중 정확히 하나만 존재해야 하며 둘 이상 존재하면 CI는 fail-closed한다. 새 project와 기존 project의 다음 contract 정리는 `.github/stacks.yml`을 기본값으로 사용한다. CI와 production deployment 모두 실행 중인 exact revision의 선택된 contract를 읽는다.
 
 예:
 
@@ -196,7 +196,7 @@ Routable image의 HEALTHCHECK가 없거나, health status가 `unhealthy`이거�
 `project-ci.yml`이 다음 전체 orchestration을 소유한다.
 
 ```text
-Load .github/stacks.json
+Load .github/stacks.yml
 → Detect affected components/services
 ├─ Security
 ├─ Language / migration CI
@@ -255,7 +255,7 @@ Java/Kotlin:
 
 Migration validation은 configured migration source가 affected일 때 disposable PostgreSQL에서 수행한다. Production DB를 CI validation에 사용하지 않는다.
 
-Explicit maintenance dispatch의 `diff_base`는 full 40-character ancestor SHA만 허용하며 실제 `diff_base..HEAD` change detection에 사용한다. `.github/stacks.json`이 변경되면 contract 자체가 달라졌으므로 모든 declared component/service를 affected 처리한다.
+Explicit maintenance dispatch의 `diff_base`는 full 40-character ancestor SHA만 허용하며 실제 `diff_base..HEAD` change detection에 사용한다. `.github/stacks.yml`이 변경되면 contract 자체가 달라졌으므로 모든 declared component/service를 affected 처리한다.
 
 Public/fork/untrusted pull request는 self-hosted runner에서 checkout/build하지 않는다. Canonical CI의 최초 contract job과 compatibility pipeline detector가 caller repository ownership을 확인한 뒤에만 trusted source code를 실행한다.
 
