@@ -17,7 +17,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: go-format-${{ github.repository }}-${{ github.ref_name }}
@@ -25,7 +24,7 @@ concurrency:
 
 jobs:
   format:
-    name: Format, push, and verify Go
+    name: Format and push Go
     if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, linux, "gharp-format-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 45
@@ -215,7 +214,6 @@ jobs:
           echo "changed_count=$changed_count" >>"$GITHUB_OUTPUT"
 
       - name: Commit and push Go maintenance
-        id: push
         if: steps.format.outputs.changed == 'true'
         shell: bash
         env:
@@ -227,47 +225,12 @@ jobs:
 
           git config user.name "$COMMITTER_NAME"
           git config user.email "$COMMITTER_EMAIL"
-          diff_base="$(git rev-parse HEAD)"
           git commit -m "style: format and tidy Go"
           commit_sha="$(git rev-parse HEAD)"
 
           git push origin "HEAD:refs/heads/$TARGET_BRANCH"
 
-          {
-            echo "commit_sha=$commit_sha"
-            echo "diff_base=$diff_base"
-          } >>"$GITHUB_OUTPUT"
           echo "Pushed Go maintenance commit $commit_sha to $TARGET_BRANCH."
-
-      - name: Dispatch canonical caller CI
-        if: steps.format.outputs.changed == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_BRANCH: ${{ github.ref_name }}
-          DIFF_BASE: ${{ steps.push.outputs.diff_base }}
-        run: |
-          set -euo pipefail
-          command -v curl >/dev/null || { echo "::error::curl is required."; exit 1; }
-          command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
-
-          payload="$(jq -cn --arg ref "$TARGET_BRANCH" --arg diff_base "$DIFF_BASE" '{ref:$ref,inputs:{diff_base:$diff_base}}')"
-          response="$(mktemp)"
-          trap 'rm -f "$response"' EXIT
-          code="$(curl -sS -o "$response" -w '%{http_code}' \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/dispatches" \
-            -d "$payload")"
-          [[ "$code" == "204" ]] || {
-            cat "$response" >&2
-            echo "::error::Failed to dispatch canonical caller CI (HTTP $code)."
-            exit 1
-          }
-
-          echo "Canonical CI dispatched for $TARGET_BRANCH with diff_base=$DIFF_BASE."
           {
             echo "### Go Format & Tidy"
             echo
@@ -276,6 +239,6 @@ jobs:
             echo "- Files scanned: \`${{ steps.format.outputs.files_scanned }}\`"
             echo "- Files changed: \`${{ steps.format.outputs.changed_count }}\`"
             echo "- Modules tidied: \`${{ steps.format.outputs.modules_tidied }}\`"
-            echo "- Commit: \`${{ steps.push.outputs.commit_sha }}\`"
-            echo "- Canonical CI: dispatched"
+            echo "- Commit: \`$commit_sha\`"
+            echo "- Canonical CI: not explicitly dispatched"
           } >>"$GITHUB_STEP_SUMMARY"
