@@ -39,12 +39,10 @@ jobs:
       ci_groups: ${{ steps.detect.outputs.ci_groups_by_target }}
       affected_services: ${{ steps.detect.outputs.affected_services }}
       image_services: ${{ steps.mode.outputs.image_services }}
-      development_services: ${{ steps.mode.outputs.development_services }}
       git_log_opts: ${{ steps.detect.outputs.git_log_opts }}
       image_environment: ${{ steps.mode.outputs.environment }}
       image_required: ${{ steps.mode.outputs.image_required }}
       publish_required: ${{ steps.mode.outputs.publish_required }}
-      deploy_development_required: ${{ steps.mode.outputs.deploy_development_required }}
       ci_required: ${{ steps.mode.outputs.ci_required }}
       security_required: ${{ steps.mode.outputs.security_required }}
 
@@ -124,16 +122,10 @@ jobs:
             image_required=true
           fi
 
-          development_services="$(jq -c --argjson affected "$AFFECTED_SERVICES" '[.[] | select(.name as $name | ($affected | index($name))) | select(.manual != true) | .name]' <<<"$SERVICES_JSON")"
-
           publish_required=false
           if [[ "$EVENT_NAME" == "push" && -n "$environment" && "$image_required" == "true" ]]; then
             publish_required=true
           fi
-
-          # Host mutation is never performed by a repository runner.
-          # Successful push artifacts are consumed by the trusted Gharp controller.
-          deploy_development_required=false
 
           if [[ "$CI_TARGETS" == "[]" ]]; then ci_required=false; else ci_required=true; fi
           if [[ "$HAS_CHANGES" == "true" ]]; then security_required=true; else security_required=false; fi
@@ -143,8 +135,6 @@ jobs:
             echo "image_required=$image_required"
             echo "image_services=$image_services"
             echo "publish_required=$publish_required"
-            echo "development_services=$development_services"
-            echo "deploy_development_required=$deploy_development_required"
             echo "ci_required=$ci_required"
             echo "security_required=$security_required"
           } >>"$GITHUB_OUTPUT"
@@ -290,40 +280,3 @@ jobs:
         shell: bash
         run: echo "Verified deployment artifacts were published for trusted-controller consumption."
 
-  deploy-development:
-    name: Development deployment
-    needs: [contract, verify]
-    if: needs.verify.result == 'success' && needs.contract.outputs.deploy_development_required == 'true'
-    runs-on: [self-hosted, linux, "gharp-deploy-${{ github.run_id }}-${{ github.run_attempt }}"]
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        service: ${{ fromJSON(needs.contract.outputs.development_services) }}
-
-    steps:
-      - name: Checkout exact verified revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ github.sha }}
-
-      - name: Select service contract
-        id: service
-        shell: bash
-        env:
-          SERVICES_JSON: ${{ needs.contract.outputs.services }}
-          SERVICE_NAME: ${{ matrix.service }}
-        run: |
-          set -euo pipefail
-          service="$(jq -c --arg name "$SERVICE_NAME" '.[] | select(.name == $name)' <<<"$SERVICES_JSON")"
-          [[ -n "$service" ]] || { echo "::error::Service '$SERVICE_NAME' is not declared."; exit 1; }
-          echo "service=$service" >>"$GITHUB_OUTPUT"
-
-      - name: Deploy verified development service
-        uses: Mooner510/workflows/.github/actions/cd/service@v1
-        with:
-          service: ${{ steps.service.outputs.service }}
-          components: ${{ needs.contract.outputs.components }}
-          environment: dev
-          operation: deploy
