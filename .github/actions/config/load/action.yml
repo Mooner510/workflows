@@ -46,8 +46,10 @@ runs:
         contract="${contracts[0]}"
         contract_json="$RUNNER_TEMP/stacks-contract.json"
 
+        legacy_json=false
         case "$contract" in
           *.json)
+            legacy_json=true
             jq -e '.' "$contract" >"$contract_json" || {
               echo "::error::Invalid JSON project contract: ${contract#"$GITHUB_WORKSPACE"/}"
               exit 1
@@ -201,6 +203,11 @@ runs:
             exit 1
           }
 
+          if [[ "$legacy_json" != "true" ]] && ! jq -e 'has("expose") and ((.expose|type)=="boolean")' <<<"$service" >/dev/null; then
+            echo "::error::Canonical YAML service '$name' must explicitly set expose: true or expose: false."
+            exit 1
+          fi
+
           while IFS= read -r watch; do safe_path "$watch" "Service '$name' watch"; done < <(jq -r '.watch // [] | .[]' <<<"$service")
 
           migrate="$(jq -r '.migrate // false' <<<"$service")"
@@ -219,8 +226,14 @@ runs:
           fi
 
           manual="$(jq -r '.manual // false' <<<"$service")"
-          expose="$(jq -r '.expose // false' <<<"$service")"
-          normalized="$(jq -c             --argjson database "$database"             --arg database_scope "$database_scope"             --argjson migrate "$migrate"             --argjson manual "$manual"             --argjson expose "$expose"             '. + {database:$database,database_scope:$database_scope,migrate:$migrate,manual:$manual,expose:$expose,build_args:(.build_args // []),watch:(.watch // [])}' <<<"$service")"
+          expose_present="$(jq -r 'has("expose") and ((.expose|type)=="boolean")' <<<"$service")"
+          normalized="$(jq -c             --argjson database "$database"             --arg database_scope "$database_scope"             --argjson migrate "$migrate"             --argjson manual "$manual"             '. + {database:$database,database_scope:$database_scope,migrate:$migrate,manual:$manual,build_args:(.build_args // []),watch:(.watch // [])}' <<<"$service")"
+          if [[ "$expose_present" == "true" ]]; then
+            expose="$(jq -c '.expose' <<<"$service")"
+            normalized="$(jq -c --argjson expose "$expose" '. + {expose:$expose}' <<<"$normalized")"
+          else
+            normalized="$(jq -c 'del(.expose)' <<<"$normalized")"
+          fi
           normalized_services="$(jq -c --argjson item "$normalized" '. + [$item]' <<<"$normalized_services")"
         done < <(jq -c '.[]' <<<"$services")
 

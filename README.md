@@ -30,36 +30,31 @@ Consumer는 위 reusable workflow만 호출한다. `.github/actions/**`는 centr
 .github/stacks.yml
 ```
 
-호환 경로로 `.github/stacks.yaml`, `.github/stacks.json`도 지원한다. 세 파일 중 정확히 하나만 존재해야 하며 둘 이상 존재하면 CI는 fail-closed한다. 새 project와 기존 project의 다음 contract 정리는 `.github/stacks.yml`을 기본값으로 사용한다. CI와 production deployment 모두 실행 중인 exact revision의 선택된 contract를 읽는다.
+`.github/stacks.yaml`은 YAML 호환 alias로 지원하고, 기존 `.github/stacks.json`은 legacy contract로 계속 지원한다. 세 파일 중 정확히 하나만 존재해야 하며 둘 이상 존재하면 CI는 fail-closed한다. 새 project와 기존 project의 다음 contract 정리는 `.github/stacks.yml`을 기본값으로 사용한다. CI와 production deployment 모두 실행 중인 exact revision의 선택된 contract를 읽는다.
 
 예:
 
-```json
-{
-  "version": 1,
-  "go_private_patterns": "github.com/example/*",
-  "components": [
-    {
-      "name": "api",
-      "type": "go",
-      "path": "services/api",
-      "watch": ["services/shared"],
-      "migration_engine": "goose",
-      "migration_path": "db/migrations"
-    }
-  ],
-  "services": [
-    {
-      "name": "api",
-      "path": "services/api",
-      "component": "api",
-      "database": true,
-      "database_scope": "service",
-      "migrate": true,
-      "build_args": ["PUBLIC_ORIGIN"]
-    }
-  ]
-}
+```yaml
+version: 1
+go_private_patterns: github.com/example/*
+components:
+  - name: api
+    type: go
+    path: services/api
+    watch:
+      - services/shared
+    migration_engine: goose
+    migration_path: db/migrations
+services:
+  - name: api
+    path: services/api
+    component: api
+    database: true
+    database_scope: service
+    migrate: true
+    expose: true
+    build_args:
+      - PUBLIC_ORIGIN
 ```
 
 ### Component metadata
@@ -116,6 +111,7 @@ database_scope
 migrate
 build_args
 manual
+expose
 ```
 
 - `component`: 해당 service의 language/migration contract를 소유하는 component.
@@ -124,7 +120,7 @@ manual
 - `database_scope`: `project`(default) 또는 `service`. `project`는 기존 `/opt/stacks/projects/<project>/db[.dev].env`, `service`는 `/opt/stacks/projects/<project>/<service>/db[.dev].env`를 사용한다. 기존 consumer 호환성을 위해 default는 `project`다.
 - `migrate`: referenced component의 migration engine을 deploy 시 실행. `true`이면 database도 자동으로 필요하다. Migration credential scope는 같은 service의 `database_scope`를 따른다.
 - `build_args`: build에 필요한 non-secret environment variable 이름. 값은 선택 environment의 canonical project/service `deploy.env`에서만 resolve한다.
-- `manual`: `true`이면 CI image build/scan에는 포함하지만 dev automatic deployment와 service 미지정 production 전체 배포에서는 제외한다. Explicit service dispatch만 허용한다.
+- `manual`: `true`이면 CI image build/scan에는 포함하지만 dev automatic deployment와 service 미지정 production 전체 배포에서는 제외한다. Explicit service dispatch만 허용한다.\n- `expose`: public Caddy routing intent. Canonical YAML contract에서는 `true` 또는 `false`를 반드시 명시한다. Legacy `.github/stacks.json`에서 이 field가 없으면 기존 규칙과 호환되도록 1 TCP `EXPOSE` image를 externally routable service로 해석한다.
 
 Private dependency가 Docker build 중 필요한 경우 caller의 optional `CI_PRIVATE_REPO_TOKEN`을 central image builder가 BuildKit secret `CI_PRIVATE_REPO_TOKEN`으로만 전달한다. Token은 build arg, image layer, project metadata에 저장하지 않는다. Dockerfile이 해당 secret을 사용하지 않으면 아무 효과가 없다.
 
@@ -164,23 +160,22 @@ build context = repository root
 
 ### Port
 
-Consumer는 port를 선언하지 않는다.
-
-Built image의 Docker metadata가 source of truth다.
+Consumer는 port 번호를 선언하지 않는다. Built image의 Docker metadata가 internal service port의 source of truth이고, public routing intent는 service의 `expose` field가 별도로 소유한다.
 
 ```text
-0 exposed TCP ports -> non-routable/process service
-1 exposed TCP port  -> canonical routable service port
+0 exposed TCP ports -> process/non-network service
+1 exposed TCP port  -> canonical internal service port
 2+ exposed ports    -> CI failure
 UDP EXPOSE          -> CI failure
 ```
 
 각 container는 독립 network namespace를 가지므로 여러 service가 같은 internal port를 사용해도 충돌하지 않는다. Canonical runtime은 host port를 publish하지 않는다.
 
-한 TCP port가 존재하면 central runtime이 `caddy-shared`에 container를 연결하고 다음 label을 자동 생성한다.
+`expose: true`는 정확히 1개의 TCP `EXPOSE`를 요구하며 container를 `caddy-shared`에 연결한다. `expose: false`이면 TCP port가 있어도 project network 내부 서비스로 유지한다. Legacy `.github/stacks.json`에 `expose`가 없으면 기존 호환 규칙으로 1 TCP `EXPOSE`를 public routing intent로 해석한다.
 
 ```text
 kr.mooner510.stacks.container-port=<EXPOSE port>
+kr.mooner510.stacks.expose=true   # expose:true only
 ```
 
 ### Readiness

@@ -140,10 +140,9 @@ runs:
         fi
 
         service_contract="$(
-          jq -cn             --arg name "$service"             --argjson manual "$(jq '.manual // false' <<<"$SERVICE_JSON")"             --argjson expose "$(jq '.expose // false' <<<"$SERVICE_JSON")"             --argjson database "$(jq '.database // false' <<<"$SERVICE_JSON")"             --arg database_scope "$(jq -r '.database_scope // "project"' <<<"$SERVICE_JSON")"             --argjson migrate "$migrate"             --arg migration_engine "$migration_engine"             --arg component_path "$component_path"             --arg migration_path "$migration_path"             --arg migration_schema "$migration_schema"             --arg migration_config "$migration_config"             --arg migration_package "$migration_package"             --arg migration_package_manager "$migration_package_manager"             --arg migration_build_tool "$migration_build_tool"             --arg goose_version "$goose_version"             '{
+          jq -cn             --arg name "$service"             --argjson manual "$(jq '.manual // false' <<<"$SERVICE_JSON")"             --argjson expose "$(jq 'if has("expose") and ((.expose|type)=="boolean") then .expose else null end' <<<"$SERVICE_JSON")"             --argjson database "$(jq '.database // false' <<<"$SERVICE_JSON")"             --arg database_scope "$(jq -r '.database_scope // "project"' <<<"$SERVICE_JSON")"             --argjson migrate "$migrate"             --arg migration_engine "$migration_engine"             --arg component_path "$component_path"             --arg migration_path "$migration_path"             --arg migration_schema "$migration_schema"             --arg migration_config "$migration_config"             --arg migration_package "$migration_package"             --arg migration_package_manager "$migration_package_manager"             --arg migration_build_tool "$migration_build_tool"             --arg goose_version "$goose_version"             '{
               name:$name,
               manual:$manual,
-              expose:$expose,
               database:$database,
               database_scope:$database_scope,
               migrate:$migrate,
@@ -156,7 +155,7 @@ runs:
               migration_package_manager:$migration_package_manager,
               migration_build_tool:$migration_build_tool,
               goose_version:$goose_version
-            }'
+            } + (if $expose == null then {} else {expose:$expose} end)'
         )"
 
         jq -n           --arg repository "$GITHUB_REPOSITORY"           --arg project "$project"           --arg service "$service"           --arg environment "$DEPLOY_ENVIRONMENT"           --arg revision "$GITHUB_SHA"           --argjson workflow_run_id "$GITHUB_RUN_ID"           --arg manifest_digest "$MANIFEST_DIGEST"           --arg config_digest "$CONFIG_DIGEST"           --arg archive_digest "$archive_digest"           --arg exposed_port "$EXPOSED_PORT"           --arg source_digest "$source_digest"           --argjson service_contract "$service_contract"           '{
