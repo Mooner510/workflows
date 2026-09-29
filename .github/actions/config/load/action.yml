@@ -21,6 +21,7 @@ runs:
         command -v jq >/dev/null || { echo "::error::jq is required on the runner."; exit 1; }
         command -v curl >/dev/null || { echo "::error::curl is required on the runner."; exit 1; }
         command -v sha256sum >/dev/null || { echo "::error::sha256sum is required on the runner."; exit 1; }
+        curl_args=(--fail --silent --show-error --location --retry 5 --retry-delay 2 --retry-max-time 90 --connect-timeout 10 --retry-connrefused)
 
         candidates=(
           "$GITHUB_WORKSPACE/.github/stacks.yml"
@@ -78,7 +79,8 @@ runs:
               mkdir -p "$tool_root"
               tmp="$(mktemp "$RUNNER_TEMP/yq-XXXXXX")"
               trap 'rm -f "$tmp"' EXIT
-              curl -fsSL "https://github.com/mikefarah/yq/releases/download/$version/$asset" -o "$tmp"
+              echo "==> Downloading yq $version"
+              curl "${curl_args[@]}" "https://github.com/mikefarah/yq/releases/download/$version/$asset" -o "$tmp"
               printf '%s  %s\n' "$checksum" "$tmp" | sha256sum -c -
               install -m 0755 "$tmp" "$yq"
             fi

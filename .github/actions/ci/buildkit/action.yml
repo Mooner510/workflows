@@ -9,6 +9,11 @@ runs:
       run: |
         set -euo pipefail
 
+        command -v curl >/dev/null || { echo "::error::curl is required."; exit 1; }
+        command -v sha256sum >/dev/null || { echo "::error::sha256sum is required."; exit 1; }
+        command -v tar >/dev/null || { echo "::error::tar is required."; exit 1; }
+        curl_args=(--fail --silent --show-error --location --retry 5 --retry-delay 2 --retry-max-time 90 --connect-timeout 10 --retry-connrefused)
+
         [[ "${BUILDKIT_HOST:-}" == "unix:///run/gharp-buildkit/buildkitd.sock" ]] || {
           echo "::error::BUILDKIT_HOST must point to the Gharp-isolated BuildKit socket."
           exit 1
@@ -37,7 +42,8 @@ runs:
         if [[ ! -x "$buildctl" ]]; then
           archive="$(mktemp "$RUNNER_TEMP/buildkit-XXXXXX.tar.gz")"
           trap 'rm -f "$archive"' EXIT
-          curl -fsSL "$url" -o "$archive"
+          echo "==> Downloading BuildKit $version"
+          curl "${curl_args[@]}" "$url" -o "$archive"
           printf '%s  %s\n' "$expected" "$archive" | sha256sum -c -
           mkdir -p "$tool_root"
           tar -xzf "$archive" -C "$tool_root" bin/buildctl

@@ -34,6 +34,7 @@ jobs:
           command -v curl >/dev/null || { echo "::error::curl is required."; exit 1; }
           command -v sha256sum >/dev/null || { echo "::error::sha256sum is required."; exit 1; }
           command -v tar >/dev/null || { echo "::error::tar is required."; exit 1; }
+          curl_args=(--fail --silent --show-error --location --retry 5 --retry-delay 2 --retry-max-time 90 --connect-timeout 10 --retry-connrefused)
 
           version="1.7.12"
           case "$(uname -m)" in
@@ -57,7 +58,8 @@ jobs:
             tmp="$(mktemp -d)"
             trap 'rm -rf "$tmp"' EXIT
             archive="$tmp/$asset"
-            curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v$version/$asset" -o "$archive"
+            echo "==> Downloading actionlint $version"
+            curl "${curl_args[@]}" "https://github.com/rhysd/actionlint/releases/download/v$version/$asset" -o "$archive"
             printf '%s  %s\n' "$checksum" "$archive" | sha256sum -c -
             tar -xzf "$archive" -C "$tmp" actionlint
             mkdir -p "$cache_root"
