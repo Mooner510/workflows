@@ -224,13 +224,14 @@ Language CI:
 
 ```text
 Go:
-  gofmt
   go mod tidy must produce no go.mod/go.sum diff
   go mod download
   go mod verify
   go vet
   go test
   go build
+
+`gofmt` is intentionally not a blocking CI gate. Formatting is handled by the separate manual Go Format workflow.
 
 Node:
   canonical default Node.js 24.21.0

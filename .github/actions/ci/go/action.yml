@@ -89,13 +89,6 @@ runs:
             echo "==> Go module: $(realpath --relative-to="$workspace" "$module")"
             cd "$module"
 
-            unformatted="$(gofmt -l .)"
-            if [[ -n "$unformatted" ]]; then
-              echo "::error::gofmt is required for the following files:"
-              printf '%s\n' "$unformatted"
-              exit 1
-            fi
-
             go mod tidy
             tidy_status="$(git status --short -- go.mod go.sum)"
             if [[ -n "$tidy_status" ]]; then
