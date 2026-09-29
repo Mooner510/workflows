@@ -27,6 +27,7 @@ runs:
         command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
         command -v curl >/dev/null || { echo "::error::curl is required."; exit 1; }
         command -v sha256sum >/dev/null || { echo "::error::sha256sum is required."; exit 1; }
+        curl_args=(--fail --silent --show-error --location --retry 5 --retry-delay 2 --retry-max-time 90 --connect-timeout 10 --retry-connrefused)
         command -v buildctl >/dev/null || { echo "::error::buildctl is required."; exit 1; }
 
         workspace="$(realpath "$GITHUB_WORKSPACE")"
@@ -111,7 +112,8 @@ runs:
 
           mkdir -p "$cache_root"
           tmp="$(mktemp -d)"
-          if ! curl -fsSL "https://github.com/pressly/goose/releases/download/$version/checksums.txt" -o "$tmp/checksums.txt" ||              ! curl -fsSL "https://github.com/pressly/goose/releases/download/$version/$asset" -o "$tmp/$asset"; then
+          if ! curl "${curl_args[@]}" "https://github.com/pressly/goose/releases/download/$version/checksums.txt" -o "$tmp/checksums.txt" || \
+             ! curl "${curl_args[@]}" "https://github.com/pressly/goose/releases/download/$version/$asset" -o "$tmp/$asset"; then
             rm -rf "$tmp"
             echo "::error::Failed to download Goose $version." >&2
             return 1

@@ -11,6 +11,7 @@ runs:
 
         command -v curl >/dev/null || { echo "::error::curl is required."; exit 1; }
         command -v sha256sum >/dev/null || { echo "::error::sha256sum is required."; exit 1; }
+        curl_args=(--fail --silent --show-error --location --retry 5 --retry-delay 2 --retry-max-time 90 --connect-timeout 10 --retry-connrefused)
         [[ "$(uname -m)" == "x86_64" ]] || {
           echo "::error::Pinned scanner bundle is currently verified only for linux/amd64."
           exit 1
@@ -25,7 +26,8 @@ runs:
         if [[ ! -x "$osv" ]]; then
           tmp="$(mktemp "$RUNNER_TEMP/osv-scanner-XXXXXX")"
           trap 'rm -f "$tmp"' EXIT
-          curl -fsSL "https://github.com/google/osv-scanner/releases/download/v$osv_version/osv-scanner_linux_amd64" -o "$tmp"
+          echo "==> Downloading OSV Scanner $osv_version"
+          curl "${curl_args[@]}" "https://github.com/google/osv-scanner/releases/download/v$osv_version/osv-scanner_linux_amd64" -o "$tmp"
           printf '%s  %s\n' "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108" "$tmp" | sha256sum -c -
           install -m 0755 "$tmp" "$osv"
           rm -f "$tmp"
@@ -37,7 +39,8 @@ runs:
         if [[ ! -x "$gitleaks" ]]; then
           tmp="$(mktemp "$RUNNER_TEMP/gitleaks-XXXXXX.tar.gz")"
           trap 'rm -f "$tmp"' EXIT
-          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v$gitleaks_version/gitleaks_${gitleaks_version}_linux_x64.tar.gz" -o "$tmp"
+          echo "==> Downloading Gitleaks $gitleaks_version"
+          curl "${curl_args[@]}" "https://github.com/gitleaks/gitleaks/releases/download/v$gitleaks_version/gitleaks_${gitleaks_version}_linux_x64.tar.gz" -o "$tmp"
           printf '%s  %s\n' "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb" "$tmp" | sha256sum -c -
           tar -xzf "$tmp" -C "$bin_dir" gitleaks
           chmod 0755 "$gitleaks"
@@ -50,7 +53,8 @@ runs:
         if [[ ! -x "$trivy" ]]; then
           tmp="$(mktemp "$RUNNER_TEMP/trivy-XXXXXX.tar.gz")"
           trap 'rm -f "$tmp"' EXIT
-          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v$trivy_version/trivy_${trivy_version}_Linux-64bit.tar.gz" -o "$tmp"
+          echo "==> Downloading Trivy $trivy_version"
+          curl "${curl_args[@]}" "https://github.com/aquasecurity/trivy/releases/download/v$trivy_version/trivy_${trivy_version}_Linux-64bit.tar.gz" -o "$tmp"
           printf '%s  %s\n' "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a" "$tmp" | sha256sum -c -
           tar -xzf "$tmp" -C "$bin_dir" trivy
           chmod 0755 "$trivy"

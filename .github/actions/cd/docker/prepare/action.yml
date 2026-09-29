@@ -47,6 +47,7 @@ runs:
         command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
         command -v curl >/dev/null || { echo "::error::curl is required."; exit 1; }
         command -v sha256sum >/dev/null || { echo "::error::sha256sum is required."; exit 1; }
+        curl_args=(--fail --silent --show-error --location --retry 5 --retry-delay 2 --retry-max-time 90 --connect-timeout 10 --retry-connrefused)
 
         case "$DEPLOY_ENVIRONMENT" in
           prod|dev) ;;
@@ -168,7 +169,8 @@ runs:
         if [[ ! -x "$trivy" ]]; then
           trivy_archive="$(mktemp "$RUNNER_TEMP/trivy-XXXXXX.tar.gz")"
           trap 'rm -f "$trivy_archive"' EXIT
-          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v$trivy_version/trivy_${trivy_version}_Linux-64bit.tar.gz" -o "$trivy_archive"
+          echo "==> Downloading Trivy $trivy_version"
+          curl "${curl_args[@]}" "https://github.com/aquasecurity/trivy/releases/download/v$trivy_version/trivy_${trivy_version}_Linux-64bit.tar.gz" -o "$trivy_archive"
           printf '%s  %s\n' "$trivy_expected" "$trivy_archive" | sha256sum -c -
           mkdir -p "$trivy_root"
           tar -xzf "$trivy_archive" -C "$trivy_root" trivy

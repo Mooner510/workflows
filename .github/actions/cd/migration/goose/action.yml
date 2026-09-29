@@ -43,6 +43,7 @@ runs:
         [[ "$DIALECT" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::Invalid Goose dialect '$DIALECT'."; exit 1; }
         command -v curl >/dev/null || { echo "::error::curl is required on the deployment runner."; exit 1; }
         command -v sha256sum >/dev/null || { echo "::error::sha256sum is required on the deployment runner."; exit 1; }
+        curl_args=(--fail --silent --show-error --location --retry 5 --retry-delay 2 --retry-max-time 90 --connect-timeout 10 --retry-connrefused)
 
         workspace="$(realpath "$GITHUB_WORKSPACE")"
         component="$(realpath -e "$GITHUB_WORKSPACE/$WORKING_DIRECTORY" 2>/dev/null || true)"
@@ -139,8 +140,8 @@ runs:
           mkdir -p "$cache_root"
           tmp="$(mktemp -d)"
 
-          if ! curl -fsSL "https://github.com/pressly/goose/releases/download/$version/checksums.txt" -o "$tmp/checksums.txt" || \
-             ! curl -fsSL "https://github.com/pressly/goose/releases/download/$version/$asset" -o "$tmp/$asset"; then
+          if ! curl "${curl_args[@]}" "https://github.com/pressly/goose/releases/download/$version/checksums.txt" -o "$tmp/checksums.txt" || \
+             ! curl "${curl_args[@]}" "https://github.com/pressly/goose/releases/download/$version/$asset" -o "$tmp/$asset"; then
             rm -rf "$tmp"
             echo "::error::Failed to download Goose $version." >&2
             return 1
