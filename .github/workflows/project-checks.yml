@@ -1,0 +1,172 @@
+name: Canonical Project Checks
+
+on:
+  workflow_call:
+    inputs:
+      diff_base:
+        description: Optional ancestor SHA used by explicit maintenance dispatches.
+        required: false
+        type: string
+        default: ''
+      force_all:
+        description: Expand validation to all declared components.
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      CI_PRIVATE_REPO_TOKEN:
+        description: Optional read-only token for declared private Go/Node dependencies.
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-ci-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Contract
+    runs-on: [self-hosted, linux, "gharp-contract-${{ github.run_id }}-${{ github.run_attempt }}"]
+    timeout-minutes: 10
+    outputs:
+      go_private_patterns: ${{ steps.contract.outputs.go_private_patterns }}
+      affected_components: ${{ steps.detect.outputs.all_components }}
+      ci_targets: ${{ steps.detect.outputs.ci_targets }}
+      ci_groups: ${{ steps.detect.outputs.ci_groups_by_target }}
+      git_log_opts: ${{ steps.detect.outputs.git_log_opts }}
+      ci_required: ${{ steps.mode.outputs.ci_required }}
+      security_required: ${{ steps.mode.outputs.security_required }}
+
+    steps:
+      - name: Enforce trusted self-hosted execution
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -euo pipefail
+          [[ "$EVENT_NAME" != "pull_request_target" ]] || {
+            echo "::error::pull_request_target is not allowed on the self-hosted runner."
+            exit 1
+          }
+          if [[ "$EVENT_NAME" == "pull_request" && "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" ]]; then
+            echo "::error::Fork pull requests are not allowed on the self-hosted runner."
+            exit 1
+          fi
+
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Load canonical project contract
+        id: contract
+        uses: Mooner510/workflows/.github/actions/config/load@v1
+
+      - name: Require non-deploy contract
+        shell: bash
+        env:
+          SERVICES_JSON: ${{ steps.contract.outputs.services }}
+        run: |
+          set -euo pipefail
+          command -v jq >/dev/null || { echo "::error::jq is required on the runner."; exit 1; }
+          if [[ "$(jq 'length' <<<"$SERVICES_JSON")" -ne 0 ]]; then
+            echo "::error::project-checks.yml is for non-deploy repositories and requires services: []."
+            exit 1
+          fi
+
+      - name: Detect affected components
+        id: detect
+        uses: Mooner510/workflows/.github/actions/ci/detect@v1
+        with:
+          components: ${{ steps.contract.outputs.components }}
+          force_all: ${{ inputs.force_all }}
+          diff_base: ${{ inputs.diff_base }}
+
+      - name: Resolve verification mode
+        id: mode
+        shell: bash
+        env:
+          CI_TARGETS: ${{ steps.detect.outputs.ci_targets }}
+          HAS_CHANGES: ${{ steps.detect.outputs.has_changes }}
+        run: |
+          set -euo pipefail
+          if [[ "$CI_TARGETS" == "[]" ]]; then ci_required=false; else ci_required=true; fi
+          if [[ "$HAS_CHANGES" == "true" ]]; then security_required=true; else security_required=false; fi
+          {
+            echo "ci_required=$ci_required"
+            echo "security_required=$security_required"
+          } >>"$GITHUB_OUTPUT"
+
+  security:
+    name: Security
+    needs: contract
+    if: needs.contract.outputs.security_required == 'true'
+    runs-on: [self-hosted, linux, "gharp-security-${{ github.run_id }}-${{ github.run_attempt }}"]
+    timeout-minutes: 30
+    steps:
+      - name: Run security verification
+        uses: Mooner510/workflows/.github/actions/ci/security@v1
+        with:
+          components: ${{ needs.contract.outputs.affected_components }}
+          git_log_opts: ${{ needs.contract.outputs.git_log_opts }}
+
+  ci:
+    name: ${{ matrix.target }}
+    needs: contract
+    if: needs.contract.outputs.ci_required == 'true'
+    runs-on: [self-hosted, linux, "gharp-ci-${{ github.run_id }}-${{ github.run_attempt }}"]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.contract.outputs.ci_targets) }}
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Run component group CI
+        uses: Mooner510/workflows/.github/actions/ci/group@v1
+        with:
+          components: ${{ toJSON(fromJSON(needs.contract.outputs.ci_groups)[matrix.target].components) }}
+          type: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].type }}
+          version: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].version }}
+          package-manager: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].package_manager || '' }}
+          build-tool: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].build_tool || '' }}
+          profile: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].profile || '' }}
+          go-private-patterns: ${{ needs.contract.outputs.go_private_patterns }}
+          private-repo-token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
+
+  verify:
+    name: Verify
+    needs: [contract, security, ci]
+    if: always() && needs.contract.result == 'success'
+    runs-on: [self-hosted, linux, "gharp-verify-${{ github.run_id }}-${{ github.run_attempt }}"]
+    timeout-minutes: 10
+
+    steps:
+      - name: Require requested verification
+        shell: bash
+        env:
+          SECURITY_REQUIRED: ${{ needs.contract.outputs.security_required }}
+          CI_REQUIRED: ${{ needs.contract.outputs.ci_required }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          CI_RESULT: ${{ needs.ci.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$SECURITY_REQUIRED" == "true" && "$SECURITY_RESULT" != "success" ]]; then
+            echo "::error::Security verification did not succeed ($SECURITY_RESULT)."
+            exit 1
+          fi
+          if [[ "$CI_REQUIRED" == "true" && "$CI_RESULT" != "success" ]]; then
+            echo "::error::Language/migration CI did not succeed ($CI_RESULT)."
+            exit 1
+          fi
