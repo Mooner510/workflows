@@ -132,6 +132,22 @@ jobs:
 
           (( invalid == 0 )) || exit 1
 
+      - name: Validate isolated PostgreSQL CI boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="$GITHUB_WORKSPACE/.github/actions/ci/go-postgres/action.yml"
+          [[ -f "$target" ]] || { echo "::error::Missing Go PostgreSQL integration action."; exit 1; }
+
+          if grep -nE '(^|[;&|[:space:]])(docker|podman|nerdctl)[[:space:]]' "$target"; then
+            echo "::error file=.github/actions/ci/go-postgres/action.yml::Go PostgreSQL integration must not invoke a container runtime CLI. Use the isolated BuildKit boundary."
+            exit 1
+          fi
+          grep -q 'ci/buildkit@v1' "$target" || {
+            echo "::error file=.github/actions/ci/go-postgres/action.yml::Go PostgreSQL integration must initialize the canonical BuildKit boundary."
+            exit 1
+          }
+
       - name: Validate Gharp JIT runner policy
         shell: bash
         run: |
