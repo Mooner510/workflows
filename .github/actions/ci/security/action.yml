@@ -260,7 +260,7 @@ runs:
           echo "==> govulncheck: $target"
           (
             cd "$host_target"
-            go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+            go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
           )
         done <"$TARGET_FILE"
 
