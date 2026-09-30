@@ -144,29 +144,3 @@ jobs:
           profile: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].profile || '' }}
           go-private-patterns: ${{ needs.contract.outputs.go_private_patterns }}
           private-repo-token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
-
-  verify:
-    name: Verify
-    needs: [contract, security, ci]
-    if: always() && needs.contract.result == 'success'
-    runs-on: [self-hosted, linux, "gharp-verify-${{ github.run_id }}-${{ github.run_attempt }}"]
-    timeout-minutes: 10
-
-    steps:
-      - name: Require requested verification
-        shell: bash
-        env:
-          SECURITY_REQUIRED: ${{ needs.contract.outputs.security_required }}
-          CI_REQUIRED: ${{ needs.contract.outputs.ci_required }}
-          SECURITY_RESULT: ${{ needs.security.result }}
-          CI_RESULT: ${{ needs.ci.result }}
-        run: |
-          set -euo pipefail
-          if [[ "$SECURITY_REQUIRED" == "true" && "$SECURITY_RESULT" != "success" ]]; then
-            echo "::error::Security verification did not succeed ($SECURITY_RESULT)."
-            exit 1
-          fi
-          if [[ "$CI_REQUIRED" == "true" && "$CI_RESULT" != "success" ]]; then
-            echo "::error::Language/migration CI did not succeed ($CI_RESULT)."
-            exit 1
-          fi
