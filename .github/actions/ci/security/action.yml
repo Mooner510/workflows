@@ -39,6 +39,13 @@ runs:
     - name: Set up isolated BuildKit
       uses: Mooner510/workflows/.github/actions/ci/buildkit@v1
 
+    - name: Set up Go vulnerability analysis
+      if: ${{ contains(inputs.components, '"type":"go"') }}
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: '1.27.1'
+        cache: false
+
     - name: Set up pinned security scanners
       uses: Mooner510/workflows/.github/actions/ci/security-tools@v1
 
@@ -60,9 +67,11 @@ runs:
         fi
 
         scan_targets="$RUNNER_TEMP/workflows-security-targets.txt"
-        dependency_targets="$RUNNER_TEMP/workflows-dependency-targets.txt"
+        go_vuln_targets="$RUNNER_TEMP/workflows-go-vulnerability-targets.txt"
+        osv_lockfiles="$RUNNER_TEMP/workflows-osv-lockfiles.txt"
         : >"$scan_targets"
-        : >"$dependency_targets"
+        : >"$go_vuln_targets"
+        : >"$osv_lockfiles"
 
         while IFS= read -r component_json; do
           name="$(jq -r '.name // empty' <<<"$component_json")"
@@ -83,52 +92,56 @@ runs:
           component_rel="$(realpath --relative-to="$workspace" "$component")"
           printf '%s\n' "$component_rel" >>"$scan_targets"
 
-          dependency_root="$component"
           case "$type" in
             go)
               cursor="$component"
-              dependency_root=""
+              module=""
               while :; do
-                if [[ -f "$cursor/go.mod" ]]; then dependency_root="$cursor"; break; fi
+                if [[ -f "$cursor/go.mod" ]]; then module="$cursor"; break; fi
                 [[ "$cursor" == "$workspace" ]] && break
                 cursor="$(dirname "$cursor")"
               done
-              [[ -n "$dependency_root" ]] || {
+              [[ -n "$module" ]] || {
                 echo "::error::No go.mod found from Go component '$name' up to repository root."
                 exit 1
               }
+              realpath --relative-to="$workspace" "$module" >>"$go_vuln_targets"
               ;;
             node)
               cursor="$component"
-              dependency_root=""
+              lockfile=""
               while :; do
-                matches=0
-                [[ -f "$cursor/pnpm-lock.yaml" ]] && ((matches+=1))
-                [[ -f "$cursor/yarn.lock" ]] && ((matches+=1))
-                [[ -f "$cursor/package-lock.json" ]] && ((matches+=1))
-                [[ -f "$cursor/bun.lock" || -f "$cursor/bun.lockb" ]] && ((matches+=1))
-                if (( matches > 1 )); then
+                matches=()
+                [[ -f "$cursor/pnpm-lock.yaml" ]] && matches+=("$cursor/pnpm-lock.yaml")
+                [[ -f "$cursor/yarn.lock" ]] && matches+=("$cursor/yarn.lock")
+                [[ -f "$cursor/package-lock.json" ]] && matches+=("$cursor/package-lock.json")
+                [[ -f "$cursor/bun.lock" ]] && matches+=("$cursor/bun.lock")
+                [[ -f "$cursor/bun.lockb" ]] && matches+=("$cursor/bun.lockb")
+                if (( ${#matches[@]} > 1 )); then
                   echo "::error::Multiple Node package-manager lockfiles found in '$cursor'."
                   exit 1
                 fi
-                if (( matches == 1 )); then dependency_root="$cursor"; break; fi
+                if (( ${#matches[@]} == 1 )); then lockfile="${matches[0]}"; break; fi
                 [[ "$cursor" == "$workspace" ]] && break
                 cursor="$(dirname "$cursor")"
               done
-              [[ -n "$dependency_root" ]] || {
+              [[ -n "$lockfile" ]] || {
                 echo "::error::No Node lockfile found from '$name' up to repository root."
                 exit 1
               }
+              realpath --relative-to="$workspace" "$lockfile" >>"$osv_lockfiles"
               ;;
             java-kotlin|android)
-              if ! find "$component" -type f \(                 -name gradle.lockfile -o                 -name buildscript-gradle.lockfile -o                 -name verification-metadata.xml -o                 -name pom.xml               \) -print -quit | grep -q .; then
-                echo "::warning::No OSV-supported JVM dependency metadata found for '$name'; dependency coverage may be incomplete."
+              found=false
+              while IFS= read -r lockfile; do
+                found=true
+                realpath --relative-to="$workspace" "$lockfile" >>"$osv_lockfiles"
+              done < <(find "$component" -type f \( -name gradle.lockfile -o -name buildscript-gradle.lockfile -o -name pom.xml \) -print)
+              if [[ "$found" != "true" ]]; then
+                echo "::warning::No OSV-supported JVM lockfile found for '$name'; dependency coverage may be incomplete."
               fi
               ;;
           esac
-
-          dependency_rel="$(realpath --relative-to="$workspace" "$dependency_root")"
-          printf '%s\n' "$dependency_rel" >>"$dependency_targets"
         done < <(jq -c '.[]' <<<"$components")
 
         dedupe_tree_targets() {
@@ -152,10 +165,13 @@ runs:
         }
 
         dedupe_tree_targets "$scan_targets"
-        dedupe_tree_targets "$dependency_targets"
+        dedupe_tree_targets "$go_vuln_targets"
+        sort -u -o "$osv_lockfiles" "$osv_lockfiles"
+
         {
           echo "scan_targets=$scan_targets"
-          echo "dependency_targets=$dependency_targets"
+          echo "go_vuln_targets=$go_vuln_targets"
+          echo "osv_lockfiles=$osv_lockfiles"
         } >>"$GITHUB_OUTPUT"
 
     - name: Validate GitHub Actions refs
@@ -221,22 +237,50 @@ runs:
           buildctl --addr "$BUILDKIT_HOST" build             --frontend dockerfile.v0             --local "context=$context"             --local "dockerfile=$dockerfile_dir"             --opt filename=Dockerfile             --opt "build-arg:TARGET=$target"             --opt "build-arg:SCAN_NONCE=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
         done <"$TARGET_FILE"
 
-    - name: OSV dependency vulnerabilities
+    - name: Go reachable vulnerabilities
+      if: ${{ contains(inputs.components, '"type":"go"') }}
       shell: bash
       env:
-        TARGET_FILE: ${{ steps.targets.outputs.dependency_targets }}
+        TARGET_FILE: ${{ steps.targets.outputs.go_vuln_targets }}
+      run: |
+        set -euo pipefail
+        command -v go >/dev/null || { echo "::error::Go is required for govulncheck."; exit 1; }
+
+        while IFS= read -r target; do
+          [[ -n "$target" ]] || continue
+          host_target="$(realpath -e "$GITHUB_WORKSPACE/$target" 2>/dev/null || true)"
+          [[ -n "$host_target" && ( "$host_target" == "$GITHUB_WORKSPACE" || "$host_target" == "$GITHUB_WORKSPACE/"* ) ]] || {
+            echo "::error::Invalid Go vulnerability target '$target'."
+            exit 1
+          }
+          [[ -f "$host_target/go.mod" ]] || {
+            echo "::error::Go vulnerability target '$target' does not contain go.mod."
+            exit 1
+          }
+          echo "==> govulncheck: $target"
+          (
+            cd "$host_target"
+            go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+          )
+        done <"$TARGET_FILE"
+
+    - name: OSV lockfile vulnerabilities
+      shell: bash
+      env:
+        TARGET_FILE: ${{ steps.targets.outputs.osv_lockfiles }}
       run: |
         set -euo pipefail
         command -v osv-scanner >/dev/null || { echo "::error::osv-scanner is required."; exit 1; }
 
         while IFS= read -r target; do
+          [[ -n "$target" ]] || continue
           host_target="$(realpath -e "$GITHUB_WORKSPACE/$target" 2>/dev/null || true)"
-          [[ -n "$host_target" && ( "$host_target" == "$GITHUB_WORKSPACE" || "$host_target" == "$GITHUB_WORKSPACE/"* ) ]] || {
-            echo "::error::Invalid OSV target '$target'."
+          [[ -n "$host_target" && "$host_target" == "$GITHUB_WORKSPACE/"* && -f "$host_target" ]] || {
+            echo "::error::Invalid OSV lockfile '$target'."
             exit 1
           }
-          echo "==> OSV: $target"
-          osv-scanner scan source --recursive --allow-no-lockfiles --no-call-analysis=go "$host_target"
+          echo "==> OSV lockfile: $target"
+          osv-scanner scan source --lockfile=":$host_target"
         done <"$TARGET_FILE"
 
     - name: Gitleaks current files
