@@ -67,3 +67,4 @@ runs:
       uses: Mooner510/workflows/.github/actions/ci/go-postgres@v1
       with:
         components: ${{ inputs.components }}
+        version: ${{ inputs.version }}
