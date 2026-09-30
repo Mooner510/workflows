@@ -251,6 +251,8 @@ Java/Kotlin:
 
 Migration validation은 configured migration source가 affected일 때 disposable PostgreSQL에서 수행한다. Production DB를 CI validation에 사용하지 않는다.
 
+`postgres_test: true`인 Go application integration test도 repository runner의 Docker/Podman runtime socket을 사용하지 않는다. Canonical `go-postgres` action은 Gharp rootless BuildKit 내부에서 exact Go toolchain과 disposable PostgreSQL을 함께 실행하여 test process와 database를 같은 isolated build boundary 안에 둔다.
+
 Explicit maintenance dispatch의 `diff_base`는 full 40-character ancestor SHA만 허용하며 실제 `diff_base..HEAD` change detection에 사용한다. `.github/stacks.yml`이 변경되면 contract 자체가 달라졌으므로 모든 declared component/service를 affected 처리한다.
 
 Public/fork/untrusted pull request는 self-hosted runner에서 checkout/build하지 않는다. Canonical CI의 최초 contract job과 compatibility pipeline detector가 caller repository ownership을 확인한 뒤에만 trusted source code를 실행한다.
