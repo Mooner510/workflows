@@ -164,6 +164,7 @@ runs:
           mv "$output" "$source"
         }
 
+        printf '.\n' >>"$scan_targets"
         dedupe_tree_targets "$scan_targets"
         dedupe_tree_targets "$go_vuln_targets"
         sort -u -o "$osv_lockfiles" "$osv_lockfiles"
@@ -175,6 +176,8 @@ runs:
         } >>"$GITHUB_OUTPUT"
 
     - name: Validate GitHub Actions refs
+      id: action_refs
+      continue-on-error: true
       shell: bash
       run: |
         set -euo pipefail
@@ -201,6 +204,8 @@ runs:
         (( invalid == 0 )) || exit 1
 
     - name: Semgrep SAST
+      id: semgrep
+      continue-on-error: true
       shell: bash
       env:
         TARGET_FILE: ${{ steps.targets.outputs.scan_targets }}
@@ -238,7 +243,9 @@ runs:
         done <"$TARGET_FILE"
 
     - name: Go reachable vulnerabilities
+      id: govuln
       if: ${{ contains(inputs.components, '"type":"go"') }}
+      continue-on-error: true
       shell: bash
       env:
         TARGET_FILE: ${{ steps.targets.outputs.go_vuln_targets }}
@@ -265,6 +272,8 @@ runs:
         done <"$TARGET_FILE"
 
     - name: OSV lockfile vulnerabilities
+      id: osv
+      continue-on-error: true
       shell: bash
       env:
         TARGET_FILE: ${{ steps.targets.outputs.osv_lockfiles }}
@@ -284,6 +293,8 @@ runs:
         done <"$TARGET_FILE"
 
     - name: Gitleaks current files
+      id: gitleaks_files
+      continue-on-error: true
       shell: bash
       env:
         TARGET_FILE: ${{ steps.targets.outputs.scan_targets }}
@@ -302,6 +313,8 @@ runs:
         done <"$TARGET_FILE"
 
     - name: Gitleaks git history secrets
+      id: gitleaks_history
+      continue-on-error: true
       shell: bash
       env:
         GIT_LOG_OPTS: ${{ inputs.git_log_opts }}
@@ -311,6 +324,8 @@ runs:
         gitleaks git --redact --no-banner --log-opts="$GIT_LOG_OPTS" "$GITHUB_WORKSPACE"
 
     - name: Trivy misconfiguration
+      id: trivy
+      continue-on-error: true
       shell: bash
       env:
         TARGET_FILE: ${{ steps.targets.outputs.scan_targets }}
@@ -327,3 +342,37 @@ runs:
           echo "==> Trivy: $target"
           trivy fs             --scanners misconfig             --severity HIGH,CRITICAL             --exit-code 1             --no-progress             --skip-version-check             --skip-dirs .git             --skip-dirs node_modules             --skip-dirs build             --skip-dirs .gradle             "$host_target"
         done <"$TARGET_FILE"
+
+    - name: Aggregate security result
+      if: ${{ always() }}
+      shell: bash
+      env:
+        ACTION_REFS: ${{ steps.action_refs.outcome }}
+        SEMGREP: ${{ steps.semgrep.outcome }}
+        GOVULN: ${{ steps.govuln.outcome }}
+        OSV: ${{ steps.osv.outcome }}
+        GITLEAKS_FILES: ${{ steps.gitleaks_files.outcome }}
+        GITLEAKS_HISTORY: ${{ steps.gitleaks_history.outcome }}
+        TRIVY: ${{ steps.trivy.outcome }}
+      run: |
+        set -euo pipefail
+        failed=0
+        for result in \
+          "action-refs=$ACTION_REFS" \
+          "semgrep=$SEMGREP" \
+          "govuln=$GOVULN" \
+          "osv=$OSV" \
+          "gitleaks-files=$GITLEAKS_FILES" \
+          "gitleaks-history=$GITLEAKS_HISTORY" \
+          "trivy=$TRIVY"; do
+          name="${result%%=*}"
+          status="${result#*=}"
+          echo "$name: $status"
+          if [[ "$status" == "failure" || "$status" == "cancelled" ]]; then
+            failed=1
+          fi
+        done
+        (( failed == 0 )) || {
+          echo "::error::One or more security gates failed."
+          exit 1
+        }
