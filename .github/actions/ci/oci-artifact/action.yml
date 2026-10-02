@@ -1,0 +1,159 @@
+name: Build CI-only OCI artifact
+description: Build, scan, and package a non-deployable OCI artifact through the isolated Gharp BuildKit boundary.
+
+inputs:
+  artifact:
+    description: Normalized artifact JSON from the canonical project contract.
+    required: true
+  private-repo-token:
+    description: Optional read-only GitHub token exposed only as a BuildKit secret.
+    required: false
+    default: ''
+
+outputs:
+  bundle-path:
+    value: ${{ steps.build.outputs.bundle_path }}
+  manifest-digest:
+    value: ${{ steps.build.outputs.manifest_digest }}
+  config-digest:
+    value: ${{ steps.build.outputs.config_digest }}
+  archive-digest:
+    value: ${{ steps.build.outputs.archive_digest }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up isolated BuildKit
+      uses: Mooner510/workflows/.github/actions/ci/buildkit@v1
+
+    - name: Build, scan, and package OCI artifact
+      id: build
+      shell: bash
+      env:
+        ARTIFACT_JSON: ${{ inputs.artifact }}
+        CI_PRIVATE_REPO_TOKEN: ${{ inputs.private-repo-token }}
+      run: |
+        set -euo pipefail
+
+        command -v buildctl >/dev/null || { echo "::error::buildctl is required."; exit 1; }
+        command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
+        command -v curl >/dev/null || { echo "::error::curl is required."; exit 1; }
+        command -v sha256sum >/dev/null || { echo "::error::sha256sum is required."; exit 1; }
+        command -v tar >/dev/null || { echo "::error::tar is required."; exit 1; }
+
+        name="$(jq -r '.name // empty' <<<"$ARTIFACT_JSON")"
+        path="$(jq -r '.path // empty' <<<"$ARTIFACT_JSON")"
+        [[ "$name" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
+          echo "::error::Invalid artifact name '$name'."
+          exit 1
+        }
+
+        workspace="$(realpath -e "$GITHUB_WORKSPACE")"
+        artifact_root="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+        [[ -n "$artifact_root" && ( "$artifact_root" == "$workspace" || "$artifact_root" == "$workspace/"* ) ]] || {
+          echo "::error::Artifact path must resolve inside the repository: $path"
+          exit 1
+        }
+        [[ -f "$artifact_root/Containerfile" ]] || {
+          echo "::error::CI-only OCI artifact '$name' must use the canonical path '$path/Containerfile'."
+          exit 1
+        }
+
+        repository_name="${GITHUB_REPOSITORY#*/}"
+        project="$(printf '%s' "$repository_name" | tr '[:upper:]' '[:lower:]')"
+        [[ "$project" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
+          echo "::error::Invalid canonical project '$project'."
+          exit 1
+        }
+
+        work="$RUNNER_TEMP/oci-artifact-$name"
+        archive="$work/image.oci.tar"
+        layout="$work/layout"
+        build_metadata="$work/build-metadata.json"
+        bundle="$RUNNER_TEMP/gharp-oci-$name"
+        rm -rf "$work" "$bundle"
+        mkdir -p "$work" "$layout" "$bundle"
+
+        args=(
+          buildctl
+          --addr "$BUILDKIT_HOST"
+          build
+          --frontend dockerfile.v0
+          --local "context=$workspace"
+          --local "dockerfile=$artifact_root"
+          --opt filename=Containerfile
+          --opt "label:org.opencontainers.image.revision=$GITHUB_SHA"
+          --opt "label:kr.mooner510.stacks.artifact=$name"
+          --metadata-file "$build_metadata"
+          --output "type=oci,dest=$archive,name=$project/$name:$GITHUB_SHA"
+        )
+        if [[ -n "${CI_PRIVATE_REPO_TOKEN:-}" ]]; then
+          echo "::add-mask::$CI_PRIVATE_REPO_TOKEN"
+          args+=(--secret id=CI_PRIVATE_REPO_TOKEN,env=CI_PRIVATE_REPO_TOKEN)
+        fi
+
+        echo "==> Building isolated CI-only OCI artifact $project/$name@$GITHUB_SHA"
+        "${args[@]}"
+
+        tar -xf "$archive" -C "$layout"
+
+        manifest_digest="$(jq -r '.["containerimage.digest"] // empty' "$build_metadata")"
+        config_digest="$(jq -r '.["containerimage.config.digest"] // empty' "$build_metadata")"
+        [[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+          echo "::error::BuildKit did not emit a valid manifest digest."
+          exit 1
+        }
+        [[ "$config_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+          echo "::error::BuildKit did not emit a valid config digest."
+          exit 1
+        }
+
+        config_blob="$layout/blobs/sha256/${config_digest#sha256:}"
+        [[ -f "$config_blob" ]] || {
+          echo "::error::OCI config blob is missing from exported artifact."
+          exit 1
+        }
+
+        trivy_version="0.74.0"
+        trivy_expected="2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
+        trivy_root="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/trivy/$trivy_version"
+        trivy="$trivy_root/trivy"
+        if [[ ! -x "$trivy" ]]; then
+          trivy_archive="$(mktemp "$RUNNER_TEMP/trivy-XXXXXX.tar.gz")"
+          trap 'rm -f "$trivy_archive"' EXIT
+          curl_args=(--fail --silent --show-error --location --retry 5 --retry-delay 2 --retry-max-time 90 --connect-timeout 10 --retry-connrefused)
+          echo "==> Downloading Trivy $trivy_version"
+          curl "${curl_args[@]}" "https://github.com/aquasecurity/trivy/releases/download/v$trivy_version/trivy_${trivy_version}_Linux-64bit.tar.gz" -o "$trivy_archive"
+          printf '%s  %s\n' "$trivy_expected" "$trivy_archive" | sha256sum -c -
+          mkdir -p "$trivy_root"
+          tar -xzf "$trivy_archive" -C "$trivy_root" trivy
+          chmod 0755 "$trivy"
+          rm -f "$trivy_archive"
+          trap - EXIT
+        fi
+
+        echo "==> Trivy isolated OCI vulnerability scan (HIGH/CRITICAL)"
+        "$trivy" image           --input "$layout"           --scanners vuln           --severity HIGH,CRITICAL           --exit-code 1           --no-progress           --skip-version-check
+
+        archive_digest="sha256:$(sha256sum "$archive" | awk '{print $1}')"
+        cp -- "$archive" "$bundle/image.oci.tar"
+
+        jq -n           --arg repository "$GITHUB_REPOSITORY"           --arg artifact "$name"           --arg revision "$GITHUB_SHA"           --argjson workflow_run_id "$GITHUB_RUN_ID"           --argjson workflow_run_attempt "$GITHUB_RUN_ATTEMPT"           --arg manifest_digest "$manifest_digest"           --arg config_digest "$config_digest"           --arg archive_digest "$archive_digest"           '{
+            format_version:1,
+            kind:"ci-only-oci",
+            repository:$repository,
+            artifact:$artifact,
+            revision:$revision,
+            workflow_run_id:$workflow_run_id,
+            workflow_run_attempt:$workflow_run_attempt,
+            manifest_digest:$manifest_digest,
+            config_digest:$config_digest,
+            archive_digest:$archive_digest
+          }' >"$bundle/metadata.json"
+
+        {
+          echo "bundle_path=$bundle"
+          echo "manifest_digest=$manifest_digest"
+          echo "config_digest=$config_digest"
+          echo "archive_digest=$archive_digest"
+        } >>"$GITHUB_OUTPUT"
