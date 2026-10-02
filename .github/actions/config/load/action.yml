@@ -6,6 +6,8 @@ outputs:
     value: ${{ steps.load.outputs.components }}
   services:
     value: ${{ steps.load.outputs.services }}
+  artifacts:
+    value: ${{ steps.load.outputs.artifacts }}
   go_private_patterns:
     value: ${{ steps.load.outputs.go_private_patterns }}
 
@@ -94,9 +96,10 @@ runs:
         jq -e '
           type == "object"
           and (.version == 1)
-          and ((keys - ["version","components","services","go_private_patterns"]) | length == 0)
+          and ((keys - ["version","components","services","artifacts","go_private_patterns"]) | length == 0)
           and (.components | type == "array" and length > 0)
           and ((.services // []) | type == "array")
+          and ((.artifacts // []) | type == "array")
           and ((.go_private_patterns == null) or (.go_private_patterns|type)=="string")
         ' "$contract_json" >/dev/null || {
           echo "::error::Stacks contract must be a version 1 object containing only version, components, services, and optional go_private_patterns."
@@ -105,6 +108,7 @@ runs:
 
         components="$(jq -c '.components' "$contract_json")"
         services="$(jq -c '.services // []' "$contract_json")"
+        artifacts="$(jq -c '.artifacts // []' "$contract_json")"
         go_private_patterns="$(jq -r '.go_private_patterns // ""' "$contract_json")"
 
         duplicate_components="$(jq -r 'group_by(.name)[] | select(length > 1) | .[0].name // empty' <<<"$components")"
@@ -114,7 +118,321 @@ runs:
         }
         duplicate_services="$(jq -r 'group_by(.name)[] | select(length > 1) | .[0].name // empty' <<<"$services")"
         [[ -z "$duplicate_services" ]] || {
-          echo "::error::Duplicate service names: ${duplicate_services//$'\n'/, }"
+          echo "::error::Duplicate service names: ${duplicate_services//"$(realpath -e "$GITHUB_WORKSPACE")"
+        safe_path() {
+          local value="$1" label="$2" resolved
+          [[ -n "$value" && "$value" != /* && "$value" != *$'\n'* && "$value" != *$'\r'* ]] || {
+            echo "::error::$label must be a repository-relative path."
+            exit 1
+          }
+          [[ "$value" != ".." && "$value" != ../* && "$value" != */../* && "$value" != */.. ]] || {
+            echo "::error::$label must not contain '..'."
+            exit 1
+          }
+          resolved="$(realpath -e "$GITHUB_WORKSPACE/$value" 2>/dev/null || true)"
+          [[ -n "$resolved" && ( "$resolved" == "$workspace" || "$resolved" == "$workspace/"* ) ]] || {
+            echo "::error::$label does not resolve inside the repository: $value"
+            exit 1
+          }
+        }
+
+        while IFS= read -r component; do
+          name="$(jq -r '.name // empty' <<<"$component")"
+          type="$(jq -r '.type // empty' <<<"$component")"
+          path="$(jq -r '.path // empty' <<<"$component")"
+
+          [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid component name '$name'."; exit 1; }
+          case "$type" in go|node|java-kotlin) ;; *) echo "::error::Unsupported component type '$type' for '$name'."; exit 1 ;; esac
+          safe_path "$path" "Component '$name' path"
+
+          jq -e '
+            (keys - [
+              "name","type","path","watch","watch_path",
+              "go_version","node_version","java_version","package_manager","build_tool","profile",
+              "gradle_tasks","maven_goals",
+              "migration_engine","migration_path","migration_schema","migration_config","migration_package",
+              "migration_package_manager","migration_build_tool","goose_version",
+              "postgres_test","postgres_database_env","postgres_image","postgres_test_args","postgres_test_env"
+            ] | length) == 0
+          ' <<<"$component" >/dev/null || {
+            echo "::error::Component '$name' contains unsupported project-local CI/CD controls."
+            exit 1
+          }
+
+          jq -e '(.watch == null) or ((.watch|type)=="array" and all(.watch[]; type=="string"))' <<<"$component" >/dev/null || {
+            echo "::error::Component '$name' watch must be a string array."
+            exit 1
+          }
+          while IFS= read -r watch; do safe_path "$watch" "Component '$name' watch"; done < <(jq -r '.watch // [] | .[]' <<<"$component")
+
+          if [[ "$type" == "node" ]]; then
+            node_version="$(jq -r '.node_version // empty' <<<"$component")"
+            if [[ -n "$node_version" && ! "$node_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Node component '$name' node_version must be an exact x.y.z version."
+              exit 1
+            fi
+          fi
+        done < <(jq -c '.[]' <<<"$components")
+
+        normalized_services='[]'
+        while IFS= read -r service; do
+          name="$(jq -r '.name // empty' <<<"$service")"
+          path="$(jq -r '.path // empty' <<<"$service")"
+          component="$(jq -r '.component // empty' <<<"$service")"
+
+          [[ "$name" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { echo "::error::Invalid service name '$name'."; exit 1; }
+          safe_path "$path" "Service '$name' path"
+          [[ -f "$GITHUB_WORKSPACE/$path/Dockerfile" ]] || {
+            echo "::error::Service '$name' must use the canonical Dockerfile path '$path/Dockerfile'."
+            exit 1
+          }
+          jq -e --arg component "$component" 'any(.[]; .name == $component)' <<<"$components" >/dev/null || {
+            echo "::error::Service '$name' references unknown component '$component'."
+            exit 1
+          }
+
+          jq -e '
+            (keys - ["name","path","component","watch","database","database_scope","migrate","build_args","manual","expose"] | length) == 0
+            and ((.watch == null) or ((.watch|type)=="array" and all(.watch[]; type=="string")))
+            and ((.database == null) or (.database|type)=="boolean")
+            and ((.database_scope == null) or (.database_scope == "project") or (.database_scope == "service"))
+            and ((.migrate == null) or (.migrate|type)=="boolean")
+            and ((.manual == null) or (.manual|type)=="boolean")
+            and ((.expose == null) or (.expose|type)=="boolean")
+            and ((.build_args == null) or ((.build_args|type)=="array" and all(.build_args[]; type=="string" and test("^[A-Za-z_][A-Za-z0-9_]*$"))))
+          ' <<<"$service" >/dev/null || {
+            echo "::error::Service '$name' contains unsupported deployment controls."
+            exit 1
+          }
+
+          if [[ "$legacy_json" != "true" ]] && ! jq -e 'has("expose") and ((.expose|type)=="boolean")' <<<"$service" >/dev/null; then
+            echo "::error::Canonical YAML service '$name' must explicitly set expose: true or expose: false."
+            exit 1
+          fi
+
+          while IFS= read -r watch; do safe_path "$watch" "Service '$name' watch"; done < <(jq -r '.watch // [] | .[]' <<<"$service")
+
+          migrate="$(jq -r '.migrate // false' <<<"$service")"
+          migration_engine="$(jq -r --arg component "$component" '.[] | select(.name == $component) | .migration_engine // "none"' <<<"$components")"
+          if [[ "$migrate" == "true" && "$migration_engine" == "none" ]]; then
+            echo "::error::Service '$name' enables migrate but component '$component' has no migration_engine."
+            exit 1
+          fi
+
+          database="$(jq -r '.database // false' <<<"$service")"
+          [[ "$migrate" != "true" ]] || database=true
+          database_scope="$(jq -r '.database_scope // "project"' <<<"$service")"
+          if [[ "$database" != "true" && "$database_scope" != "project" ]]; then
+            echo "::error::Service '$name' declares database_scope without database/migrate."
+            exit 1
+          fi
+
+          manual="$(jq -r '.manual // false' <<<"$service")"
+          expose_present="$(jq -r 'has("expose") and ((.expose|type)=="boolean")' <<<"$service")"
+          normalized="$(jq -c             --argjson database "$database"             --arg database_scope "$database_scope"             --argjson migrate "$migrate"             --argjson manual "$manual"             '. + {database:$database,database_scope:$database_scope,migrate:$migrate,manual:$manual,build_args:(.build_args // []),watch:(.watch // [])}' <<<"$service")"
+          if [[ "$expose_present" == "true" ]]; then
+            expose="$(jq -c '.expose' <<<"$service")"
+            normalized="$(jq -c --argjson expose "$expose" '. + {expose:$expose}' <<<"$normalized")"
+          else
+            normalized="$(jq -c 'del(.expose)' <<<"$normalized")"
+          fi
+          normalized_services="$(jq -c --argjson item "$normalized" '. + [$item]' <<<"$normalized_services")"
+        done < <(jq -c '.[]' <<<"$services")
+
+        normalized_artifacts='[]'
+        while IFS= read -r artifact; do
+          name="$(jq -r '.name // empty' <<<"$artifact")"
+          path="$(jq -r '.path // empty' <<<"$artifact")"
+
+          [[ "$name" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { echo "::error::Invalid artifact name '$name'."; exit 1; }
+          safe_path "$path" "Artifact '$name' path"
+          [[ -f "$GITHUB_WORKSPACE/$path/Containerfile" ]] || {
+            echo "::error::Artifact '$name' must use the canonical Containerfile path '$path/Containerfile'."
+            exit 1
+          }
+
+          jq -e '
+            (keys - ["name","path","watch"] | length) == 0
+            and ((.watch == null) or ((.watch|type)=="array" and all(.watch[]; type=="string")))
+          ' <<<"$artifact" >/dev/null || {
+            echo "::error::Artifact '$name' contains unsupported controls."
+            exit 1
+          }
+
+          while IFS= read -r watch; do
+            safe_path "$watch" "Artifact '$name' watch"
+          done < <(jq -r '.watch // [] | .[]' <<<"$artifact")
+
+          normalized="$(jq -c '. + {watch:(.watch // [])}' <<<"$artifact")"
+          normalized_artifacts="$(jq -c --argjson item "$normalized" '. + [$item]' <<<"$normalized_artifacts")"
+        done < <(jq -c '.[]' <<<"$artifacts")
+
+        # Inject service impact mapping into the existing central component detector.
+        normalized_components="$components"
+        while IFS= read -r service; do
+          name="$(jq -r '.name' <<<"$service")"
+          component="$(jq -r '.component' <<<"$service")"
+          watch_len="$(jq '.watch | length' <<<"$service")"
+          if (( watch_len > 0 )); then
+            watch="$(jq -c '.watch' <<<"$service")"
+            normalized_components="$(jq -c               --arg component "$component" --arg service "$name" --argjson watch "$watch"               'map(if .name == $component then .deploy_service_watches = ((.deploy_service_watches // {}) + {($service):$watch}) else . end)'               <<<"$normalized_components")"
+          else
+            normalized_components="$(jq -c               --arg component "$component" --arg service "$name"               'map(if .name == $component then .deploy_services = (((.deploy_services // []) + [$service]) | unique) else . end)'               <<<"$normalized_components")"
+          fi
+        done < <(jq -c '.[]' <<<"$normalized_services")
+
+        {
+          echo "components=$normalized_components"
+          echo "services=$normalized_services"
+          echo "artifacts=$normalized_artifacts"
+          echo "go_private_patterns=$go_private_patterns"
+        } >>"$GITHUB_OUTPUT"
+\n'/, }"
+          exit 1
+        }
+        duplicate_artifacts="$(jq -r 'group_by(.name)[] | select(length > 1) | .[0].name // empty' <<<"$artifacts")"
+        [[ -z "$duplicate_artifacts" ]] || {
+          echo "::error::Duplicate artifact names: ${duplicate_artifacts//"$(realpath -e "$GITHUB_WORKSPACE")"
+        safe_path() {
+          local value="$1" label="$2" resolved
+          [[ -n "$value" && "$value" != /* && "$value" != *$'\n'* && "$value" != *$'\r'* ]] || {
+            echo "::error::$label must be a repository-relative path."
+            exit 1
+          }
+          [[ "$value" != ".." && "$value" != ../* && "$value" != */../* && "$value" != */.. ]] || {
+            echo "::error::$label must not contain '..'."
+            exit 1
+          }
+          resolved="$(realpath -e "$GITHUB_WORKSPACE/$value" 2>/dev/null || true)"
+          [[ -n "$resolved" && ( "$resolved" == "$workspace" || "$resolved" == "$workspace/"* ) ]] || {
+            echo "::error::$label does not resolve inside the repository: $value"
+            exit 1
+          }
+        }
+
+        while IFS= read -r component; do
+          name="$(jq -r '.name // empty' <<<"$component")"
+          type="$(jq -r '.type // empty' <<<"$component")"
+          path="$(jq -r '.path // empty' <<<"$component")"
+
+          [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid component name '$name'."; exit 1; }
+          case "$type" in go|node|java-kotlin) ;; *) echo "::error::Unsupported component type '$type' for '$name'."; exit 1 ;; esac
+          safe_path "$path" "Component '$name' path"
+
+          jq -e '
+            (keys - [
+              "name","type","path","watch","watch_path",
+              "go_version","node_version","java_version","package_manager","build_tool","profile",
+              "gradle_tasks","maven_goals",
+              "migration_engine","migration_path","migration_schema","migration_config","migration_package",
+              "migration_package_manager","migration_build_tool","goose_version",
+              "postgres_test","postgres_database_env","postgres_image","postgres_test_args","postgres_test_env"
+            ] | length) == 0
+          ' <<<"$component" >/dev/null || {
+            echo "::error::Component '$name' contains unsupported project-local CI/CD controls."
+            exit 1
+          }
+
+          jq -e '(.watch == null) or ((.watch|type)=="array" and all(.watch[]; type=="string"))' <<<"$component" >/dev/null || {
+            echo "::error::Component '$name' watch must be a string array."
+            exit 1
+          }
+          while IFS= read -r watch; do safe_path "$watch" "Component '$name' watch"; done < <(jq -r '.watch // [] | .[]' <<<"$component")
+
+          if [[ "$type" == "node" ]]; then
+            node_version="$(jq -r '.node_version // empty' <<<"$component")"
+            if [[ -n "$node_version" && ! "$node_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Node component '$name' node_version must be an exact x.y.z version."
+              exit 1
+            fi
+          fi
+        done < <(jq -c '.[]' <<<"$components")
+
+        normalized_services='[]'
+        while IFS= read -r service; do
+          name="$(jq -r '.name // empty' <<<"$service")"
+          path="$(jq -r '.path // empty' <<<"$service")"
+          component="$(jq -r '.component // empty' <<<"$service")"
+
+          [[ "$name" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { echo "::error::Invalid service name '$name'."; exit 1; }
+          safe_path "$path" "Service '$name' path"
+          [[ -f "$GITHUB_WORKSPACE/$path/Dockerfile" ]] || {
+            echo "::error::Service '$name' must use the canonical Dockerfile path '$path/Dockerfile'."
+            exit 1
+          }
+          jq -e --arg component "$component" 'any(.[]; .name == $component)' <<<"$components" >/dev/null || {
+            echo "::error::Service '$name' references unknown component '$component'."
+            exit 1
+          }
+
+          jq -e '
+            (keys - ["name","path","component","watch","database","database_scope","migrate","build_args","manual","expose"] | length) == 0
+            and ((.watch == null) or ((.watch|type)=="array" and all(.watch[]; type=="string")))
+            and ((.database == null) or (.database|type)=="boolean")
+            and ((.database_scope == null) or (.database_scope == "project") or (.database_scope == "service"))
+            and ((.migrate == null) or (.migrate|type)=="boolean")
+            and ((.manual == null) or (.manual|type)=="boolean")
+            and ((.expose == null) or (.expose|type)=="boolean")
+            and ((.build_args == null) or ((.build_args|type)=="array" and all(.build_args[]; type=="string" and test("^[A-Za-z_][A-Za-z0-9_]*$"))))
+          ' <<<"$service" >/dev/null || {
+            echo "::error::Service '$name' contains unsupported deployment controls."
+            exit 1
+          }
+
+          if [[ "$legacy_json" != "true" ]] && ! jq -e 'has("expose") and ((.expose|type)=="boolean")' <<<"$service" >/dev/null; then
+            echo "::error::Canonical YAML service '$name' must explicitly set expose: true or expose: false."
+            exit 1
+          fi
+
+          while IFS= read -r watch; do safe_path "$watch" "Service '$name' watch"; done < <(jq -r '.watch // [] | .[]' <<<"$service")
+
+          migrate="$(jq -r '.migrate // false' <<<"$service")"
+          migration_engine="$(jq -r --arg component "$component" '.[] | select(.name == $component) | .migration_engine // "none"' <<<"$components")"
+          if [[ "$migrate" == "true" && "$migration_engine" == "none" ]]; then
+            echo "::error::Service '$name' enables migrate but component '$component' has no migration_engine."
+            exit 1
+          fi
+
+          database="$(jq -r '.database // false' <<<"$service")"
+          [[ "$migrate" != "true" ]] || database=true
+          database_scope="$(jq -r '.database_scope // "project"' <<<"$service")"
+          if [[ "$database" != "true" && "$database_scope" != "project" ]]; then
+            echo "::error::Service '$name' declares database_scope without database/migrate."
+            exit 1
+          fi
+
+          manual="$(jq -r '.manual // false' <<<"$service")"
+          expose_present="$(jq -r 'has("expose") and ((.expose|type)=="boolean")' <<<"$service")"
+          normalized="$(jq -c             --argjson database "$database"             --arg database_scope "$database_scope"             --argjson migrate "$migrate"             --argjson manual "$manual"             '. + {database:$database,database_scope:$database_scope,migrate:$migrate,manual:$manual,build_args:(.build_args // []),watch:(.watch // [])}' <<<"$service")"
+          if [[ "$expose_present" == "true" ]]; then
+            expose="$(jq -c '.expose' <<<"$service")"
+            normalized="$(jq -c --argjson expose "$expose" '. + {expose:$expose}' <<<"$normalized")"
+          else
+            normalized="$(jq -c 'del(.expose)' <<<"$normalized")"
+          fi
+          normalized_services="$(jq -c --argjson item "$normalized" '. + [$item]' <<<"$normalized_services")"
+        done < <(jq -c '.[]' <<<"$services")
+
+        # Inject service impact mapping into the existing central component detector.
+        normalized_components="$components"
+        while IFS= read -r service; do
+          name="$(jq -r '.name' <<<"$service")"
+          component="$(jq -r '.component' <<<"$service")"
+          watch_len="$(jq '.watch | length' <<<"$service")"
+          if (( watch_len > 0 )); then
+            watch="$(jq -c '.watch' <<<"$service")"
+            normalized_components="$(jq -c               --arg component "$component" --arg service "$name" --argjson watch "$watch"               'map(if .name == $component then .deploy_service_watches = ((.deploy_service_watches // {}) + {($service):$watch}) else . end)'               <<<"$normalized_components")"
+          else
+            normalized_components="$(jq -c               --arg component "$component" --arg service "$name"               'map(if .name == $component then .deploy_services = (((.deploy_services // []) + [$service]) | unique) else . end)'               <<<"$normalized_components")"
+          fi
+        done < <(jq -c '.[]' <<<"$normalized_services")
+
+        {
+          echo "components=$normalized_components"
+          echo "services=$normalized_services"
+          echo "go_private_patterns=$go_private_patterns"
+        } >>"$GITHUB_OUTPUT"
+\n'/, }"
           exit 1
         }
 
