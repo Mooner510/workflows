@@ -6,6 +6,8 @@ outputs:
     value: ${{ steps.load.outputs.components }}
   services:
     value: ${{ steps.load.outputs.services }}
+  artifacts:
+    value: ${{ steps.load.outputs.artifacts }}
   go_private_patterns:
     value: ${{ steps.load.outputs.go_private_patterns }}
 
@@ -94,17 +96,19 @@ runs:
         jq -e '
           type == "object"
           and (.version == 1)
-          and ((keys - ["version","components","services","go_private_patterns"]) | length == 0)
+          and ((keys - ["version","components","services","artifacts","go_private_patterns"]) | length == 0)
           and (.components | type == "array" and length > 0)
           and ((.services // []) | type == "array")
+          and ((.artifacts // []) | type == "array")
           and ((.go_private_patterns == null) or (.go_private_patterns|type)=="string")
         ' "$contract_json" >/dev/null || {
-          echo "::error::Stacks contract must be a version 1 object containing only version, components, services, and optional go_private_patterns."
+          echo "::error::Stacks contract must be a version 1 object containing only version, components, services, artifacts, and optional go_private_patterns."
           exit 1
         }
 
         components="$(jq -c '.components' "$contract_json")"
         services="$(jq -c '.services // []' "$contract_json")"
+        artifacts="$(jq -c '.artifacts // []' "$contract_json")"
         go_private_patterns="$(jq -r '.go_private_patterns // ""' "$contract_json")"
 
         duplicate_components="$(jq -r 'group_by(.name)[] | select(length > 1) | .[0].name // empty' <<<"$components")"
@@ -115,6 +119,20 @@ runs:
         duplicate_services="$(jq -r 'group_by(.name)[] | select(length > 1) | .[0].name // empty' <<<"$services")"
         [[ -z "$duplicate_services" ]] || {
           echo "::error::Duplicate service names: ${duplicate_services//$'\n'/, }"
+          exit 1
+        }
+        duplicate_artifacts="$(jq -r 'group_by(.name)[] | select(length > 1) | .[0].name // empty' <<<"$artifacts")"
+        [[ -z "$duplicate_artifacts" ]] || {
+          echo "::error::Duplicate artifact names: ${duplicate_artifacts//$'\n'/, }"
+          exit 1
+        }
+        service_artifact_collisions="$(jq -nr --argjson services "$services" --argjson artifacts "$artifacts" '
+          [$services[].name] as $service_names
+          | [$artifacts[].name] as $artifact_names
+          | [$service_names[] | select(. as $name | $artifact_names | index($name))] | unique | .[]
+        ')"
+        [[ -z "$service_artifact_collisions" ]] || {
+          echo "::error::Service and artifact names must not collide: ${service_artifact_collisions//$'\n'/, }"
           exit 1
         }
 
@@ -239,6 +257,34 @@ runs:
           normalized_services="$(jq -c --argjson item "$normalized" '. + [$item]' <<<"$normalized_services")"
         done < <(jq -c '.[]' <<<"$services")
 
+        normalized_artifacts='[]'
+        while IFS= read -r artifact; do
+          name="$(jq -r '.name // empty' <<<"$artifact")"
+          path="$(jq -r '.path // empty' <<<"$artifact")"
+
+          [[ "$name" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { echo "::error::Invalid artifact name '$name'."; exit 1; }
+          safe_path "$path" "Artifact '$name' path"
+          [[ -f "$GITHUB_WORKSPACE/$path/Containerfile" ]] || {
+            echo "::error::Artifact '$name' must use the canonical Containerfile path '$path/Containerfile'."
+            exit 1
+          }
+
+          jq -e '
+            (keys - ["name","path","watch"] | length) == 0
+            and ((.watch == null) or ((.watch|type)=="array" and all(.watch[]; type=="string")))
+          ' <<<"$artifact" >/dev/null || {
+            echo "::error::Artifact '$name' contains unsupported controls."
+            exit 1
+          }
+
+          while IFS= read -r watch; do
+            safe_path "$watch" "Artifact '$name' watch"
+          done < <(jq -r '.watch // [] | .[]' <<<"$artifact")
+
+          normalized="$(jq -c '. + {watch:(.watch // [])}' <<<"$artifact")"
+          normalized_artifacts="$(jq -c --argjson item "$normalized" '. + [$item]' <<<"$normalized_artifacts")"
+        done < <(jq -c '.[]' <<<"$artifacts")
+
         # Inject service impact mapping into the existing central component detector.
         normalized_components="$components"
         while IFS= read -r service; do
@@ -256,5 +302,6 @@ runs:
         {
           echo "components=$normalized_components"
           echo "services=$normalized_services"
+          echo "artifacts=$normalized_artifacts"
           echo "go_private_patterns=$go_private_patterns"
         } >>"$GITHUB_OUTPUT"

@@ -71,11 +71,16 @@ jobs:
         shell: bash
         env:
           SERVICES_JSON: ${{ steps.contract.outputs.services }}
+          ARTIFACTS_JSON: ${{ steps.contract.outputs.artifacts }}
         run: |
           set -euo pipefail
           command -v jq >/dev/null || { echo "::error::jq is required on the runner."; exit 1; }
           if [[ "$(jq 'length' <<<"$SERVICES_JSON")" -ne 0 ]]; then
-            echo "::error::project-checks.yml is for non-deploy repositories and requires services: []."
+            echo "::error::project-checks.yml is for source-only repositories and requires services: []."
+            exit 1
+          fi
+          if [[ "$(jq 'length' <<<"$ARTIFACTS_JSON")" -ne 0 ]]; then
+            echo "::error::project-checks.yml is for source-only repositories and requires artifacts: []. Use project-ci.yml for CI-only OCI artifacts."
             exit 1
           fi
 

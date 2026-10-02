@@ -5,6 +5,10 @@ inputs:
   components:
     description: Normalized component JSON array.
     required: true
+  artifacts:
+    description: Normalized CI-only OCI artifact JSON array.
+    required: false
+    default: '[]'
   force_all:
     description: Mark every component and mapped service as affected.
     required: false
@@ -23,6 +27,8 @@ outputs:
     value: ${{ steps.detect.outputs.ci_groups_by_target }}
   affected_services:
     value: ${{ steps.detect.outputs.affected_services }}
+  affected_artifacts:
+    value: ${{ steps.detect.outputs.affected_artifacts }}
   has_changes:
     value: ${{ steps.detect.outputs.has_changes }}
   git_log_opts:
@@ -36,6 +42,7 @@ runs:
       shell: bash
       env:
         COMPONENTS_JSON: ${{ inputs.components }}
+        ARTIFACTS_JSON: ${{ inputs.artifacts }}
         FORCE_ALL: ${{ inputs.force_all }}
         EVENT_NAME: ${{ github.event_name }}
         HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
@@ -49,8 +56,13 @@ runs:
         command -v jq >/dev/null || { echo "::error::jq is required on the self-hosted runner."; exit 1; }
 
         components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
+        artifacts="$(jq -c '.' <<<"$ARTIFACTS_JSON")"
         if [[ "$(jq 'type' <<<"$components")" != '"array"' ]] || [[ "$(jq 'length' <<<"$components")" -eq 0 ]]; then
           echo "::error::components must be a non-empty JSON array."
+          exit 1
+        fi
+        if [[ "$(jq 'type' <<<"$artifacts")" != '"array"' ]]; then
+          echo "::error::artifacts must be a JSON array."
           exit 1
         fi
 
@@ -604,13 +616,49 @@ runs:
           done < <(jq -r 'keys[]' <<<"$service_watch_map")
         done < <(jq -c '.[]' <<<"$normalized")
 
-        if [[ "$(jq 'length' <<<"$normalized")" -gt 0 ]]; then has_changes=true; else has_changes=false; fi
+        affected_artifacts='[]'
+        while IFS= read -r artifact; do
+          artifact_name="$(jq -r '.name' <<<"$artifact")"
+          artifact_path="$(jq -r '.path' <<<"$artifact")"
+          artifact_affected="$force_all"
+
+          if [[ "$artifact_affected" != "true" ]]; then
+            while IFS= read -r changed; do
+              if [[ "$changed" == ".github/workflows/"* || "$changed" == ".github/actions/"* ]]; then
+                artifact_affected=true
+                break
+              fi
+              if [[ "$changed" == "$artifact_path" || "$changed" == "$artifact_path/"* ]]; then
+                artifact_affected=true
+                break
+              fi
+              while IFS= read -r watch; do
+                watch="${watch%/}"
+                if [[ "$watch" == "." ]] || [[ "$changed" == "$watch" ]] || [[ "$changed" == "$watch/"* ]]; then
+                  artifact_affected=true
+                  break 2
+                fi
+              done < <(jq -r '.watch // [] | .[]' <<<"$artifact")
+            done <"$changed_file_list"
+          fi
+
+          if [[ "$artifact_affected" == "true" ]]; then
+            affected_artifacts="$(jq -c --arg name "$artifact_name" '. + [$name] | unique | sort' <<<"$affected_artifacts")"
+          fi
+        done < <(jq -c '.[]' <<<"$artifacts")
+
+        if [[ "$(jq 'length' <<<"$normalized")" -gt 0 ]] || [[ "$(jq 'length' <<<"$affected_artifacts")" -gt 0 ]]; then
+          has_changes=true
+        else
+          has_changes=false
+        fi
 
         {
           echo "all_components=$normalized"
           echo "ci_targets=$ci_targets"
           echo "ci_groups_by_target=$ci_groups_by_target"
           echo "affected_services=$affected_services"
+          echo "affected_artifacts=$affected_artifacts"
           echo "has_changes=$has_changes"
           echo "git_log_opts=$git_log_opts"
         } >>"$GITHUB_OUTPUT"

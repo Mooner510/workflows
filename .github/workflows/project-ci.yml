@@ -33,16 +33,21 @@ jobs:
     outputs:
       components: ${{ steps.contract.outputs.components }}
       services: ${{ steps.contract.outputs.services }}
+      artifacts: ${{ steps.contract.outputs.artifacts }}
       go_private_patterns: ${{ steps.contract.outputs.go_private_patterns }}
       affected_components: ${{ steps.detect.outputs.all_components }}
       ci_targets: ${{ steps.detect.outputs.ci_targets }}
       ci_groups: ${{ steps.detect.outputs.ci_groups_by_target }}
       affected_services: ${{ steps.detect.outputs.affected_services }}
+      affected_artifacts: ${{ steps.detect.outputs.affected_artifacts }}
       image_services: ${{ steps.mode.outputs.image_services }}
       git_log_opts: ${{ steps.detect.outputs.git_log_opts }}
       image_environment: ${{ steps.mode.outputs.environment }}
       image_required: ${{ steps.mode.outputs.image_required }}
       publish_required: ${{ steps.mode.outputs.publish_required }}
+      artifact_names: ${{ steps.mode.outputs.artifact_names }}
+      artifact_required: ${{ steps.mode.outputs.artifact_required }}
+      artifact_publish_required: ${{ steps.mode.outputs.artifact_publish_required }}
       ci_required: ${{ steps.mode.outputs.ci_required }}
       security_required: ${{ steps.mode.outputs.security_required }}
 
@@ -79,6 +84,7 @@ jobs:
         uses: Mooner510/workflows/.github/actions/ci/detect@v1
         with:
           components: ${{ steps.contract.outputs.components }}
+          artifacts: ${{ steps.contract.outputs.artifacts }}
           force_all: ${{ inputs.force_all }}
           diff_base: ${{ inputs.diff_base }}
 
@@ -91,7 +97,9 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EVENT_NAME: ${{ github.event_name }}
           AFFECTED_SERVICES: ${{ steps.detect.outputs.affected_services }}
+          AFFECTED_ARTIFACTS: ${{ steps.detect.outputs.affected_artifacts }}
           SERVICES_JSON: ${{ steps.contract.outputs.services }}
+          ARTIFACTS_JSON: ${{ steps.contract.outputs.artifacts }}
           CI_TARGETS: ${{ steps.detect.outputs.ci_targets }}
           HAS_CHANGES: ${{ steps.detect.outputs.has_changes }}
         run: |
@@ -127,6 +135,21 @@ jobs:
             publish_required=true
           fi
 
+          artifact_names="$AFFECTED_ARTIFACTS"
+          if [[ "$EVENT_NAME" == "push" && -n "$DEFAULT_BRANCH" && "$REF_NAME" == "$DEFAULT_BRANCH" ]]; then
+            artifact_names="$(jq -c '[.[].name]' <<<"$ARTIFACTS_JSON")"
+          fi
+
+          artifact_required=false
+          if [[ -n "$environment" && "$(jq 'length' <<<"$artifact_names")" -gt 0 ]]; then
+            artifact_required=true
+          fi
+
+          artifact_publish_required=false
+          if [[ "$EVENT_NAME" == "push" && -n "$DEFAULT_BRANCH" && "$REF_NAME" == "$DEFAULT_BRANCH" && "$artifact_required" == "true" ]]; then
+            artifact_publish_required=true
+          fi
+
           if [[ "$CI_TARGETS" == "[]" ]]; then ci_required=false; else ci_required=true; fi
           if [[ "$HAS_CHANGES" == "true" ]]; then security_required=true; else security_required=false; fi
 
@@ -135,6 +158,9 @@ jobs:
             echo "image_required=$image_required"
             echo "image_services=$image_services"
             echo "publish_required=$publish_required"
+            echo "artifact_names=$artifact_names"
+            echo "artifact_required=$artifact_required"
+            echo "artifact_publish_required=$artifact_publish_required"
             echo "ci_required=$ci_required"
             echo "security_required=$security_required"
           } >>"$GITHUB_OUTPUT"
@@ -243,9 +269,56 @@ jobs:
           retention-days: 3
           compression-level: 0
 
+  artifacts:
+    name: OCI Artifact (${{ matrix.artifact }})
+    needs: contract
+    if: needs.contract.outputs.artifact_required == 'true'
+    runs-on: [self-hosted, linux, "gharp-artifact-${{ github.run_id }}-${{ github.run_attempt }}"]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        artifact: ${{ fromJSON(needs.contract.outputs.artifact_names) }}
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Select artifact contract
+        id: artifact
+        shell: bash
+        env:
+          ARTIFACTS_JSON: ${{ needs.contract.outputs.artifacts }}
+          ARTIFACT_NAME: ${{ matrix.artifact }}
+        run: |
+          set -euo pipefail
+          artifact="$(jq -c --arg name "$ARTIFACT_NAME" '.[] | select(.name == $name)' <<<"$ARTIFACTS_JSON")"
+          [[ -n "$artifact" ]] || { echo "::error::Artifact '$ARTIFACT_NAME' is not declared."; exit 1; }
+          echo "artifact=$artifact" >>"$GITHUB_OUTPUT"
+
+      - name: Build and scan CI-only OCI artifact
+        id: build
+        uses: Mooner510/workflows/.github/actions/ci/oci-artifact@v1
+        with:
+          artifact: ${{ steps.artifact.outputs.artifact }}
+          private-repo-token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
+
+      - name: Publish CI-only OCI artifact
+        if: needs.contract.outputs.artifact_publish_required == 'true'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: gharp-oci-${{ matrix.artifact }}
+          path: ${{ steps.build.outputs.bundle-path }}
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
   verify:
     name: Verify
-    needs: [contract, security, ci, images]
+    needs: [contract, security, ci, images, artifacts]
     if: always() && needs.contract.result == 'success'
     runs-on: [self-hosted, linux, "gharp-verify-${{ github.run_id }}-${{ github.run_attempt }}"]
     timeout-minutes: 10
@@ -257,9 +330,11 @@ jobs:
           SECURITY_REQUIRED: ${{ needs.contract.outputs.security_required }}
           CI_REQUIRED: ${{ needs.contract.outputs.ci_required }}
           IMAGE_REQUIRED: ${{ needs.contract.outputs.image_required }}
+          ARTIFACT_REQUIRED: ${{ needs.contract.outputs.artifact_required }}
           SECURITY_RESULT: ${{ needs.security.result }}
           CI_RESULT: ${{ needs.ci.result }}
           IMAGE_RESULT: ${{ needs.images.result }}
+          ARTIFACT_RESULT: ${{ needs.artifacts.result }}
         run: |
           set -euo pipefail
           if [[ "$SECURITY_REQUIRED" == "true" && "$SECURITY_RESULT" != "success" ]]; then
@@ -272,6 +347,10 @@ jobs:
           fi
           if [[ "$IMAGE_REQUIRED" == "true" && "$IMAGE_RESULT" != "success" ]]; then
             echo "::error::Docker build/image scan did not succeed ($IMAGE_RESULT)."
+            exit 1
+          fi
+          if [[ "$ARTIFACT_REQUIRED" == "true" && "$ARTIFACT_RESULT" != "success" ]]; then
+            echo "::error::CI-only OCI artifact build/scan did not succeed ($ARTIFACT_RESULT)."
             exit 1
           fi
 
