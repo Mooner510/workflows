@@ -187,7 +187,7 @@ jobs:
             fi
           done
 
-          if grep -RInE 'repository_dispatch|production_deploy|production_rollback|gharp-production-request' "$GITHUB_WORKSPACE/.github"; then
+          if grep -RInE --exclude='validate.yml' 'repository_dispatch|production_deploy|production_rollback|gharp-production-request' "$GITHUB_WORKSPACE/.github"; then
             echo "::error::GitHub-triggered production runtime authority is forbidden."
             exit 1
           fi
