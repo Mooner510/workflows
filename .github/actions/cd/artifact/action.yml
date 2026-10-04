@@ -1,5 +1,5 @@
-name: Package trusted deployment artifact
-description: Package one verified OCI image plus canonical deployment metadata for the trusted Gharp controller.
+name: Publish trusted local deployment bundle
+description: Package one verified OCI image and publish it only to the job-scoped local Gharp spool.
 
 inputs:
   service:
@@ -47,6 +47,11 @@ runs:
         command -v sha256sum >/dev/null
         command -v tar >/dev/null
 
+        [[ "${GHARP_ARTIFACT_SPOOL:-}" == "/run/gharp-artifacts" ]] || {
+          echo "::error::Job-scoped Gharp artifact spool is unavailable."
+          exit 1
+        }
+
         case "$DEPLOY_ENVIRONMENT" in
           prod|dev) ;;
           *) echo "::error::environment must be prod or dev."; exit 1 ;;
@@ -66,6 +71,14 @@ runs:
         }
 
         service="$(jq -r '.name' <<<"$SERVICE_JSON")"
+        [[ "$service" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
+          echo "::error::Invalid service name '$service'."
+          exit 1
+        }
+        [[ "${GHARP_ARTIFACT_SERVICE:-}" == "$service" ]] || {
+          echo "::error::Runner artifact spool is not scoped to service '$service'."
+          exit 1
+        }
         component_name="$(jq -r '.component' <<<"$SERVICE_JSON")"
         component="$(jq -c --arg name "$component_name" '.[] | select(.name == $name)' <<<"$COMPONENTS_JSON")"
         [[ -n "$component" ]] || {
@@ -173,4 +186,21 @@ runs:
             service_contract:$service_contract
           }' >"$bundle/metadata.json"
 
-        echo "bundle_path=$bundle" >>"$GITHUB_OUTPUT"
+        target="$GHARP_ARTIFACT_SPOOL/bundles/$service"
+        [[ -d "$target" ]] || {
+          echo "::error::Pre-created service spool is missing."
+          exit 1
+        }
+
+        rm -f -- "$target/image.oci.tar" "$target/metadata.json" "$target/source.tar.gz"
+        cp -- "$bundle/image.oci.tar" "$target/image.oci.tar"
+        cp -- "$bundle/metadata.json" "$target/metadata.json"
+        if [[ -f "$bundle/source.tar.gz" ]]; then
+          cp -- "$bundle/source.tar.gz" "$target/source.tar.gz"
+        fi
+        chmod 0444 "$target/image.oci.tar" "$target/metadata.json"
+        if [[ -f "$target/source.tar.gz" ]]; then
+          chmod 0444 "$target/source.tar.gz"
+        fi
+
+        echo "bundle_path=$target" >>"$GITHUB_OUTPUT"
