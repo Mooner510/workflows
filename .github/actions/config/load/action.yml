@@ -223,6 +223,15 @@ runs:
             exit 1
           }
 
+          if [[ "$legacy_json" != "true" ]] && jq -e 'has("build_args")' <<<"$service" >/dev/null; then
+            echo "::error::Canonical YAML service '$name' must not declare build_args. Isolated builds do not read host runtime configuration."
+            exit 1
+          fi
+          if [[ "$(jq '.build_args // [] | length' <<<"$service")" -ne 0 ]]; then
+            echo "::error::Service '$name' has non-empty legacy build_args. Move build-time configuration into the repository-owned build contract."
+            exit 1
+          fi
+
           if [[ "$legacy_json" != "true" ]] && ! jq -e 'has("expose") and ((.expose|type)=="boolean")' <<<"$service" >/dev/null; then
             echo "::error::Canonical YAML service '$name' must explicitly set expose: true or expose: false."
             exit 1
