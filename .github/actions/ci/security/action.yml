@@ -9,6 +9,14 @@ inputs:
     description: Commit range passed to Gitleaks git history scanning.
     required: false
     default: --all
+  go_private_patterns:
+    description: Optional GOPRIVATE pattern for private Go modules.
+    required: false
+    default: ''
+  private_repo_token:
+    description: Optional GitHub token with read access to private Go module repositories.
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -249,9 +257,23 @@ runs:
       shell: bash
       env:
         TARGET_FILE: ${{ steps.targets.outputs.go_vuln_targets }}
+        CI_PRIVATE_REPO_TOKEN: ${{ inputs.private_repo_token }}
+        GOPRIVATE: ${{ inputs.go_private_patterns }}
+        GONOSUMDB: ${{ inputs.go_private_patterns }}
       run: |
         set -euo pipefail
         command -v go >/dev/null || { echo "::error::Go is required for govulncheck."; exit 1; }
+
+        git_config="$RUNNER_TEMP/workflows-security-go-gitconfig"
+        : >"$git_config"
+        chmod 600 "$git_config"
+        export GIT_CONFIG_GLOBAL="$git_config"
+        trap 'rm -f "$git_config"' EXIT
+
+        if [[ -n "${CI_PRIVATE_REPO_TOKEN:-}" ]]; then
+          echo "::add-mask::$CI_PRIVATE_REPO_TOKEN"
+          git config --global url."https://x-access-token:${CI_PRIVATE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
+        fi
 
         while IFS= read -r target; do
           [[ -n "$target" ]] || continue
