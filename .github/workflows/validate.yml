@@ -132,6 +132,21 @@ jobs:
 
           (( invalid == 0 )) || exit 1
 
+      - name: Reject GitHub Artifact transport in canonical CI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          targets=(
+            "$GITHUB_WORKSPACE/.github/workflows/project-ci.yml"
+            "$GITHUB_WORKSPACE/.github/actions/cd/artifact/action.yml"
+            "$GITHUB_WORKSPACE/.github/actions/ci/oci-artifact/action.yml"
+          )
+          if grep -nE 'actions/(upload|download)-artifact' "${targets[@]}"; then
+            echo "::error::Canonical CI must not use GitHub Actions Artifact as a binary transport."
+            exit 1
+          fi
+
       - name: Validate isolated PostgreSQL CI boundary
         shell: bash
         run: |

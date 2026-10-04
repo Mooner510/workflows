@@ -90,12 +90,26 @@ runs:
           exit 1
         }
 
-        artifact_root="$RUNNER_TEMP/oci-$service"
-        archive="$artifact_root/image.oci.tar"
-        layout="$artifact_root/layout"
-        metadata="$artifact_root/metadata.json"
-        rm -rf "$artifact_root"
-        mkdir -p "$artifact_root" "$layout"
+        if [[ -n "${GHARP_ARTIFACT_SPOOL:-}" ]]; then
+          [[ "$GHARP_ARTIFACT_SPOOL" == "/run/gharp-artifacts" && "${GHARP_ARTIFACT_SERVICE:-}" == "$service" ]] || {
+            echo "::error::Invalid job-scoped artifact spool identity."
+            exit 1
+          }
+          artifact_root="$GHARP_ARTIFACT_SPOOL/bundles/$service"
+          [[ -d "$artifact_root" ]] || {
+            echo "::error::Pre-created service spool is missing."
+            exit 1
+          }
+          archive="$artifact_root/image.oci.tar"
+          rm -f -- "$archive"
+        else
+          artifact_root="$RUNNER_TEMP/oci-$service"
+          archive="$artifact_root/image.oci.tar"
+          rm -rf "$artifact_root"
+          mkdir -p "$artifact_root"
+        fi
+        metadata="$RUNNER_TEMP/oci-$service-build-metadata.json"
+        rm -f -- "$metadata"
 
         args=(
           buildctl
@@ -119,8 +133,6 @@ runs:
         echo "==> Building isolated OCI artifact $project/$service@$GITHUB_SHA"
         "${args[@]}"
 
-        tar -xf "$archive" -C "$layout"
-
         manifest_digest="$(jq -r '.["containerimage.digest"] // empty' "$metadata")"
         config_digest="$(jq -r '.["containerimage.config.digest"] // empty' "$metadata")"
         [[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
@@ -132,8 +144,9 @@ runs:
           exit 1
         }
 
-        config_blob="$layout/blobs/sha256/${config_digest#sha256:}"
-        [[ -f "$config_blob" ]] || {
+        config_blob="$RUNNER_TEMP/oci-$service-config.json"
+        rm -f -- "$config_blob"
+        tar -xOf "$archive" "blobs/sha256/${config_digest#sha256:}" >"$config_blob" || {
           echo "::error::OCI config blob is missing from exported artifact."
           exit 1
         }
@@ -180,7 +193,12 @@ runs:
         fi
 
         echo "==> Trivy isolated OCI vulnerability scan (HIGH/CRITICAL)"
-        "$trivy" image           --input "$layout"           --scanners vuln           --severity HIGH,CRITICAL           --exit-code 1           --no-progress           --skip-version-check
+        "$trivy" image           --input "$archive"           --scanners vuln           --severity HIGH,CRITICAL           --exit-code 1           --no-progress           --skip-version-check
+
+        if [[ -n "${GHARP_ARTIFACT_SPOOL:-}" ]]; then
+          chmod 0444 "$archive"
+        fi
+        rm -f -- "$metadata" "$config_blob"
 
         image="$project/$service:$GITHUB_SHA"
         {
