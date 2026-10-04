@@ -24,6 +24,41 @@ Production runtime mutation용 reusable workflow는 존재하지 않는다. `rep
 
 `security.yml` reusable workflow는 제거했다. Security와 language/migration CI orchestration은 각각 `.github/actions/ci/security`, `.github/actions/ci/group` 내부 action으로 통합하여 `project-ci.yml`과 legacy `pipeline.yml`이 같은 구현을 공유한다. `.github/workflows/validate.yml`은 이 implementation repository 자체의 workflow syntax/reference policy만 검증한다. `Mooner510/workflows`는 public repository이므로 이 repository 자체의 PR/push validation은 GitHub-hosted `ubuntu-latest`에서만 실행한다. Private consumer repository의 canonical CI는 Gharp가 job마다 발급하는 disposable repository-scoped JIT runner에서 실행한다. Public implementation repository인 `Mooner510/workflows` 자체 검증만 GitHub-hosted `ubuntu-latest`를 사용한다. Central `go-format.yml`도 `workflow_call` 전용이며 `workflows` repository 자체에서 직접 dispatch하지 않는다.
 
+## New project onboarding
+
+Deployment-capable repository의 최소 canonical shape:
+
+```text
+.github/stacks.yml
+.github/workflows/ci.yml
+.github/workflows/go-format.yml   # Go component가 있을 때
+<service.path>/Dockerfile         # service마다
+```
+
+GitHub에는 production deployment workflow를 만들지 않는다.
+
+```text
+.github/workflows/deploy.yml      # 금지
+repository_dispatch production_* # 금지
+workflow_dispatch production     # 금지
+```
+
+Default branch CI가 verified production promotion을 만들고, 실제 production 실행은 host에서만 수행한다.
+
+```text
+default branch CI success
+→ verified production promotion
+
+server:
+project deploy <project[/service]>
+project rollback <project[/service]>
+project restart <project[/service]>
+```
+
+Non-deploy tooling repository는 `services: []`을 선언하고 `project-checks.yml@v1`만 호출한다.
+
+Repository-local CI/CD가 필요한 것처럼 보이는 요구사항이 생기면 먼저 `.github/stacks.yml` contract 또는 central generic implementation을 확장한다. Consumer repository에 host-mutation shell/action을 추가하지 않는다.
+
 ## One repository declaration
 
 모든 project-specific CI/CD metadata의 기본 canonical source는 다음 경로다.
