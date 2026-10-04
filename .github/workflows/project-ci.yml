@@ -268,7 +268,7 @@ jobs:
           name: gharp-deploy-${{ matrix.service }}
           path: ${{ steps.package.outputs.bundle-path }}
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 1
           compression-level: 0
 
   artifacts:
@@ -315,7 +315,7 @@ jobs:
           name: gharp-oci-${{ matrix.artifact }}
           path: ${{ steps.build.outputs.bundle-path }}
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 1
           compression-level: 0
 
   verify:
