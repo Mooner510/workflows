@@ -148,6 +148,50 @@ jobs:
             exit 1
           }
 
+      - name: Reject repository-owned production runtime surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          forbidden_paths=(
+            ".github/workflows/production.yml"
+            ".github/actions/cd/android-production"
+            ".github/actions/cd/android"
+            ".github/actions/cd/development-enabled"
+            ".github/actions/cd/docker-process-development"
+            ".github/actions/cd/docker-process-production"
+            ".github/actions/cd/docker-process"
+            ".github/actions/cd/docker-service-development"
+            ".github/actions/cd/docker-service-production"
+            ".github/actions/cd/docker-service-rollback"
+            ".github/actions/cd/docker-service"
+            ".github/actions/cd/docker/build"
+            ".github/actions/cd/docker/deploy"
+            ".github/actions/cd/docker/finalize"
+            ".github/actions/cd/docker/health"
+            ".github/actions/cd/docker/run"
+            ".github/actions/cd/guard"
+            ".github/actions/cd/identity"
+            ".github/actions/cd/migration"
+            ".github/actions/cd/resolve-cors-metadata"
+            ".github/actions/cd/resolve-db-credentials"
+            ".github/actions/cd/resolve-runtime-env-files"
+            ".github/actions/cd/service"
+            ".github/actions/cd/state"
+          )
+
+          for path in "${forbidden_paths[@]}"; do
+            if [[ -e "$GITHUB_WORKSPACE/$path" ]]; then
+              echo "::error file=$path::Legacy repository-runner host-mutation surface must not exist."
+              exit 1
+            fi
+          done
+
+          if grep -RInE 'repository_dispatch|production_deploy|production_rollback|gharp-production-request' "$GITHUB_WORKSPACE/.github"; then
+            echo "::error::GitHub-triggered production runtime authority is forbidden."
+            exit 1
+          fi
+
       - name: Validate Gharp JIT runner policy
         shell: bash
         run: |
@@ -156,8 +200,8 @@ jobs:
           invalid=0
           workflows=(
             "$GITHUB_WORKSPACE/.github/workflows/project-ci.yml"
+            "$GITHUB_WORKSPACE/.github/workflows/project-checks.yml"
             "$GITHUB_WORKSPACE/.github/workflows/pipeline.yml"
-            "$GITHUB_WORKSPACE/.github/workflows/production.yml"
             "$GITHUB_WORKSPACE/.github/workflows/go-format.yml"
           )
 
