@@ -265,7 +265,7 @@ jobs:
     name: OCI Artifact (${{ matrix.artifact }})
     needs: contract
     if: needs.contract.outputs.artifact_required == 'true'
-    runs-on: [self-hosted, linux, "gharp-artifact-${{ github.run_id }}-${{ github.run_attempt }}"]
+    runs-on: [self-hosted, linux, "gharp-artifact-${{ github.run_id }}-${{ github.run_attempt }}", "gharp-scratch-${{ matrix.artifact }}"]
     timeout-minutes: 45
     strategy:
       fail-fast: false
