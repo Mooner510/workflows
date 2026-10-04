@@ -177,6 +177,8 @@ jobs:
         with:
           components: ${{ needs.contract.outputs.affected_components }}
           git_log_opts: ${{ needs.contract.outputs.git_log_opts }}
+          go_private_patterns: ${{ needs.contract.outputs.go_private_patterns }}
+          private_repo_token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
 
   ci:
     name: ${{ matrix.target }}
