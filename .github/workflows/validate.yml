@@ -165,7 +165,7 @@ jobs:
             exit 1
           }
 
-          if grep -nE '(archive|artifact_root|bundle)=.*RUNNER_TEMP' "$prepare"; then
+          if grep -nE '^[[:space:]]*(archive|artifact_root|bundle)=.*RUNNER_TEMP' "$prepare"; then
             echo "::error::OCI archive/bundle paths must never fall back to runner SSD temporary storage."
             exit 1
           fi
