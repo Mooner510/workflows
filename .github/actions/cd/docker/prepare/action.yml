@@ -185,7 +185,7 @@ runs:
           trap - EXIT
         fi
 
-        scan_layout="$GHARP_ARTIFACT_SPOOL/.scan-$service"
+        scan_layout="$artifact_root/.scan"
         rm -rf -- "$scan_layout"
         mkdir -p "$scan_layout"
         cleanup_scan_layout() {
