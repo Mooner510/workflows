@@ -30,6 +30,66 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Restore declared build caches
+      shell: bash
+      env:
+        COMPONENTS_JSON: ${{ inputs.components }}
+      run: |
+        set -euo pipefail
+        command -v jq >/dev/null || { echo "::error::jq is required on the runner."; exit 1; }
+        command -v realpath >/dev/null || { echo "::error::realpath is required on the runner."; exit 1; }
+
+        if [[ ! -d /cache || ! -w /cache ]]; then
+          echo "==> Persistent runner cache unavailable; declared build caches are disabled for this job."
+          exit 0
+        fi
+
+        workspace="$(realpath -e "$GITHUB_WORKSPACE")"
+        while IFS= read -r component_json; do
+          name="$(jq -r '.name // empty' <<<"$component_json")"
+          path="$(jq -r '.path // empty' <<<"$component_json")"
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+          [[ -n "$component" && ( "$component" == "$workspace" || "$component" == "$workspace/"* ) ]] || {
+            echo "::error::Component '$name' must resolve inside the repository."
+            exit 1
+          }
+
+          cache_root="$(realpath -m "/cache/build/v1/$name")"
+          [[ "$cache_root" == "/cache/build/v1/"* ]] || {
+            echo "::error::Persistent build cache root escaped the managed cache namespace."
+            exit 1
+          }
+
+          while IFS= read -r cache_path; do
+            [[ -n "$cache_path" ]] || continue
+            workspace_cache="$(realpath -m "$component/$cache_path" 2>/dev/null || true)"
+            [[ -n "$workspace_cache" && "$workspace_cache" == "$component/"* ]] || {
+              echo "::error::Build cache path escapes component '$name': $cache_path"
+              exit 1
+            }
+            [[ ! -L "$workspace_cache" ]] || {
+              echo "::error::Build cache path must not be a symlink: $cache_path"
+              exit 1
+            }
+            [[ ! -e "$workspace_cache" || -d "$workspace_cache" ]] || {
+              echo "::error::Build cache path must be a directory: $cache_path"
+              exit 1
+            }
+
+            persistent_cache="$(realpath -m "$cache_root/$cache_path")"
+            [[ "$persistent_cache" == "$cache_root/"* ]] || {
+              echo "::error::Persistent build cache path escaped the component cache namespace."
+              exit 1
+            }
+
+            if [[ -d "$persistent_cache" && ! -L "$persistent_cache" ]]; then
+              mkdir -p "$workspace_cache"
+              cp -a "$persistent_cache/." "$workspace_cache/"
+              echo "==> Restored build cache: $name/$cache_path"
+            fi
+          done < <(jq -r '.build_cache.paths // [] | .[]' <<<"$component_json")
+        done < <(jq -c '.[]' <<<"$COMPONENTS_JSON")
+
     - name: Go CI
       if: inputs.type == 'go'
       uses: Mooner510/workflows/.github/actions/ci/go@v1
@@ -56,6 +116,69 @@ runs:
         version: ${{ inputs.version }}
         build-tool: ${{ inputs.build-tool }}
         profile: ${{ inputs.profile }}
+
+    - name: Save declared build caches
+      shell: bash
+      env:
+        COMPONENTS_JSON: ${{ inputs.components }}
+      run: |
+        set -euo pipefail
+        command -v jq >/dev/null || { echo "::error::jq is required on the runner."; exit 1; }
+        command -v realpath >/dev/null || { echo "::error::realpath is required on the runner."; exit 1; }
+
+        if [[ ! -d /cache || ! -w /cache ]]; then
+          exit 0
+        fi
+
+        workspace="$(realpath -e "$GITHUB_WORKSPACE")"
+        while IFS= read -r component_json; do
+          name="$(jq -r '.name // empty' <<<"$component_json")"
+          path="$(jq -r '.path // empty' <<<"$component_json")"
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+          [[ -n "$component" && ( "$component" == "$workspace" || "$component" == "$workspace/"* ) ]] || {
+            echo "::error::Component '$name' must resolve inside the repository."
+            exit 1
+          }
+
+          cache_root="$(realpath -m "/cache/build/v1/$name")"
+          [[ "$cache_root" == "/cache/build/v1/"* ]] || {
+            echo "::error::Persistent build cache root escaped the managed cache namespace."
+            exit 1
+          }
+          mkdir -p "$cache_root"
+
+          while IFS= read -r cache_path; do
+            [[ -n "$cache_path" ]] || continue
+            workspace_cache="$(realpath -m "$component/$cache_path" 2>/dev/null || true)"
+            [[ -n "$workspace_cache" && "$workspace_cache" == "$component/"* ]] || {
+              echo "::error::Build cache path escapes component '$name': $cache_path"
+              exit 1
+            }
+            if [[ ! -e "$workspace_cache" ]]; then
+              continue
+            fi
+            [[ -d "$workspace_cache" && ! -L "$workspace_cache" ]] || {
+              echo "::error::Build cache output must remain a regular directory: $cache_path"
+              exit 1
+            }
+
+            persistent_cache="$(realpath -m "$cache_root/$cache_path")"
+            [[ "$persistent_cache" == "$cache_root/"* ]] || {
+              echo "::error::Persistent build cache path escaped the component cache namespace."
+              exit 1
+            }
+
+            parent="$(dirname "$persistent_cache")"
+            mkdir -p "$parent"
+            staged="$parent/.gharp-cache-stage-$(basename "$persistent_cache")"
+            rm -rf -- "$staged"
+            mkdir -p "$staged"
+            cp -a "$workspace_cache/." "$staged/"
+            rm -rf -- "$persistent_cache"
+            mv "$staged" "$persistent_cache"
+            echo "==> Saved build cache: $name/$cache_path"
+          done < <(jq -r '.build_cache.paths // [] | .[]' <<<"$component_json")
+        done < <(jq -c '.[]' <<<"$COMPONENTS_JSON")
 
     - name: Migration CI
       uses: Mooner510/workflows/.github/actions/ci/migration@v1
