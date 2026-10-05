@@ -90,24 +90,17 @@ runs:
           exit 1
         }
 
-        if [[ -n "${GHARP_ARTIFACT_SPOOL:-}" ]]; then
-          [[ "$GHARP_ARTIFACT_SPOOL" == "/run/gharp-artifacts" && "${GHARP_ARTIFACT_SERVICE:-}" == "$service" ]] || {
-            echo "::error::Invalid job-scoped artifact spool identity."
-            exit 1
-          }
-          artifact_root="$GHARP_ARTIFACT_SPOOL/bundles/$service"
-          [[ -d "$artifact_root" ]] || {
-            echo "::error::Pre-created service spool is missing."
-            exit 1
-          }
-          archive="$artifact_root/image.oci.tar"
-          rm -f -- "$archive"
-        else
-          artifact_root="$RUNNER_TEMP/oci-$service"
-          archive="$artifact_root/image.oci.tar"
-          rm -rf "$artifact_root"
-          mkdir -p "$artifact_root"
-        fi
+        [[ "${GHARP_ARTIFACT_SPOOL:-}" == "/run/gharp-artifacts" && "${GHARP_ARTIFACT_SERVICE:-}" == "$service" ]] || {
+          echo "::error::Job-scoped backup-HDD artifact spool is required for every OCI image build."
+          exit 1
+        }
+        artifact_root="$GHARP_ARTIFACT_SPOOL/bundles/$service"
+        [[ -d "$artifact_root" ]] || {
+          echo "::error::Pre-created service spool is missing."
+          exit 1
+        }
+        archive="$artifact_root/image.oci.tar"
+        rm -f -- "$archive"
         metadata="$RUNNER_TEMP/oci-$service-build-metadata.json"
         rm -f -- "$metadata"
 
