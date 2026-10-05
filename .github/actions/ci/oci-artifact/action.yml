@@ -141,8 +141,29 @@ runs:
           trap - EXIT
         fi
 
+        scan_layout="$(mktemp -d "$work/.scan-XXXXXX")"
+        cleanup_scan_layout() {
+          rm -rf -- "$scan_layout"
+        }
+        trap cleanup_scan_layout EXIT
+
+        tar -xf "$archive" -C "$scan_layout"
+        [[ -f "$scan_layout/oci-layout" && -f "$scan_layout/index.json" && -d "$scan_layout/blobs" ]] || {
+          echo "::error::Extracted OCI scan layout is incomplete."
+          exit 1
+        }
+
         echo "==> Trivy isolated OCI vulnerability scan (HIGH/CRITICAL)"
-        "$trivy" image           --input "$archive"           --scanners vuln           --severity HIGH,CRITICAL           --exit-code 1           --no-progress           --skip-version-check
+        "$trivy" image \
+          --input "$scan_layout" \
+          --scanners vuln \
+          --severity HIGH,CRITICAL \
+          --exit-code 1 \
+          --no-progress \
+          --skip-version-check
+
+        cleanup_scan_layout
+        trap - EXIT
 
         archive_digest="sha256:$(sha256sum "$archive" | awk '{print $1}')"
 
