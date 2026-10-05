@@ -235,6 +235,29 @@ jobs:
             exit 1
           fi
 
+      - name: Validate Go formatting policy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          go_ci="$GITHUB_WORKSPACE/.github/actions/ci/go/action.yml"
+          go_format="$GITHUB_WORKSPACE/.github/workflows/go-format.yml"
+
+          if grep -nE '(^|[[:space:]])gofmt([[:space:]]|$)|(^|[[:space:]])go[[:space:]]+fmt([[:space:]]|$)' "$go_ci"; then
+            echo "::error file=.github/actions/ci/go/action.yml::Canonical Go CI must not fail solely on source formatting. Keep gofmt in the manual Go Format maintenance workflow."
+            exit 1
+          fi
+
+          grep -q "go-version: '1.27.1'" "$go_format" || {
+            echo "::error file=.github/workflows/go-format.yml::Go Format must use exact Go 1.27.1."
+            exit 1
+          }
+
+          if grep -qE 'go-version:[[:space:]]*(stable|latest|1\.27([^.]|$))' "$go_format"; then
+            echo "::error file=.github/workflows/go-format.yml::Floating or partial Go versions are forbidden."
+            exit 1
+          fi
+
       - name: Validate Gharp JIT runner policy
         shell: bash
         run: |
