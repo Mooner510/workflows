@@ -48,6 +48,15 @@ runs:
           exit 1
         }
 
+        [[ "${GHARP_ARTIFACT_SPOOL:-}" == "/run/gharp-artifacts" ]] || {
+          echo "::error::Job-scoped Gharp HDD scratch spool is unavailable."
+          exit 1
+        }
+        [[ "${GHARP_ARTIFACT_SERVICE:-}" == "$name" ]] || {
+          echo "::error::Runner HDD scratch scope does not match artifact '$name'."
+          exit 1
+        }
+
         workspace="$(realpath -e "$GITHUB_WORKSPACE")"
         artifact_root="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
         [[ -n "$artifact_root" && ( "$artifact_root" == "$workspace" || "$artifact_root" == "$workspace/"* ) ]] || {
@@ -66,13 +75,16 @@ runs:
           exit 1
         }
 
-        work="$RUNNER_TEMP/oci-artifact-$name"
+        work="$GHARP_ARTIFACT_SPOOL/bundles/$name"
+        [[ -d "$work" ]] || {
+          echo "::error::Pre-created HDD scratch directory is missing."
+          exit 1
+        }
         archive="$work/image.oci.tar"
-        layout="$work/layout"
-        build_metadata="$work/build-metadata.json"
-        bundle="$RUNNER_TEMP/gharp-oci-$name"
-        rm -rf "$work" "$bundle"
-        mkdir -p "$work" "$layout" "$bundle"
+        build_metadata="$work/.build-metadata.json"
+        config_blob="$work/.config.json"
+        metadata="$work/metadata.json"
+        rm -f -- "$archive" "$build_metadata" "$config_blob" "$metadata"
 
         args=(
           buildctl
@@ -95,8 +107,6 @@ runs:
         echo "==> Building isolated CI-only OCI artifact $project/$name@$GITHUB_SHA"
         "${args[@]}"
 
-        tar -xf "$archive" -C "$layout"
-
         manifest_digest="$(jq -r '.["containerimage.digest"] // empty' "$build_metadata")"
         config_digest="$(jq -r '.["containerimage.config.digest"] // empty' "$build_metadata")"
         [[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
@@ -108,8 +118,7 @@ runs:
           exit 1
         }
 
-        config_blob="$layout/blobs/sha256/${config_digest#sha256:}"
-        [[ -f "$config_blob" ]] || {
+        tar -xOf "$archive" "blobs/sha256/${config_digest#sha256:}" >"$config_blob" || {
           echo "::error::OCI config blob is missing from exported artifact."
           exit 1
         }
@@ -133,10 +142,9 @@ runs:
         fi
 
         echo "==> Trivy isolated OCI vulnerability scan (HIGH/CRITICAL)"
-        "$trivy" image           --input "$layout"           --scanners vuln           --severity HIGH,CRITICAL           --exit-code 1           --no-progress           --skip-version-check
+        "$trivy" image           --input "$archive"           --scanners vuln           --severity HIGH,CRITICAL           --exit-code 1           --no-progress           --skip-version-check
 
         archive_digest="sha256:$(sha256sum "$archive" | awk '{print $1}')"
-        cp -- "$archive" "$bundle/image.oci.tar"
 
         jq -n           --arg repository "$GITHUB_REPOSITORY"           --arg artifact "$name"           --arg revision "$GITHUB_SHA"           --argjson workflow_run_id "$GITHUB_RUN_ID"           --argjson workflow_run_attempt "$GITHUB_RUN_ATTEMPT"           --arg manifest_digest "$manifest_digest"           --arg config_digest "$config_digest"           --arg archive_digest "$archive_digest"           '{
             format_version:1,
@@ -149,10 +157,13 @@ runs:
             manifest_digest:$manifest_digest,
             config_digest:$config_digest,
             archive_digest:$archive_digest
-          }' >"$bundle/metadata.json"
+          }' >"$metadata"
+
+        rm -f -- "$build_metadata" "$config_blob"
+        chmod 0444 "$archive" "$metadata"
 
         {
-          echo "bundle_path=$bundle"
+          echo "bundle_path=$work"
           echo "manifest_digest=$manifest_digest"
           echo "config_digest=$config_digest"
           echo "archive_digest=$archive_digest"

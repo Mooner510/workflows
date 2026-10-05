@@ -132,6 +132,49 @@ jobs:
 
           (( invalid == 0 )) || exit 1
 
+      - name: Reject GitHub Artifact transport in canonical CI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          targets=(
+            "$GITHUB_WORKSPACE/.github/workflows/project-ci.yml"
+            "$GITHUB_WORKSPACE/.github/actions/cd/artifact/action.yml"
+            "$GITHUB_WORKSPACE/.github/actions/ci/oci-artifact/action.yml"
+          )
+          if grep -nE 'actions/(upload|download)-artifact' "${targets[@]}"; then
+            echo "::error::Canonical CI must not use GitHub Actions Artifact as a binary transport."
+            exit 1
+          fi
+
+      - name: Enforce HDD-only OCI export boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          workflow="$GITHUB_WORKSPACE/.github/workflows/project-ci.yml"
+          prepare="$GITHUB_WORKSPACE/.github/actions/cd/docker/prepare/action.yml"
+
+          if grep -nF 'gharp-image-only' "$workflow"; then
+            echo "::error::Every OCI image job must receive a job-scoped HDD spool label."
+            exit 1
+          fi
+
+          grep -q 'gharp-scratch-' "$workflow" || {
+            echo "::error::Non-publishing OCI image jobs must use gharp-scratch-*."
+            exit 1
+          }
+
+          if grep -nE '^[[:space:]]*(archive|artifact_root|bundle)=.*RUNNER_TEMP' "$prepare"; then
+            echo "::error::OCI archive/bundle paths must never fall back to runner SSD temporary storage."
+            exit 1
+          fi
+
+          grep -q 'Job-scoped backup-HDD artifact spool is required' "$prepare" || {
+            echo "::error::OCI image preparation must fail closed without the HDD spool."
+            exit 1
+          }
+
       - name: Validate isolated PostgreSQL CI boundary
         shell: bash
         run: |
@@ -189,6 +232,29 @@ jobs:
 
           if grep -RInE --exclude='validate.yml' 'repository_dispatch|production_deploy|production_rollback|gharp-production-request' "$GITHUB_WORKSPACE/.github"; then
             echo "::error::GitHub-triggered production runtime authority is forbidden."
+            exit 1
+          fi
+
+      - name: Validate Go formatting policy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          go_ci="$GITHUB_WORKSPACE/.github/actions/ci/go/action.yml"
+          go_format="$GITHUB_WORKSPACE/.github/workflows/go-format.yml"
+
+          if grep -nE '(^|[[:space:]])gofmt([[:space:]]|$)|(^|[[:space:]])go[[:space:]]+fmt([[:space:]]|$)' "$go_ci"; then
+            echo "::error file=.github/actions/ci/go/action.yml::Canonical Go CI must not fail solely on source formatting. Keep gofmt in the manual Go Format maintenance workflow."
+            exit 1
+          fi
+
+          grep -q "go-version: '1.27.1'" "$go_format" || {
+            echo "::error file=.github/workflows/go-format.yml::Go Format must use exact Go 1.27.1."
+            exit 1
+          }
+
+          if grep -qE 'go-version:[[:space:]]*(stable|latest|1\.27([^.]|$))' "$go_format"; then
+            echo "::error file=.github/workflows/go-format.yml::Floating or partial Go versions are forbidden."
             exit 1
           fi
 

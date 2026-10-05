@@ -214,7 +214,7 @@ jobs:
     name: Docker (${{ matrix.service }})
     needs: contract
     if: needs.contract.outputs.image_required == 'true'
-    runs-on: [self-hosted, linux, "gharp-image-${{ github.run_id }}-${{ github.run_attempt }}"]
+    runs-on: [self-hosted, linux, "gharp-image-${{ github.run_id }}-${{ github.run_attempt }}", "${{ needs.contract.outputs.publish_required == 'true' && format('gharp-service-{0}', matrix.service) || format('gharp-scratch-{0}', matrix.service) }}"]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -261,21 +261,11 @@ jobs:
           config-digest: ${{ steps.prepare.outputs.config-digest }}
           exposed-port: ${{ steps.prepare.outputs.exposed-port }}
 
-      - name: Publish trusted deployment artifact
-        if: needs.contract.outputs.publish_required == 'true'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: gharp-deploy-${{ matrix.service }}
-          path: ${{ steps.package.outputs.bundle-path }}
-          if-no-files-found: error
-          retention-days: 3
-          compression-level: 0
-
   artifacts:
     name: OCI Artifact (${{ matrix.artifact }})
     needs: contract
     if: needs.contract.outputs.artifact_required == 'true'
-    runs-on: [self-hosted, linux, "gharp-artifact-${{ github.run_id }}-${{ github.run_attempt }}"]
+    runs-on: [self-hosted, linux, "gharp-artifact-${{ github.run_id }}-${{ github.run_attempt }}", "gharp-scratch-${{ matrix.artifact }}"]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -307,16 +297,6 @@ jobs:
         with:
           artifact: ${{ steps.artifact.outputs.artifact }}
           private-repo-token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
-
-      - name: Publish CI-only OCI artifact
-        if: needs.contract.outputs.artifact_publish_required == 'true'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: gharp-oci-${{ matrix.artifact }}
-          path: ${{ steps.build.outputs.bundle-path }}
-          if-no-files-found: error
-          retention-days: 3
-          compression-level: 0
 
   verify:
     name: Verify
@@ -356,8 +336,8 @@ jobs:
             exit 1
           fi
 
-      - name: Confirm trusted artifact publication
+      - name: Confirm trusted local handoff
         if: needs.contract.outputs.publish_required == 'true'
         shell: bash
-        run: echo "Verified deployment artifacts were published for trusted-controller consumption."
+        run: echo "Required image jobs materialized their job-scoped local handoff bundles."
 

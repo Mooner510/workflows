@@ -1,5 +1,5 @@
-name: Package trusted deployment artifact
-description: Package one verified OCI image plus canonical deployment metadata for the trusted Gharp controller.
+name: Publish trusted local deployment bundle
+description: Package one verified OCI image and publish it only to the job-scoped local Gharp spool.
 
 inputs:
   service:
@@ -47,6 +47,11 @@ runs:
         command -v sha256sum >/dev/null
         command -v tar >/dev/null
 
+        [[ "${GHARP_ARTIFACT_SPOOL:-}" == "/run/gharp-artifacts" ]] || {
+          echo "::error::Job-scoped Gharp artifact spool is unavailable."
+          exit 1
+        }
+
         case "$DEPLOY_ENVIRONMENT" in
           prod|dev) ;;
           *) echo "::error::environment must be prod or dev."; exit 1 ;;
@@ -66,6 +71,14 @@ runs:
         }
 
         service="$(jq -r '.name' <<<"$SERVICE_JSON")"
+        [[ "$service" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
+          echo "::error::Invalid service name '$service'."
+          exit 1
+        }
+        [[ "${GHARP_ARTIFACT_SERVICE:-}" == "$service" ]] || {
+          echo "::error::Runner artifact spool is not scoped to service '$service'."
+          exit 1
+        }
         component_name="$(jq -r '.component' <<<"$SERVICE_JSON")"
         component="$(jq -c --arg name "$component_name" '.[] | select(.name == $name)' <<<"$COMPONENTS_JSON")"
         [[ -n "$component" ]] || {
@@ -92,10 +105,17 @@ runs:
           migration_path="db/migrations"
         fi
 
-        bundle="$RUNNER_TEMP/gharp-deploy-$service"
-        rm -rf "$bundle"
-        mkdir -p "$bundle"
-        cp -- "$OCI_ARCHIVE" "$bundle/image.oci.tar"
+        target="$GHARP_ARTIFACT_SPOOL/bundles/$service"
+        [[ -d "$target" ]] || {
+          echo "::error::Pre-created service spool is missing."
+          exit 1
+        }
+        expected_archive="$target/image.oci.tar"
+        [[ "$(realpath -e "$OCI_ARCHIVE")" == "$(realpath -e "$expected_archive")" ]] || {
+          echo "::error::Deploy OCI archive must be exported directly into the HDD spool."
+          exit 1
+        }
+        rm -f -- "$target/source.tar.gz" "$target/metadata.json" "$target/.metadata.json.tmp"
 
         source_digest=""
         if [[ "$migrate" == "true" ]]; then
@@ -118,24 +138,18 @@ runs:
               exit 1
             }
 
-            source_stage="$RUNNER_TEMP/gharp-source-$service"
-            rm -rf "$source_stage"
-            mkdir -p "$source_stage/$component_path"
-
-            if [[ -f "$component_root/go.mod" ]]; then
-              cp -- "$component_root/go.mod" "$source_stage/$component_path/go.mod"
-            fi
-            mkdir -p "$source_stage/$component_path/$migration_path"
-            cp -a -- "$migration_root/." "$source_stage/$component_path/$migration_path/"
-
-            find "$source_stage" -type l -print -quit | grep -q . && {
+            find "$migration_root" -type l -print -quit | grep -q . && {
               echo "::error::Migration source bundle must not contain symlinks."
               exit 1
             }
 
-            tar -czf "$bundle/source.tar.gz" -C "$source_stage" .
-            source_digest="sha256:$(sha256sum "$bundle/source.tar.gz" | awk '{print $1}')"
-            rm -rf "$source_stage"
+            source_paths=("$component_path/$migration_path")
+            if [[ -f "$component_root/go.mod" ]]; then
+              source_paths+=("$component_path/go.mod")
+            fi
+            tar -czf "$target/source.tar.gz" -C "$workspace" -- "${source_paths[@]}"
+            chmod 0444 "$target/source.tar.gz"
+            source_digest="sha256:$(sha256sum "$target/source.tar.gz" | awk '{print $1}')"
           fi
         fi
 
@@ -171,6 +185,9 @@ runs:
             exposed_port:$exposed_port,
             source_digest:$source_digest,
             service_contract:$service_contract
-          }' >"$bundle/metadata.json"
+          }' >"$target/.metadata.json.tmp"
+        chmod 0444 "$target/.metadata.json.tmp"
+        mv -f -- "$target/.metadata.json.tmp" "$target/metadata.json"
+        chmod 0444 "$target/image.oci.tar" "$target/metadata.json"
 
-        echo "bundle_path=$bundle" >>"$GITHUB_OUTPUT"
+        echo "bundle_path=$target" >>"$GITHUB_OUTPUT"
