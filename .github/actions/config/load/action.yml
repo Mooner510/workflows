@@ -142,7 +142,7 @@ runs:
 
           jq -e '
             (keys - [
-              "name","type","path","watch","watch_path",
+              "name","type","path","watch","watch_path","build_cache",
               "go_version","node_version","java_version","package_manager","build_tool","profile",
               "gradle_tasks","maven_goals",
               "migration_engine","migration_path","migration_schema","migration_config","migration_package",
@@ -159,6 +159,40 @@ runs:
             exit 1
           }
           while IFS= read -r watch; do safe_path "$watch" "Component '$name' watch"; done < <(jq -r '.watch // [] | .[]' <<<"$component")
+
+          jq -e '
+            (.build_cache == null) or (
+              (.build_cache | type) == "object"
+              and (((.build_cache | keys) - ["paths"]) | length == 0)
+              and (.build_cache.paths | type == "array")
+              and (.build_cache.paths | length > 0 and length <= 8)
+              and all(.build_cache.paths[]; type == "string" and length > 0)
+            )
+          ' <<<"$component" >/dev/null || {
+            echo "::error::Component '$name' build_cache must contain only a non-empty paths array with at most 8 entries."
+            exit 1
+          }
+
+          component_root="$(realpath -e "$GITHUB_WORKSPACE/$path")"
+          while IFS= read -r cache_path; do
+            [[ "$cache_path" =~ ^[A-Za-z0-9._@+-]+(/[A-Za-z0-9._@+-]+)*$ ]] || {
+              echo "::error::Component '$name' build cache path contains unsupported characters: $cache_path"
+              exit 1
+            }
+            [[ "$cache_path" != "." && "$cache_path" != ".." && "$cache_path" != ../* && "$cache_path" != */../* && "$cache_path" != */.. ]] || {
+              echo "::error::Component '$name' build cache path must be a non-root component-relative path without '..'."
+              exit 1
+            }
+            [[ "$cache_path" != ".git" && "$cache_path" != .git/* ]] || {
+              echo "::error::Component '$name' build cache must not include Git metadata."
+              exit 1
+            }
+            cache_resolved="$(realpath -m "$component_root/$cache_path" 2>/dev/null || true)"
+            [[ -n "$cache_resolved" && "$cache_resolved" == "$component_root/"* ]] || {
+              echo "::error::Component '$name' build cache path escapes the component: $cache_path"
+              exit 1
+            }
+          done < <(jq -r '.build_cache.paths // [] | .[]' <<<"$component")
 
           if [[ "$type" == "node" ]]; then
             node_version="$(jq -r '.node_version // empty' <<<"$component")"

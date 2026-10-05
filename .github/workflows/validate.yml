@@ -192,6 +192,30 @@ jobs:
             exit 1
           }
 
+      - name: Validate generic build-cache boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          loader="$GITHUB_WORKSPACE/.github/actions/config/load/action.yml"
+          group="$GITHUB_WORKSPACE/.github/actions/ci/group/action.yml"
+
+          grep -q '"build_cache"' "$loader" || {
+            echo "::error::Canonical component contract must retain generic build_cache metadata."
+            exit 1
+          }
+          grep -q '/cache/build/v1' "$group" || {
+            echo "::error::Declared build caches must use the Gharp persistent cache volume."
+            exit 1
+          }
+          grep -q 'Persistent runner cache unavailable' "$group" || {
+            echo "::error::Build cache setup must remain optional when no persistent Gharp cache is attached."
+            exit 1
+          }
+          if grep -nE 'actions/cache|upload-artifact|download-artifact' "$group"; then
+            echo "::error::Generic build cache must stay on the existing Gharp cache surface."
+            exit 1
+          fi
+
       - name: Validate isolated PostgreSQL CI boundary
         shell: bash
         run: |

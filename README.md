@@ -102,6 +102,7 @@ type = go | node | java-kotlin
 path
 watch
 watch_path
+build_cache
 ```
 
 필요한 경우에만 language/migration metadata를 추가한다.
@@ -127,6 +128,16 @@ postgres_image
 postgres_test_args
 postgres_test_env
 ```
+
+`build_cache` is optional component metadata for reusable compiler/framework caches without teaching the central workflow about a specific framework.
+
+```yaml
+build_cache:
+  paths:
+    - .next/cache
+```
+
+Only component-relative cache directories may be declared. The consumer does not control cache keys, retention, or host paths. On trusted Gharp jobs with a persistent repository/cache-scope volume, the central CI restores and saves these directories under `/cache/build/v1`. Jobs without that volume perform a clean build. Cache content is performance-only and must never contain secrets, production data, deployment state, or other source-of-truth material.
 
 ### Service metadata
 
