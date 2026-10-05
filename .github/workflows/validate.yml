@@ -147,6 +147,34 @@ jobs:
             exit 1
           fi
 
+      - name: Enforce HDD-only OCI export boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          workflow="$GITHUB_WORKSPACE/.github/workflows/project-ci.yml"
+          prepare="$GITHUB_WORKSPACE/.github/actions/cd/docker/prepare/action.yml"
+
+          if grep -nF 'gharp-image-only' "$workflow"; then
+            echo "::error::Every OCI image job must receive a job-scoped HDD spool label."
+            exit 1
+          fi
+
+          grep -q 'gharp-scratch-' "$workflow" || {
+            echo "::error::Non-publishing OCI image jobs must use gharp-scratch-*."
+            exit 1
+          }
+
+          if grep -nF 'RUNNER_TEMP/oci-' "$prepare"; then
+            echo "::error::OCI image archives must never fall back to runner SSD temporary storage."
+            exit 1
+          fi
+
+          grep -q 'Job-scoped backup-HDD artifact spool is required' "$prepare" || {
+            echo "::error::OCI image preparation must fail closed without the HDD spool."
+            exit 1
+          }
+
       - name: Validate isolated PostgreSQL CI boundary
         shell: bash
         run: |
