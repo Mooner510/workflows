@@ -175,6 +175,20 @@ jobs:
             exit 1
           }
 
+      - name: Reject legacy stacks contract compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          loader="$GITHUB_WORKSPACE/.github/actions/config/load/action.yml"
+          if grep -nE 'legacy_json|build_args' "$loader"; then
+            echo "::error::Legacy stacks contract compatibility must not return."
+            exit 1
+          fi
+          grep -q 'Canonical project contract is missing: .github/stacks.yml' "$loader" || {
+            echo "::error::Canonical loader must require .github/stacks.yml."
+            exit 1
+          }
+
       - name: Validate isolated PostgreSQL CI boundary
         shell: bash
         run: |
@@ -267,7 +281,6 @@ jobs:
           workflows=(
             "$GITHUB_WORKSPACE/.github/workflows/project-ci.yml"
             "$GITHUB_WORKSPACE/.github/workflows/project-checks.yml"
-            "$GITHUB_WORKSPACE/.github/workflows/pipeline.yml"
             "$GITHUB_WORKSPACE/.github/workflows/go-format.yml"
           )
 

@@ -44,10 +44,9 @@ jobs:
       git_log_opts: ${{ steps.detect.outputs.git_log_opts }}
       image_environment: ${{ steps.mode.outputs.environment }}
       image_required: ${{ steps.mode.outputs.image_required }}
-      publish_required: ${{ steps.mode.outputs.publish_required }}
+      promotion_required: ${{ steps.mode.outputs.promotion_required }}
       artifact_names: ${{ steps.mode.outputs.artifact_names }}
       artifact_required: ${{ steps.mode.outputs.artifact_required }}
-      artifact_publish_required: ${{ steps.mode.outputs.artifact_publish_required }}
       ci_required: ${{ steps.mode.outputs.ci_required }}
       security_required: ${{ steps.mode.outputs.security_required }}
 
@@ -130,9 +129,9 @@ jobs:
             image_required=true
           fi
 
-          publish_required=false
+          promotion_required=false
           if [[ "$EVENT_NAME" == "push" && -n "$environment" && "$image_required" == "true" ]]; then
-            publish_required=true
+            promotion_required=true
           fi
 
           artifact_names="$AFFECTED_ARTIFACTS"
@@ -145,11 +144,6 @@ jobs:
             artifact_required=true
           fi
 
-          artifact_publish_required=false
-          if [[ "$EVENT_NAME" == "push" && -n "$DEFAULT_BRANCH" && "$REF_NAME" == "$DEFAULT_BRANCH" && "$artifact_required" == "true" ]]; then
-            artifact_publish_required=true
-          fi
-
           if [[ "$CI_TARGETS" == "[]" ]]; then ci_required=false; else ci_required=true; fi
           if [[ "$HAS_CHANGES" == "true" ]]; then security_required=true; else security_required=false; fi
 
@@ -157,10 +151,9 @@ jobs:
             echo "environment=$environment"
             echo "image_required=$image_required"
             echo "image_services=$image_services"
-            echo "publish_required=$publish_required"
+            echo "promotion_required=$promotion_required"
             echo "artifact_names=$artifact_names"
             echo "artifact_required=$artifact_required"
-            echo "artifact_publish_required=$artifact_publish_required"
             echo "ci_required=$ci_required"
             echo "security_required=$security_required"
           } >>"$GITHUB_OUTPUT"
@@ -214,7 +207,7 @@ jobs:
     name: Docker (${{ matrix.service }})
     needs: contract
     if: needs.contract.outputs.image_required == 'true'
-    runs-on: [self-hosted, linux, "gharp-image-${{ github.run_id }}-${{ github.run_attempt }}", "${{ needs.contract.outputs.publish_required == 'true' && format('gharp-service-{0}', matrix.service) || format('gharp-scratch-{0}', matrix.service) }}"]
+    runs-on: [self-hosted, linux, "gharp-image-${{ github.run_id }}-${{ github.run_attempt }}", "${{ needs.contract.outputs.promotion_required == 'true' && format('gharp-service-{0}', matrix.service) || format('gharp-scratch-{0}', matrix.service) }}"]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -248,8 +241,8 @@ jobs:
           environment: ${{ needs.contract.outputs.image_environment }}
           private-repo-token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
 
-      - name: Package trusted deployment artifact
-        if: needs.contract.outputs.publish_required == 'true'
+      - name: Package trusted deployment handoff
+        if: needs.contract.outputs.promotion_required == 'true'
         id: package
         uses: Mooner510/workflows/.github/actions/cd/artifact@v1
         with:
@@ -336,8 +329,8 @@ jobs:
             exit 1
           fi
 
-      - name: Confirm trusted local handoff
-        if: needs.contract.outputs.publish_required == 'true'
+      - name: Confirm trusted promotion handoff
+        if: needs.contract.outputs.promotion_required == 'true'
         shell: bash
         run: echo "Required image jobs materialized their job-scoped local handoff bundles."
 

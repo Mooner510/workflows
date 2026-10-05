@@ -20,9 +20,7 @@ Consumer는 위 reusable workflow만 호출한다. `.github/actions/**`는 centr
 
 Production runtime mutation용 reusable workflow는 존재하지 않는다. `repository_dispatch`, consumer `deploy.yml`, central `production.yml`, repository-runner host mutation action은 canonical surface가 아니다. Production deploy/rollback/restart는 server의 root-owned `project` CLI → root-only `gharp-deployer` operator socket 경로만 사용한다.
 
-기존 `pipeline.yml`은 CI-only compatibility implementation이다. 신규 caller contract로 사용하지 않으며 host runtime mutation 권한을 제공하지 않는다.
-
-`security.yml` reusable workflow는 제거했다. Security와 language/migration CI orchestration은 각각 `.github/actions/ci/security`, `.github/actions/ci/group` 내부 action으로 통합하여 `project-ci.yml`과 legacy `pipeline.yml`이 같은 구현을 공유한다. `.github/workflows/validate.yml`은 이 implementation repository 자체의 workflow syntax/reference policy만 검증한다. `Mooner510/workflows`는 public repository이므로 이 repository 자체의 PR/push validation은 GitHub-hosted `ubuntu-latest`에서만 실행한다. Private consumer repository의 canonical CI는 Gharp가 job마다 발급하는 disposable repository-scoped JIT runner에서 실행한다. Public implementation repository인 `Mooner510/workflows` 자체 검증만 GitHub-hosted `ubuntu-latest`를 사용한다. Central `go-format.yml`도 `workflow_call` 전용이며 `workflows` repository 자체에서 직접 dispatch하지 않는다.
+`security.yml` reusable workflow는 제거했다. Security와 language/migration CI orchestration은 각각 `.github/actions/ci/security`, `.github/actions/ci/group` 내부 action으로 통합하여 canonical reusable workflow가 같은 구현을 공유한다. `.github/workflows/validate.yml`은 이 implementation repository 자체의 workflow syntax/reference policy만 검증한다. `Mooner510/workflows`는 public repository이므로 이 repository 자체의 PR/push validation은 GitHub-hosted `ubuntu-latest`에서만 실행한다. Private consumer repository의 canonical CI는 Gharp가 job마다 발급하는 disposable repository-scoped JIT runner에서 실행한다. Public implementation repository인 `Mooner510/workflows` 자체 검증만 GitHub-hosted `ubuntu-latest`를 사용한다. Central `go-format.yml`도 `workflow_call` 전용이며 `workflows` repository 자체에서 직접 dispatch하지 않는다.
 
 ## New project onboarding
 
@@ -67,7 +65,7 @@ Repository-local CI/CD가 필요한 것처럼 보이는 요구사항이 생기�
 .github/stacks.yml
 ```
 
-`.github/stacks.yaml`은 YAML 호환 alias로 지원하고, 기존 `.github/stacks.json`은 legacy contract로 계속 지원한다. 세 파일 중 정확히 하나만 존재해야 하며 둘 이상 존재하면 CI는 fail-closed한다. 새 project와 기존 project의 다음 contract 정리는 `.github/stacks.yml`을 기본값으로 사용한다. CI는 실행 중인 exact revision의 선택된 contract를 읽어 verified artifact를 만든다. Production runtime은 repository checkout/workflow를 다시 실행하지 않고 trusted controller가 저장한 exact verified promotion contract를 사용한다.
+Project contract는 `.github/stacks.yml` 하나만 지원한다. 다른 확장자나 compatibility contract는 지원하지 않으며 CI는 fail-closed한다. CI는 실행 중인 exact revision의 선택된 contract를 읽어 verified artifact를 만든다. Production runtime은 repository checkout/workflow를 다시 실행하지 않고 trusted controller가 저장한 exact verified promotion contract를 사용한다.
 
 예:
 
@@ -154,9 +152,9 @@ expose
 - `database_scope`: `project`(default) 또는 `service`. `project`는 기존 `/opt/stacks/projects/<project>/db[.dev].env`, `service`는 `/opt/stacks/projects/<project>/<service>/db[.dev].env`를 사용한다. 기존 consumer 호환성을 위해 default는 `project`다.
 - `migrate`: referenced component의 migration engine을 deploy 시 실행. `true`이면 database도 자동으로 필요하다. Migration credential scope는 같은 service의 `database_scope`를 따른다.
 - `manual`: `true`이면 CI image build/scan에는 포함하지만 dev automatic deployment와 service 미지정 production 전체 배포에서는 제외한다. Production에서 해당 service를 실행하려면 local `project deploy <project>/<service>`로 명시한다.
-- `expose`: public Caddy routing intent. Canonical YAML contract에서는 `true` 또는 `false`를 반드시 명시한다. Legacy `.github/stacks.json`에서 이 field가 없으면 기존 규칙과 호환되도록 1 TCP `EXPOSE` image를 externally routable service로 해석한다.
+- `expose`: public Caddy routing intent. Canonical contract에서는 `true` 또는 `false`를 반드시 명시한다.
 
-`build_args`는 canonical YAML contract에서 금지한다. Legacy JSON parser 호환을 위해 빈 배열은 읽을 수 있지만 non-empty `build_args`는 fail-closed한다. Isolated BuildKit은 host `/opt/stacks` state를 build input으로 읽지 않는다.
+Repository service contract에서 host-derived build arguments는 지원하지 않는다. Isolated BuildKit은 host `/opt/stacks` state를 build input으로 읽지 않는다.
 
 Private dependency가 Docker build 중 필요한 경우 caller의 optional `CI_PRIVATE_REPO_TOKEN`을 central image builder가 BuildKit secret `CI_PRIVATE_REPO_TOKEN`으로만 전달한다. Token은 build arg, image layer, project metadata에 저장하지 않는다. Dockerfile이 해당 secret을 사용하지 않으면 아무 효과가 없다.
 
@@ -207,7 +205,7 @@ UDP EXPOSE          -> CI failure
 
 각 container는 독립 network namespace를 가지므로 여러 service가 같은 internal port를 사용해도 충돌하지 않는다. Canonical runtime은 host port를 publish하지 않는다.
 
-`expose: true`는 정확히 1개의 TCP `EXPOSE`를 요구하며 container를 `caddy-shared`에 연결한다. `expose: false`이면 TCP port가 있어도 project network 내부 서비스로 유지한다. Legacy `.github/stacks.json`에 `expose`가 없으면 기존 호환 규칙으로 1 TCP `EXPOSE`를 public routing intent로 해석한다.
+`expose: true`는 정확히 1개의 TCP `EXPOSE`를 요구하며 container를 `caddy-shared`에 연결한다. `expose: false`이면 TCP port가 있어도 project network 내부 서비스로 유지한다. 
 
 ```text
 kr.mooner510.stacks.container-port=<EXPOSE port>
@@ -301,8 +299,8 @@ Default-branch push가 canonical CI를 통과하면 모든 deployable service의
 default branch push
 → Security + Language/Migration CI
 → rootless BuildKit OCI build + Trivy
-→ gharp-deploy-* artifact
-→ Gharp authoritative WorkflowRun/repository/artifact digest revalidation
+→ job-scoped local HDD OCI handoff
+→ Gharp authoritative WorkflowRun/repository/local handoff digest revalidation
 → gharp-deployer verified production promotion 저장
 → END
 ```
@@ -331,7 +329,7 @@ Dev-enabled repository의 `dev` push도 동일한 isolated CI artifact path를 �
 ```text
 dev push
 → canonical CI
-→ gharp-deploy-* artifact
+→ job-scoped local HDD OCI handoff
 → Gharp authoritative revalidation
 → verified dev promotion
 → manual=false service trusted auto-deploy
@@ -453,7 +451,7 @@ Production용 `.github/workflows/deploy.yml`은 만들지 않는다. Consumer wo
 
 Private personal/organization repositories는 모두 Gharp의 disposable repository-scoped JIT runner를 사용한다. 상주형 personal/organization self-hosted runner는 canonical execution plane이 아니다.
 
-Central validation은 `project-ci.yml`, `project-checks.yml`, compatibility `pipeline.yml`, `go-format.yml`의 self-hosted job이 `self-hosted`, `linux`, run-scoped `gharp-*` label을 함께 요구하는지 검사한다.
+Central validation은 `project-ci.yml`, `project-checks.yml`, `go-format.yml`의 self-hosted job이 `self-hosted`, `linux`, run-scoped `gharp-*` label을 함께 요구하는지 검사한다.
 
 각 job은 generic `[self-hosted, linux]`만으로 배정하지 않고 run-scoped Gharp label을 함께 요구한다.
 
