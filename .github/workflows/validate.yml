@@ -73,6 +73,9 @@ jobs:
           set -euo pipefail
           actionlint -color
 
+      - name: Test OCI artifact scan boundary
+        run: python3 -m unittest discover -s tests -v
+
       - name: Validate central reference policy
         shell: bash
         run: |
@@ -309,4 +312,3 @@ jobs:
           done
 
           (( invalid == 0 )) || exit 1
-
