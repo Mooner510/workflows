@@ -289,7 +289,7 @@ Migration validation은 configured migration source가 affected일 때 disposabl
 
 Explicit maintenance dispatch의 `diff_base`는 full 40-character ancestor SHA만 허용하며 실제 `diff_base..HEAD` change detection에 사용한다. `.github/stacks.yml`이 변경되면 contract 자체가 달라졌으므로 모든 declared component/service를 affected 처리한다.
 
-Public/fork/untrusted pull request는 self-hosted runner에서 checkout/build하지 않는다. Canonical CI의 최초 contract job과 compatibility pipeline detector가 caller repository ownership을 확인한 뒤에만 trusted source code를 실행한다.
+Public/fork/untrusted pull request는 self-hosted runner에서 checkout/build하지 않는다. Canonical CI의 최초 contract job이 caller repository ownership을 확인한 뒤에만 trusted source code를 실행한다.
 
 ## Production promotion and local operator
 
