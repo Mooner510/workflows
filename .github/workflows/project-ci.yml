@@ -214,7 +214,7 @@ jobs:
     name: Docker (${{ matrix.service }})
     needs: contract
     if: needs.contract.outputs.image_required == 'true'
-    runs-on: [self-hosted, linux, "gharp-image-${{ github.run_id }}-${{ github.run_attempt }}", "${{ needs.contract.outputs.publish_required == 'true' && format('gharp-service-{0}', matrix.service) || 'gharp-image-only' }}"]
+    runs-on: [self-hosted, linux, "gharp-image-${{ github.run_id }}-${{ github.run_attempt }}", "${{ needs.contract.outputs.publish_required == 'true' && format('gharp-service-{0}', matrix.service) || format('gharp-scratch-{0}', matrix.service) }}"]
     timeout-minutes: 45
     strategy:
       fail-fast: false
