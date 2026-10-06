@@ -41,16 +41,24 @@ runs:
       run: |
         set -euo pipefail
         cache_root="${RUNNER_TOOL_CACHE:-$HOME/.cache/github-actions-tool-cache}"
+        pnpm_store="$RUNNER_TEMP/pnpm-store"
         mkdir -p \
           "$cache_root/corepack" \
           "$cache_root/bun/install-cache" \
-          "$cache_root/pnpm/store" \
           "$cache_root/yarn/cache" \
-          "$cache_root/npm"
+          "$cache_root/npm" \
+          "$pnpm_store"
+
+        pnpm_store_resolved="$(realpath -m "$pnpm_store")"
+        [[ "$pnpm_store_resolved" != "/cache" && "$pnpm_store_resolved" != /cache/* ]] || {
+          echo "::error::pnpm store must stay job-local and must not use the persistent Gharp cache volume."
+          exit 1
+        }
+
         {
           echo "COREPACK_HOME=$cache_root/corepack"
           echo "BUN_INSTALL_CACHE_DIR=$cache_root/bun/install-cache"
-          echo "PNPM_STORE_DIR=$cache_root/pnpm/store"
+          echo "PNPM_STORE_DIR=$pnpm_store_resolved"
           echo "YARN_CACHE_FOLDER=$cache_root/yarn/cache"
           echo "npm_config_cache=$cache_root/npm"
         } >>"$GITHUB_ENV"
