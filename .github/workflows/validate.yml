@@ -198,7 +198,7 @@ jobs:
           set -euo pipefail
           node_ci="$GITHUB_WORKSPACE/.github/actions/ci/node/action.yml"
 
-          grep -q 'pnpm_store="$RUNNER_TEMP/pnpm-store"' "$node_ci" || {
+          grep -Fq "pnpm_store=\"\$RUNNER_TEMP/pnpm-store\"" "$node_ci" || {
             echo "::error::pnpm content store must stay job-local on the runner workspace filesystem."
             exit 1
           }
