@@ -192,6 +192,25 @@ jobs:
             exit 1
           }
 
+      - name: Validate pnpm store locality
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_ci="$GITHUB_WORKSPACE/.github/actions/ci/node/action.yml"
+
+          grep -q 'pnpm_store="$RUNNER_TEMP/pnpm-store"' "$node_ci" || {
+            echo "::error::pnpm content store must stay job-local on the runner workspace filesystem."
+            exit 1
+          }
+          if grep -nE 'PNPM_STORE_DIR=.*(RUNNER_TOOL_CACHE|/cache)' "$node_ci"; then
+            echo "::error::pnpm content store must not use the persistent Gharp cache/tool volume."
+            exit 1
+          fi
+          grep -q 'pnpm store must stay job-local' "$node_ci" || {
+            echo "::error::pnpm store runtime guard must remain in place."
+            exit 1
+          }
+
       - name: Validate generic build-cache boundary
         shell: bash
         run: |
