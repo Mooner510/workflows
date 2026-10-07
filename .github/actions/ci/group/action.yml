@@ -20,6 +20,10 @@ inputs:
   profile:
     required: false
     default: ''
+  postgres-required:
+    description: Whether this CI group is attached to a Gharp job-scoped PostgreSQL sidecar.
+    required: false
+    default: 'false'
   go-private-patterns:
     required: false
     default: ''
@@ -30,6 +34,55 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Configure job-scoped PostgreSQL environment
+      if: inputs.postgres-required == 'true'
+      shell: bash
+      env:
+        COMPONENT_TYPE: ${{ inputs.type }}
+      run: |
+        set -euo pipefail
+
+        required=(
+          CI_POSTGRES_HOST
+          CI_POSTGRES_PORT
+          CI_POSTGRES_USER
+          CI_POSTGRES_PASSWORD
+          CI_POSTGRES_DB
+        )
+        for key in "${required[@]}"; do
+          [[ -n "${!key:-}" ]] || {
+            echo "::error::Gharp PostgreSQL capability is required but $key is missing."
+            exit 1
+          }
+        done
+
+        echo "::add-mask::$CI_POSTGRES_PASSWORD"
+
+        postgres_url="postgresql://$CI_POSTGRES_USER:$CI_POSTGRES_PASSWORD@$CI_POSTGRES_HOST:$CI_POSTGRES_PORT/$CI_POSTGRES_DB"
+        jdbc_url="jdbc:postgresql://$CI_POSTGRES_HOST:$CI_POSTGRES_PORT/$CI_POSTGRES_DB"
+
+        {
+          echo "CI_POSTGRES_URL=$postgres_url"
+          case "$COMPONENT_TYPE" in
+            java-kotlin)
+              echo "DATABASE_URL=$jdbc_url"
+              echo "SPRING_DATASOURCE_URL=$jdbc_url"
+              echo "SPRING_DATASOURCE_USERNAME=$CI_POSTGRES_USER"
+              echo "SPRING_DATASOURCE_PASSWORD=$CI_POSTGRES_PASSWORD"
+              echo "FLYWAY_URL=$jdbc_url"
+              echo "FLYWAY_USER=$CI_POSTGRES_USER"
+              echo "FLYWAY_PASSWORD=$CI_POSTGRES_PASSWORD"
+              ;;
+            node|go)
+              echo "DATABASE_URL=$postgres_url"
+              ;;
+            *)
+              echo "::error::Unsupported component type for PostgreSQL environment: $COMPONENT_TYPE"
+              exit 1
+              ;;
+          esac
+        } >>"$GITHUB_ENV"
+
     - name: Restore declared build caches
       shell: bash
       env:

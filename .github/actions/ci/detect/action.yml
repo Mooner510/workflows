@@ -586,6 +586,22 @@ runs:
           ]
         ' <<<"$normalized")"
 
+        ci_groups="$(jq -c '
+          map(
+            . + {
+              postgres_required: (
+                [.components[]
+                  | select(
+                      (.postgres_test // false) == true
+                      or ((.migration_engine // "none") != "none")
+                    )
+                ]
+                | length > 0
+              )
+            }
+          )
+        ' <<<"$ci_groups")"
+
         ci_targets="$(jq -c 'map(.target)' <<<"$ci_groups")"
         ci_groups_by_target="$(jq -c 'reduce .[] as $group ({}; .[$group.target] = $group)' <<<"$ci_groups")"
         affected_services="$(jq -c '[.[] | (.deploy_services // [])[]] | unique | sort' <<<"$normalized")"

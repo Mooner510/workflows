@@ -235,6 +235,36 @@ jobs:
             exit 1
           fi
 
+      - name: Validate job-scoped PostgreSQL orchestration
+        shell: bash
+        run: |
+          set -euo pipefail
+          detect="$GITHUB_WORKSPACE/.github/actions/ci/detect/action.yml"
+          group="$GITHUB_WORKSPACE/.github/actions/ci/group/action.yml"
+          project_ci="$GITHUB_WORKSPACE/.github/workflows/project-ci.yml"
+          project_checks="$GITHUB_WORKSPACE/.github/workflows/project-checks.yml"
+
+          grep -q 'postgres_required' "$detect" || {
+            echo "::error::CI detector must publish postgres_required per CI group."
+            exit 1
+          }
+          for workflow in "$project_ci" "$project_checks"; do
+            grep -q 'gharp-postgres' "$workflow" || {
+              echo "::error file=${workflow#"$GITHUB_WORKSPACE"/}::DB-required CI groups must request the Gharp PostgreSQL capability."
+              exit 1
+            }
+            grep -q 'postgres-required:' "$workflow" || {
+              echo "::error file=${workflow#"$GITHUB_WORKSPACE"/}::CI group must receive postgres-required metadata."
+              exit 1
+            }
+          done
+          for required in CI_POSTGRES_HOST CI_POSTGRES_PASSWORD CI_POSTGRES_DB DATABASE_URL SPRING_DATASOURCE_URL FLYWAY_URL; do
+            grep -q "$required" "$group" || {
+              echo "::error file=.github/actions/ci/group/action.yml::Missing PostgreSQL environment mapping: $required"
+              exit 1
+            }
+          done
+
       - name: Validate isolated PostgreSQL CI boundary
         shell: bash
         run: |
