@@ -15,6 +15,10 @@ inputs:
     description: Optional GitHub token with read access to private Git dependencies.
     required: false
     default: ''
+  run-checks:
+    description: Run lint/typecheck/test/build after toolchain and dependency preparation.
+    required: false
+    default: 'true'
 
 runs:
   using: composite
@@ -110,6 +114,7 @@ runs:
         components: ${{ inputs.components }}
 
     - name: Run common Node checks
+      if: inputs.run-checks == 'true'
       shell: bash
       env:
         CI: 'true'

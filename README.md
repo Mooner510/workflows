@@ -113,18 +113,14 @@ package_manager
 build_tool / profile
 gradle_tasks / maven_goals
 
-migration_engine = goose | go-command | prisma | drizzle | flyway
+migration_engine = goose | prisma | drizzle | flyway
 migration_path
 migration_schema
 migration_config
-migration_package
-migration_package_manager
-migration_build_tool
 goose_version
 
 postgres_test
 postgres_database_env
-postgres_image
 postgres_test_args
 postgres_test_env
 ```
@@ -294,9 +290,9 @@ Java/Kotlin:
   optional Android/Spring Boot profile
 ```
 
-Migration validation은 configured migration source가 affected일 때 disposable PostgreSQL에서 수행한다. Production DB를 CI validation에 사용하지 않는다.
+Database-aware CI는 Gharp가 job마다 생성하는 단일 disposable PostgreSQL을 사용한다. 전체 migration을 먼저 적용한 뒤 같은 PostgreSQL에서 application test를 수행하며 job 종료 시 PostgreSQL과 데이터가 함께 파기된다. Production DB를 CI validation에 사용하지 않는다.
 
-`postgres_test: true`인 Go application integration test도 repository runner의 Docker/Podman runtime socket을 사용하지 않는다. Canonical `go-postgres` action은 Gharp rootless BuildKit 내부에서 exact Go toolchain과 disposable PostgreSQL을 함께 실행하여 test process와 database를 같은 isolated build boundary 안에 둔다.
+`postgres_test: true`인 Go application integration test도 같은 job-scoped PostgreSQL을 사용한다. Repository runner는 Docker/Podman runtime socket이나 host PostgreSQL에 접근하지 않는다.
 
 Explicit maintenance dispatch의 `diff_base`는 full 40-character ancestor SHA만 허용하며 실제 `diff_base..HEAD` change detection에 사용한다. `.github/stacks.yml`이 변경되면 contract 자체가 달라졌으므로 모든 declared component/service를 affected 처리한다.
 
@@ -371,7 +367,6 @@ Supported application migration engines:
 
 ```text
 Goose SQL
-Go command
 Prisma Migrate
 Drizzle Kit
 Flyway
