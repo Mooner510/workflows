@@ -1,5 +1,5 @@
 name: Go PostgreSQL integration CI
-description: Run opt-in Go application integration tests against isolated disposable PostgreSQL inside rootless BuildKit.
+description: Run opt-in Go integration tests against the same Gharp-managed job-scoped PostgreSQL used for migrations.
 
 inputs:
   components:
@@ -12,141 +12,45 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Set up isolated BuildKit
-      uses: Mooner510/workflows/.github/actions/ci/buildkit@v1
-
     - name: Run PostgreSQL integration tests
       shell: bash
       env:
         COMPONENTS_JSON: ${{ inputs.components }}
-        GO_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
-
-        command -v buildctl >/dev/null || { echo "::error::buildctl is required."; exit 1; }
-        command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
-        command -v tar >/dev/null || { echo "::error::tar is required."; exit 1; }
-        [[ "$GO_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-          echo "::error::Go integration version must be an exact x.y.z version."
-          exit 1
+        [[ -n "${CI_POSTGRES_URL:-}" ]] || {
+          if jq -e 'any(.[]; (.postgres_test // false) == true)' <<<"$COMPONENTS_JSON" >/dev/null; then
+            echo "::error::CI_POSTGRES_URL is required for PostgreSQL integration tests."
+            exit 1
+          fi
+          exit 0
         }
 
         workspace="$(realpath "$GITHUB_WORKSPACE")"
-        components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
-        jq -e 'type == "array" and length > 0' <<<"$components" >/dev/null || {
-          echo "::error::components must be a non-empty JSON array."
-          exit 1
-        }
+        while IFS= read -r c; do
+          [[ "$(jq -r '.postgres_test // false' <<<"$c")" == "true" ]] || continue
+          name="$(jq -r '.name' <<<"$c")"
+          path="$(jq -r '.path' <<<"$c")"
+          db_env="$(jq -r '.postgres_database_env // "TEST_DATABASE_URL"' <<<"$c")"
+          args="$(jq -c '.postgres_test_args // ["./..."]' <<<"$c")"
+          extra="$(jq -c '.postgres_test_env // {}' <<<"$c")"
 
-        shell_quote() {
-          jq -rn --arg value "$1" '$value | @sh'
-        }
+          [[ "$db_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "::error::Invalid postgres_database_env for '$name'."; exit 1; }
+          jq -e 'type=="array" and length>0 and all(.[]; type=="string" and length>0)' <<<"$args" >/dev/null || { echo "::error::Invalid postgres_test_args for '$name'."; exit 1; }
+          jq -e 'type=="object" and all(to_entries[]; (.key|test("^[A-Za-z_][A-Za-z0-9_]*$")) and (.value|type=="string"))' <<<"$extra" >/dev/null || { echo "::error::Invalid postgres_test_env for '$name'."; exit 1; }
+          jq -e --arg key "$db_env" 'has($key) | not' <<<"$extra" >/dev/null || { echo "::error::postgres_test_env must not override $db_env."; exit 1; }
 
-        while IFS= read -r component; do
-          enabled="$(jq -r '.postgres_test // false' <<<"$component")"
-          [[ "$enabled" == "true" ]] || continue
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+          [[ -n "$component" && ( "$component" == "$workspace" || "$component" == "$workspace/"* ) ]] || { echo "::error::Invalid Go integration component '$name'."; exit 1; }
 
-          name="$(jq -r '.name // empty' <<<"$component")"
-          path="$(jq -r '.path // empty' <<<"$component")"
-          db_env="$(jq -r '.postgres_database_env // "TEST_DATABASE_URL"' <<<"$component")"
-          image="$(jq -r '.postgres_image // "postgres:18.6-alpine"' <<<"$component")"
-          args="$(jq -c '.postgres_test_args // ["./..."]' <<<"$component")"
-          extra="$(jq -c '.postgres_test_env // {}' <<<"$component")"
+          export "$db_env=$CI_POSTGRES_URL?sslmode=disable"
+          while IFS= read -r item; do
+            key="$(jq -r '.key' <<<"$item")"
+            value="$(jq -r '.value' <<<"$item")"
+            export "$key=$value"
+          done < <(jq -c 'to_entries[]' <<<"$extra")
 
-          [[ "$db_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || {
-            echo "::error::Invalid postgres_database_env for $name."
-            exit 1
-          }
-          jq -e 'type=="array" and length > 0 and all(.[]; type=="string" and length > 0)' <<<"$args" >/dev/null || {
-            echo "::error::postgres_test_args must be a non-empty string array for $name."
-            exit 1
-          }
-          jq -e 'type=="object" and all(to_entries[]; (.key|test("^[A-Za-z_][A-Za-z0-9_]*$")) and (.value|type=="string"))' <<<"$extra" >/dev/null || {
-            echo "::error::postgres_test_env must be a string map for $name."
-            exit 1
-          }
-          jq -e --arg key "$db_env" 'has($key) | not' <<<"$extra" >/dev/null || {
-            echo "::error::postgres_test_env for $name must not override $db_env."
-            exit 1
-          }
-
-          component_root="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
-          if [[ -z "$component_root" ]] || { [[ "$component_root" != "$workspace" ]] && [[ "$component_root" != "$workspace/"* ]]; }; then
-            echo "::error::PostgreSQL integration component '$name' must resolve inside the repository."
-            exit 1
-          fi
-
-          case "$image" in
-            postgres:*alpine*|postgres@sha256:*)
-              go_image="golang:$GO_VERSION-alpine3.24"
-              ;;
-            postgres:*)
-              go_image="golang:$GO_VERSION-bookworm"
-              ;;
-            *)
-              echo "::error::postgres_image for $name must use the official postgres image."
-              exit 1
-              ;;
-          esac
-
-          safe_name="$(printf '%s' "$name" | tr -cs 'A-Za-z0-9_.-' '-' | sed 's/^-*//; s/-*$//' | cut -c1-40)"
-          context="$RUNNER_TEMP/go-postgres-context-$safe_name"
-          dockerfile_dir="$RUNNER_TEMP/go-postgres-dockerfile-$safe_name"
-          rm -rf "$context" "$dockerfile_dir"
-          mkdir -p "$context/repo" "$dockerfile_dir"
-
-          tar -C "$workspace" --exclude=.git -cf - . | tar -C "$context/repo" -xf -
-
-          {
-            echo '#!/bin/sh'
-            echo 'set -eu'
-            echo 'export POSTGRES_USER=ci'
-            echo 'export POSTGRES_PASSWORD=ci'
-            echo 'export POSTGRES_DB=ci'
-            echo 'export PGDATA=/tmp/pgdata'
-            echo 'rm -rf "$PGDATA"'
-            echo 'mkdir -p "$PGDATA"'
-            echo 'docker-entrypoint.sh postgres -c listen_addresses=127.0.0.1 &'
-            echo 'postgres_pid=$!'
-            echo 'cleanup() { kill "$postgres_pid" >/dev/null 2>&1 || true; wait "$postgres_pid" >/dev/null 2>&1 || true; }'
-            echo 'trap cleanup EXIT INT TERM'
-            echo 'ready=false'
-            echo 'i=0'
-            echo 'while [ "$i" -lt 60 ]; do'
-            echo '  if PGPASSWORD=ci psql -h 127.0.0.1 -U ci -d ci -tAc "SELECT 1" 2>/dev/null | grep -qx 1; then ready=true; break; fi'
-            echo '  i=$((i + 1))'
-            echo '  sleep 1'
-            echo 'done'
-            echo '[ "$ready" = true ] || { echo "PostgreSQL did not become ready." >&2; exit 1; }'
-            printf 'cd %s\n' "$(shell_quote "/workspace/$path")"
-            printf 'export %s=%s\n' "$db_env" "$(shell_quote 'postgres://ci:ci@127.0.0.1:5432/ci?sslmode=disable')"
-            while IFS= read -r item; do
-              key="$(jq -r '.key' <<<"$item")"
-              value="$(jq -r '.value' <<<"$item")"
-              printf 'export %s=%s\n' "$key" "$(shell_quote "$value")"
-            done < <(jq -c 'to_entries[]' <<<"$extra")
-            printf 'go test'
-            while IFS= read -r arg; do
-              printf ' %s' "$(shell_quote "$arg")"
-            done < <(jq -r '.[]' <<<"$args")
-            printf '\n'
-          } >"$context/run-integration.sh"
-          chmod 0755 "$context/run-integration.sh"
-
-          cat >"$dockerfile_dir/Dockerfile" <<'DOCKERFILE'
-        ARG GO_IMAGE
-        ARG POSTGRES_IMAGE
-        FROM ${GO_IMAGE} AS go
-        FROM ${POSTGRES_IMAGE}
-        COPY --from=go /usr/local/go /usr/local/go
-        ENV PATH=/usr/local/go/bin:$PATH
-        COPY repo /workspace
-        COPY run-integration.sh /usr/local/bin/run-integration
-        RUN /usr/local/bin/run-integration
-        DOCKERFILE
-
-          echo "==> Go PostgreSQL integration: $name"
-          buildctl --addr "$BUILDKIT_HOST" build             --frontend dockerfile.v0             --local "context=$context"             --local "dockerfile=$dockerfile_dir"             --opt filename=Dockerfile             --opt "build-arg:GO_IMAGE=$go_image"             --opt "build-arg:POSTGRES_IMAGE=$image"
-
-          rm -rf "$context" "$dockerfile_dir"
-        done < <(jq -c '.[]' <<<"$components")
+          cmd=(go test)
+          while IFS= read -r arg; do cmd+=("$arg"); done < <(jq -r '.[]' <<<"$args")
+          (cd "$component" && "${cmd[@]}")
+        done < <(jq -c '.[]' <<<"$COMPONENTS_JSON")

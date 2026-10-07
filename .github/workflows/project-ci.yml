@@ -174,10 +174,10 @@ jobs:
           private_repo_token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
 
   ci:
-    name: ${{ matrix.target }}
+    name: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].display_name || matrix.target }}
     needs: contract
     if: needs.contract.outputs.ci_required == 'true'
-    runs-on: [self-hosted, linux, "gharp-ci-${{ github.run_id }}-${{ github.run_attempt }}"]
+    runs-on: ${{ fromJSON(fromJSON(needs.contract.outputs.ci_groups)[matrix.target].postgres_required && format('["self-hosted","linux","gharp-ci-{0}-{1}","gharp-postgres"]', github.run_id, github.run_attempt) || format('["self-hosted","linux","gharp-ci-{0}-{1}"]', github.run_id, github.run_attempt)) }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -200,11 +200,12 @@ jobs:
           package-manager: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].package_manager || '' }}
           build-tool: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].build_tool || '' }}
           profile: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].profile || '' }}
+          postgres-required: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].postgres_required }}
           go-private-patterns: ${{ needs.contract.outputs.go_private_patterns }}
           private-repo-token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
 
   images:
-    name: Docker (${{ matrix.service }})
+    name: Docker ${{ matrix.service }}
     needs: contract
     if: needs.contract.outputs.image_required == 'true'
     runs-on: [self-hosted, linux, "gharp-image-${{ github.run_id }}-${{ github.run_attempt }}", "${{ needs.contract.outputs.promotion_required == 'true' && format('gharp-service-{0}', matrix.service) || format('gharp-scratch-{0}', matrix.service) }}"]
@@ -255,7 +256,7 @@ jobs:
           exposed-port: ${{ steps.prepare.outputs.exposed-port }}
 
   artifacts:
-    name: OCI Artifact (${{ matrix.artifact }})
+    name: OCI
     needs: contract
     if: needs.contract.outputs.artifact_required == 'true'
     runs-on: [self-hosted, linux, "gharp-artifact-${{ github.run_id }}-${{ github.run_attempt }}", "gharp-scratch-${{ matrix.artifact }}"]

@@ -145,9 +145,8 @@ runs:
               "name","type","path","watch","watch_path","build_cache",
               "go_version","node_version","java_version","package_manager","build_tool","profile",
               "gradle_tasks","maven_goals",
-              "migration_engine","migration_path","migration_schema","migration_config","migration_package",
-              "migration_package_manager","migration_build_tool","goose_version",
-              "postgres_test","postgres_database_env","postgres_image","postgres_test_args","postgres_test_env"
+              "migration_engine","migration_path","migration_schema","migration_config","goose_version",
+              "postgres_test","postgres_database_env","postgres_test_args","postgres_test_env"
             ] | length) == 0
           ' <<<"$component" >/dev/null || {
             echo "::error::Component '$name' contains unsupported project-local CI/CD controls."
