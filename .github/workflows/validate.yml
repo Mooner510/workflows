@@ -265,21 +265,28 @@ jobs:
             }
           done
 
-      - name: Validate isolated PostgreSQL CI boundary
+      - name: Validate job PostgreSQL migration boundary
         shell: bash
         run: |
           set -euo pipefail
-          target="$GITHUB_WORKSPACE/.github/actions/ci/go-postgres/action.yml"
-          [[ -f "$target" ]] || { echo "::error::Missing Go PostgreSQL integration action."; exit 1; }
-
-          if grep -nE '(^|[;&|[:space:]])(docker|podman|nerdctl)[[:space:]]' "$target"; then
-            echo "::error file=.github/actions/ci/go-postgres/action.yml::Go PostgreSQL integration must not invoke a container runtime CLI. Use the isolated BuildKit boundary."
-            exit 1
-          fi
-          grep -q 'ci/buildkit@v1' "$target" || {
-            echo "::error file=.github/actions/ci/go-postgres/action.yml::Go PostgreSQL integration must initialize the canonical BuildKit boundary."
-            exit 1
-          }
+          targets=(
+            "$GITHUB_WORKSPACE/.github/actions/ci/go-postgres/action.yml"
+            "$GITHUB_WORKSPACE/.github/actions/ci/migration/goose/action.yml"
+            "$GITHUB_WORKSPACE/.github/actions/ci/migration/prisma/action.yml"
+            "$GITHUB_WORKSPACE/.github/actions/ci/migration/drizzle/action.yml"
+            "$GITHUB_WORKSPACE/.github/actions/ci/migration/flyway/action.yml"
+          )
+          for target in "${targets[@]}"; do
+            [[ -f "$target" ]] || { echo "::error::Missing PostgreSQL CI action: ${target#"$GITHUB_WORKSPACE"/}"; exit 1; }
+            if grep -nE '(^|[;&|[:space:]])(docker|podman|nerdctl)[[:space:]]' "$target"; then
+              echo "::error file=${target#"$GITHUB_WORKSPACE"/}::Migration/integration CI must use the Gharp job-scoped PostgreSQL and must not invoke a container runtime."
+              exit 1
+            fi
+          done
+          grep -q 'CI_POSTGRES_URL' "$GITHUB_WORKSPACE/.github/actions/ci/migration/goose/action.yml" || exit 1
+          grep -q 'FLYWAY_URL' "$GITHUB_WORKSPACE/.github/actions/ci/migration/flyway/action.yml" || exit 1
+          grep -q 'DATABASE_URL' "$GITHUB_WORKSPACE/.github/actions/ci/migration/prisma/action.yml" || exit 1
+          grep -q 'DATABASE_URL' "$GITHUB_WORKSPACE/.github/actions/ci/migration/drizzle/action.yml" || exit 1
 
       - name: Reject repository-owned production runtime surfaces
         shell: bash

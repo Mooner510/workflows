@@ -181,11 +181,7 @@ runs:
           case "$migration_engine" in
             none)
               ;;
-            goose|go-command)
-              if [[ "$migration_engine" == "go-command" && "$type" != "go" ]]; then
-                echo "::error::go-command migration requires a Go component ('$name')."
-                exit 1
-              fi
+            goose)
               migration_path="$(jq -r '.migration_path // "db/migrations"' <<<"$component")"
               validate_relative_path "$migration_path" "Component '$name' migration_path"
               if ! jq -e '(.goose_version == null) or ((.goose_version | type) == "string" and length > 0)' <<<"$component" >/dev/null; then
