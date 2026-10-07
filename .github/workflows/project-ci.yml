@@ -174,7 +174,7 @@ jobs:
           private_repo_token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
 
   ci:
-    name: ${{ matrix.target }}
+    name: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].type == 'java-kotlin' && format('Java {0}', fromJSON(needs.contract.outputs.ci_groups)[matrix.target].version) || matrix.target }}
     needs: contract
     if: needs.contract.outputs.ci_required == 'true'
     runs-on: [self-hosted, linux, "gharp-ci-${{ github.run_id }}-${{ github.run_attempt }}"]
@@ -204,7 +204,7 @@ jobs:
           private-repo-token: ${{ secrets.CI_PRIVATE_REPO_TOKEN }}
 
   images:
-    name: Docker (${{ matrix.service }})
+    name: Docker ${{ matrix.service }}
     needs: contract
     if: needs.contract.outputs.image_required == 'true'
     runs-on: [self-hosted, linux, "gharp-image-${{ github.run_id }}-${{ github.run_attempt }}", "${{ needs.contract.outputs.promotion_required == 'true' && format('gharp-service-{0}', matrix.service) || format('gharp-scratch-{0}', matrix.service) }}"]
@@ -255,7 +255,7 @@ jobs:
           exposed-port: ${{ steps.prepare.outputs.exposed-port }}
 
   artifacts:
-    name: OCI Artifact (${{ matrix.artifact }})
+    name: OCI
     needs: contract
     if: needs.contract.outputs.artifact_required == 'true'
     runs-on: [self-hosted, linux, "gharp-artifact-${{ github.run_id }}-${{ github.run_attempt }}", "gharp-scratch-${{ matrix.artifact }}"]
