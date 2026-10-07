@@ -121,7 +121,7 @@ jobs:
           git_log_opts: ${{ needs.contract.outputs.git_log_opts }}
 
   ci:
-    name: ${{ matrix.target }}
+    name: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].display_name || matrix.target }}
     needs: contract
     if: needs.contract.outputs.ci_required == 'true'
     runs-on: ${{ fromJSON(fromJSON(needs.contract.outputs.ci_groups)[matrix.target].postgres_required && format('["self-hosted","linux","gharp-ci-{0}-{1}","gharp-postgres"]', github.run_id, github.run_attempt) || format('["self-hosted","linux","gharp-ci-{0}-{1}"]', github.run_id, github.run_attempt)) }}

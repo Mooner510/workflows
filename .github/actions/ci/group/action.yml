@@ -143,6 +143,31 @@ runs:
           done < <(jq -r '.build_cache.paths // [] | .[]' <<<"$component_json")
         done < <(jq -c '.[]' <<<"$COMPONENTS_JSON")
 
+    - name: Prepare Node migration runtime
+      if: inputs.postgres-required == 'true' && inputs.type == 'node'
+      uses: Mooner510/workflows/.github/actions/ci/node@v1
+      with:
+        components: ${{ inputs.components }}
+        version: ${{ inputs.version }}
+        package-manager: ${{ inputs.package-manager }}
+        private_repo_token: ${{ inputs.private-repo-token }}
+        run-checks: 'false'
+
+    - name: Prepare Java/Kotlin migration runtime
+      if: inputs.postgres-required == 'true' && inputs.type == 'java-kotlin'
+      uses: Mooner510/workflows/.github/actions/ci/java-kotlin@v1
+      with:
+        components: ${{ inputs.components }}
+        version: ${{ inputs.version }}
+        build-tool: ${{ inputs.build-tool }}
+        profile: ${{ inputs.profile }}
+        run-checks: 'false'
+
+    - name: Migration CI
+      uses: Mooner510/workflows/.github/actions/ci/migration@v1
+      with:
+        components: ${{ inputs.components }}
+
     - name: Go CI
       if: inputs.type == 'go'
       uses: Mooner510/workflows/.github/actions/ci/go@v1
@@ -232,11 +257,6 @@ runs:
             echo "==> Saved build cache: $name/$cache_path"
           done < <(jq -r '.build_cache.paths // [] | .[]' <<<"$component_json")
         done < <(jq -c '.[]' <<<"$COMPONENTS_JSON")
-
-    - name: Migration CI
-      uses: Mooner510/workflows/.github/actions/ci/migration@v1
-      with:
-        components: ${{ inputs.components }}
 
     - name: Go PostgreSQL integration CI
       if: inputs.type == 'go'

@@ -559,6 +559,7 @@ runs:
               | group_by(.go_version // "stable")[]
               | {
                   target: ("Go " + (.[0].go_version // "stable")),
+                  display_name: ("Go " + (.[0].go_version // "stable")),
                   type: "go",
                   version: (.[0].go_version // "stable"),
                   components: .
@@ -567,6 +568,7 @@ runs:
               | group_by([(.node_version // "24.21.0"), .package_manager, .package_manager_version])[]
               | {
                   target: (.[0].package_manager + (if (.[0].package_manager_version // "") == "" then "" else " " + .[0].package_manager_version end)),
+                  display_name: (.[0].package_manager + (if (.[0].package_manager_version // "") == "" then "" else " " + .[0].package_manager_version end)),
                   type: "node",
                   version: (.[0].node_version // "24.21.0"),
                   package_manager: .[0].package_manager,
@@ -577,6 +579,7 @@ runs:
               | group_by([(.java_version // "17"), .build_tool, .profile])[]
               | {
                   target: ("Java " + (.[0].java_version // "17") + " / " + .[0].build_tool + (if .[0].profile == "none" then "" else " / " + .[0].profile end)),
+                  display_name: ("Java " + (.[0].java_version // "17")),
                   type: "java-kotlin",
                   version: (.[0].java_version // "17"),
                   build_tool: .[0].build_tool,
@@ -587,19 +590,38 @@ runs:
         ' <<<"$normalized")"
 
         ci_groups="$(jq -c '
-          map(
-            . + {
-              postgres_required: (
-                [.components[]
-                  | select(
-                      (.postgres_test // false) == true
-                      or ((.migration_engine // "none") != "none")
-                    )
-                ]
-                | length > 0
-              )
-            }
-          )
+          def needs_postgres:
+            (.postgres_test // false) == true
+            or ((.migration_engine // "none") != "none");
+
+          [
+            .[] as $group
+            | ($group.components | map(select(needs_postgres))) as $db
+            | ($group.components | map(select(needs_postgres | not))) as $plain
+            | if ($db | length) == 0 then
+                $group + {postgres_required:false}
+              elif ($group.components | length) == 1 then
+                $group + {postgres_required:true}
+              else
+                (
+                  $db[]
+                  | . as $component
+                  | $group + {
+                      target: ($group.target + " (" + $component.name + ")"),
+                      display_name: ($group.display_name + " (" + $component.name + ")"),
+                      components: [$component],
+                      postgres_required: true
+                    }
+                ),
+                (
+                  if ($plain | length) > 0 then
+                    $group + {components:$plain, postgres_required:false}
+                  else
+                    empty
+                  end
+                )
+              end
+          ]
         ' <<<"$ci_groups")"
 
         ci_targets="$(jq -c 'map(.target)' <<<"$ci_groups")"
