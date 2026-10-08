@@ -27,17 +27,17 @@ runs:
         rm -rf "$source_dir"
         mkdir -p "$source_dir"
         cat >"$source_dir/GharpFlywayMigrate.java" <<'JAVA'
-        import org.flywaydb.core.Flyway;
-        public class GharpFlywayMigrate {
-            public static void main(String[] args) {
-                Flyway.configure()
-                    .dataSource(args[0], args[1], args[2])
-                    .locations("filesystem:" + args[3])
-                    .load()
-                    .migrate();
-            }
-        }
-        JAVA
+import org.flywaydb.core.Flyway;
+public class GharpFlywayMigrate {
+    public static void main(String[] args) {
+        Flyway.configure()
+            .dataSource(args[0], args[1], args[2])
+            .locations("filesystem:" + args[3])
+            .load()
+            .migrate();
+    }
+}
+JAVA
 
         while IFS= read -r c; do
           name="$(jq -r '.name' <<<"$c")"
@@ -72,16 +72,16 @@ runs:
               chmod +x "$component/gradlew"
               init="$RUNNER_TEMP/gharp-flyway.init.gradle"
               cat >"$init" <<'GRADLE'
-              allprojects {
-                  tasks.register("gharpRuntimeClasspath") {
-                      doLast {
-                          def runtime = configurations.findByName("runtimeClasspath")
-                          if (runtime == null) throw new GradleException("runtimeClasspath unavailable")
-                          println(runtime.asPath)
-                      }
-                  }
+      allprojects {
+          tasks.register("gharpRuntimeClasspath") {
+              doLast {
+                  def runtime = configurations.findByName("runtimeClasspath")
+                  if (runtime == null) throw new GradleException("runtimeClasspath unavailable")
+                  println(runtime.asPath)
               }
-              GRADLE
+          }
+      }
+      GRADLE
               (cd "$component" && ./gradlew --no-daemon -q -I "$init" gharpRuntimeClasspath) >"$cp_file"
               ;;
             maven)
