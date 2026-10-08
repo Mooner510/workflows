@@ -72,16 +72,16 @@ runs:
               chmod +x "$component/gradlew"
               init="$RUNNER_TEMP/gharp-flyway.init.gradle"
               cat >"$init" <<'GRADLE'
-              allprojects {
-                  tasks.register("gharpRuntimeClasspath") {
-                      doLast {
-                          def runtime = configurations.findByName("runtimeClasspath")
-                          if (runtime == null) throw new GradleException("runtimeClasspath unavailable")
-                          println(runtime.asPath)
-                      }
-                  }
-              }
-              GRADLE
+        allprojects {
+            tasks.register("gharpRuntimeClasspath") {
+                doLast {
+                    def runtime = configurations.findByName("runtimeClasspath")
+                    if (runtime == null) throw new GradleException("runtimeClasspath unavailable")
+                    println(runtime.asPath)
+                }
+            }
+        }
+        GRADLE
               (cd "$component" && ./gradlew --no-daemon -q -I "$init" gharpRuntimeClasspath) >"$cp_file"
               ;;
             maven)
