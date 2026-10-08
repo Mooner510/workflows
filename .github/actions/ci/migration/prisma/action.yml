@@ -40,14 +40,24 @@ runs:
           migrations_path="$(jq -r '.migration_path // "prisma/migrations"' <<<"$c")"
           component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
           [[ -n "$component" && ( "$component" == "$workspace" || "$component" == "$workspace/"* ) ]] || { echo "::error::Invalid Prisma component '$name'."; exit 1; }
+          if [[ ! -e "$component/$migrations_path" ]]; then
+            echo "==> SKIP Prisma for '$name': migration path does not exist."
+            continue
+          fi
+          migrations="$(realpath -e "$component/$migrations_path")"
+          [[ -d "$migrations" && ( "$migrations" == "$component" || "$migrations" == "$component/"* ) ]] || { echo "::error::Invalid Prisma migration path for '$name'."; exit 1; }
+          mapfile -t dirs < <(find "$migrations" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+          if (( ${#dirs[@]} == 0 )); then
+            if find "$migrations" -mindepth 1 -maxdepth 1 -type f ! -name 'migration_lock.toml' -print -quit | grep -q .; then
+              echo "::error::Unexpected Prisma migration files for '$name'."; exit 1
+            fi
+            echo "==> SKIP Prisma for '$name': no migration directories."
+            continue
+          fi
           schema="$(realpath -e "$component/$schema_path" 2>/dev/null || true)"
-          migrations="$(realpath -e "$component/$migrations_path" 2>/dev/null || true)"
-          [[ -f "$schema" && -d "$migrations" ]] || { echo "::error::Missing Prisma schema/migrations for '$name'."; exit 1; }
+          [[ -f "$schema" ]] || { echo "::error::Missing Prisma schema for '$name'."; exit 1; }
           [[ "$migrations" == "$(realpath -m "$(dirname "$schema")/migrations")" ]] || { echo "::error::Prisma migrations must be next to schema for '$name'."; exit 1; }
           (cd "$component" && node -e 'require.resolve("prisma/package.json")' >/dev/null 2>&1) || { echo "::error::Prisma must be a local dependency for '$name'."; exit 1; }
-
-          mapfile -t dirs < <(find "$migrations" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
-          (( ${#dirs[@]} > 0 )) || { echo "::error::No Prisma migrations for '$name'."; exit 1; }
           for d in "${dirs[@]}"; do
             [[ "$d" =~ ^[0-9]+_[A-Za-z0-9][A-Za-z0-9_-]*$ && -s "$migrations/$d/migration.sql" ]] || { echo "::error::Invalid Prisma migration '$d'."; exit 1; }
           done

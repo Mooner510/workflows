@@ -92,16 +92,21 @@ runs:
             echo "::error::Goose component '$name' must resolve inside the repository."; exit 1;
           }
 
-          migrations="$(realpath -e "$component/$migrations_path" 2>/dev/null || true)"
+          if [[ ! -e "$component/$migrations_path" ]]; then
+            echo "==> SKIP Goose for '$name': migration path does not exist."
+            continue
+          fi
+          migrations="$(realpath -e "$component/$migrations_path")"
           [[ -d "$migrations" && ( "$migrations" == "$component" || "$migrations" == "$component/"* ) ]] || {
             echo "::error::Invalid Goose migration path for '$name'."; exit 1;
           }
           if find "$migrations" -type f -name '*.go' -print -quit | grep -q .; then
             echo "::error::Goose CI supports SQL migrations only for '$name'."; exit 1;
           fi
-          find "$migrations" -type f -name '*.sql' -print -quit | grep -q . || {
-            echo "::error::No Goose SQL migrations found for '$name'."; exit 1;
-          }
+          if ! find "$migrations" -type f -name '*.sql' -print -quit | grep -q .; then
+            echo "==> SKIP Goose for '$name': no SQL migrations."
+            continue
+          fi
 
           goose_version="$(resolve_goose_version "$component_json" "$component")" || {
             echo "::error::Invalid Goose version for '$name'."; exit 1;

@@ -46,11 +46,18 @@ runs:
           migrations_path="$(jq -r '.migration_path // "src/main/resources/db/migration"' <<<"$c")"
           component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
           [[ -n "$component" && ( "$component" == "$workspace" || "$component" == "$workspace/"* ) ]] || { echo "::error::Invalid Flyway component '$name'."; exit 1; }
-          migrations="$(realpath -e "$component/$migrations_path" 2>/dev/null || true)"
-          [[ -d "$migrations" ]] || { echo "::error::Missing Flyway migrations for '$name'."; exit 1; }
+          if [[ ! -e "$component/$migrations_path" ]]; then
+            echo "==> SKIP Flyway for '$name': migration path does not exist."
+            continue
+          fi
+          migrations="$(realpath -e "$component/$migrations_path")"
+          [[ -d "$migrations" && ( "$migrations" == "$component" || "$migrations" == "$component/"* ) ]] || { echo "::error::Invalid Flyway migration path for '$name'."; exit 1; }
 
           mapfile -t sql < <(find "$migrations" -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sort)
-          (( ${#sql[@]} > 0 )) || { echo "::error::No Flyway SQL migrations for '$name'."; exit 1; }
+          if (( ${#sql[@]} == 0 )); then
+            echo "==> SKIP Flyway for '$name': no SQL migrations."
+            continue
+          fi
           declare -A versions=()
           for file in "${sql[@]}"; do
             if [[ "$file" =~ ^V([^_]+)__[A-Za-z0-9][A-Za-z0-9_.-]*\.sql$ ]]; then

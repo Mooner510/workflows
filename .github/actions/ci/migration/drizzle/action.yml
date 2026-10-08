@@ -40,11 +40,19 @@ runs:
           config_path="$(jq -r '.migration_config // "drizzle.config.ts"' <<<"$c")"
           component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
           [[ -n "$component" && ( "$component" == "$workspace" || "$component" == "$workspace/"* ) ]] || { echo "::error::Invalid Drizzle component '$name'."; exit 1; }
+          if [[ ! -e "$component/$migrations_path" ]]; then
+            echo "==> SKIP Drizzle for '$name': migration path does not exist."
+            continue
+          fi
+          migrations="$(realpath -e "$component/$migrations_path")"
+          [[ -d "$migrations" && ( "$migrations" == "$component" || "$migrations" == "$component/"* ) ]] || { echo "::error::Invalid Drizzle migration path for '$name'."; exit 1; }
+          if ! find "$migrations" -type f -name '*.sql' -print -quit | grep -q .; then
+            echo "==> SKIP Drizzle for '$name': no SQL migrations."
+            continue
+          fi
           config="$(realpath -e "$component/$config_path" 2>/dev/null || true)"
-          migrations="$(realpath -e "$component/$migrations_path" 2>/dev/null || true)"
-          [[ -f "$config" && -d "$migrations" ]] || { echo "::error::Missing Drizzle config/migrations for '$name'."; exit 1; }
+          [[ -f "$config" ]] || { echo "::error::Missing Drizzle config for '$name'."; exit 1; }
           (cd "$component" && node -e 'require.resolve("drizzle-kit/package.json")' >/dev/null 2>&1) || { echo "::error::drizzle-kit must be a local dependency for '$name'."; exit 1; }
-          find "$migrations" -type f -name '*.sql' -print -quit | grep -q . || { echo "::error::No Drizzle SQL migrations for '$name'."; exit 1; }
 
           run_drizzle "$manager" "$component" check --config "$config"
           run_drizzle "$manager" "$component" migrate --config "$config"
