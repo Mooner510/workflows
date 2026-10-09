@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: ''
+      full_history:
+        description: Fetch complete Git history for caller regression tests.
+        required: false
+        type: boolean
+        default: false
       force_all:
         description: Expand validation to all declared components.
         required: false
@@ -135,6 +140,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: ${{ inputs.full_history && '0' || '1' }}
           persist-credentials: false
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
