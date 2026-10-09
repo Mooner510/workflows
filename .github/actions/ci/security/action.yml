@@ -47,11 +47,27 @@ runs:
     - name: Set up isolated BuildKit
       uses: Mooner510/workflows/.github/actions/ci/buildkit@v1
 
+    - name: Resolve Go vulnerability scanner toolchain
+      id: go_toolchain
+      if: ${{ contains(inputs.components, '"type":"go"') }}
+      shell: bash
+      env:
+        COMPONENTS_JSON: ${{ inputs.components }}
+      run: |
+        set -euo pipefail
+        command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
+        version="$(jq -r '[.[] | select(.type == "go") | .go_version] | unique | if length == 1 then .[0] else empty end' <<<"$COMPONENTS_JSON")"
+        if [[ ! "$version" =~ ^([0-9]+[.][0-9]+([.][0-9]+)?|stable)$ ]]; then
+          echo "::error::Security scan requires one declared Go toolchain for the affected components."
+          exit 1
+        fi
+        echo "version=$version" >>"$GITHUB_OUTPUT"
+
     - name: Set up Go vulnerability analysis
       if: ${{ contains(inputs.components, '"type":"go"') }}
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: '1.27.1'
+        go-version: ${{ steps.go_toolchain.outputs.version }}
         cache: false
 
     - name: Set up pinned security scanners
