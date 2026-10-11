@@ -38,6 +38,7 @@ runs:
           }
           cache_root="$GHARP_L2_CACHE/$name"
           mkdir -p "$cache_root"
+          [[ "$(realpath -e "$cache_root")" == "$GHARP_L2_CACHE/$name" ]] || { echo "::error::Invalid cache root symlink."; exit 1; }
           while IFS= read -r rel; do
             [[ -n "$rel" ]] || continue
             [[ "$rel" != /* && "$rel" != "." ]] || {
@@ -53,6 +54,9 @@ runs:
             done
             destination="$component/$rel"
             parent="$(dirname "$destination")"
+            probe="$parent"
+            while [[ ! -e "$probe" ]]; do probe="$(dirname "$probe")"; done
+            [[ "$(realpath -e "$probe")" == "$component" || "$(realpath -e "$probe")" == "$component/"* ]] || { echo "::error::Unsafe cache ancestor."; exit 1; }
             mkdir -p "$parent"
             resolved_parent="$(realpath -e "$parent")"
             [[ "$resolved_parent" == "$component" || "$resolved_parent" == "$component/"* ]] || {
@@ -66,8 +70,13 @@ runs:
               echo "::error::L2 cache escapes its component namespace."
               exit 1
             }
-            if [[ -e "$destination" || -L "$destination" ]]; then
-              echo "==> Existing directory; not replacing $name/$rel"
+            if [[ -L "$destination" ]]; then
+              echo "::error::Build cache destination is a preexisting symlink."
+              exit 1
+            fi
+            if [[ -e "$destination" ]]; then
+              [[ -d "$destination" ]] || { echo "::error::Build cache destination is not a directory."; exit 1; }
+              echo "==> Existing component cache directory; retaining without copy: $name/$rel"
               continue
             fi
             ln -s "$resolved_cache" "$destination"
