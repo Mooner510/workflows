@@ -17,6 +17,27 @@ runs:
           exit 1
         }
 
+        # The global tool directory is read-only and populated by the trusted host.
+        # Never install or update scanner binaries from an untrusted CI job.
+        if [[ -n "${GHARP_GLOBAL_TOOLS:-}" ]]; then
+          for scanner in osv-scanner gitleaks trivy; do
+            case "$scanner" in
+              osv-scanner) version="2.6.0" ;;
+              gitleaks) version="8.30.1" ;;
+              trivy) version="0.74.0" ;;
+            esac
+            binary="${GHARP_GLOBAL_TOOLS}/$scanner/v$version/$scanner"
+            [[ -x "$binary" && ! -L "$binary" ]] || {
+              echo "::error::Missing verified L1 scanner: $scanner v$version"
+              exit 1
+            }
+            mkdir -p "$RUNNER_TEMP/verified-scanners"
+            ln -s "$binary" "$RUNNER_TEMP/verified-scanners/$scanner"
+          done
+          echo "$RUNNER_TEMP/verified-scanners" >>"$GITHUB_PATH"
+          exit 0
+        fi
+
         tool_base="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/isolated-scanners"
         bin_dir="$tool_base/bin"
         mkdir -p "$bin_dir"
