@@ -56,6 +56,15 @@ runs:
           git config --global url."https://x-access-token:${CI_PRIVATE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
         fi
 
+        if [[ -n "${GHARP_GLOBAL_GOPROXY:-}" ]]; then
+          [[ "$GHARP_GLOBAL_GOPROXY" == "file:///run/gharp-cache-l1/goproxy" && -d /run/gharp-cache-l1/goproxy ]] || {
+            echo "::error::Invalid verified public Go module proxy."
+            exit 1
+          }
+          # Local verified public modules first; Go private modules still bypass GOPROXY.
+          export GOPROXY="${GHARP_GLOBAL_GOPROXY},https://proxy.golang.org"
+        fi
+
         declare -A verified_modules=()
         declare -A checked_scopes=()
 
