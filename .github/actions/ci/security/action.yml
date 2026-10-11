@@ -305,7 +305,17 @@ runs:
           echo "==> govulncheck: $target"
           (
             cd "$host_target"
-            go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+            if [[ -n "${GHARP_GLOBAL_TOOLS:-}" ]]; then
+              scanner="${GHARP_GLOBAL_TOOLS}/govulncheck/v1.8.0/govulncheck"
+              [[ -x "$scanner" && ! -L "$scanner" ]] || {
+                echo "::error::Pinned govulncheck is missing from the verified L1 tool cache."
+                exit 1
+              }
+              "$scanner" ./...
+            else
+              # Compatibility until gharp publishes verified read-only L1 tools.
+              go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+            fi
           )
         done <"$TARGET_FILE"
 
