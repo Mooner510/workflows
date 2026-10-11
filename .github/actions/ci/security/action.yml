@@ -280,6 +280,15 @@ runs:
         set -euo pipefail
         command -v go >/dev/null || { echo "::error::Go is required for govulncheck."; exit 1; }
 
+        if [[ -n "${GHARP_GLOBAL_GOPROXY:-}" ]]; then
+          [[ "$GHARP_GLOBAL_GOPROXY" == "file:///run/gharp-cache-l1/goproxy" && -d /run/gharp-cache-l1/goproxy ]] || {
+            echo "::error::Invalid verified public Go module proxy."
+            exit 1
+          }
+          # Local verified public modules first; Go private modules still bypass GOPROXY.
+          export GOPROXY="${GHARP_GLOBAL_GOPROXY},https://proxy.golang.org"
+        fi
+
         git_config="$RUNNER_TEMP/workflows-security-go-gitconfig"
         : >"$git_config"
         chmod 600 "$git_config"
