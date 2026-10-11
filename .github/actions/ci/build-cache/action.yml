@@ -1,0 +1,76 @@
+name: Link isolated build caches
+description: Connect declared component output directly to repository-scoped L2 without copying bytes.
+inputs:
+  components:
+    required: true
+    description: Normalized component manifest.
+runs:
+  using: composite
+  steps:
+    - name: Link L2 cache directories
+      shell: bash
+      env:
+        COMPONENTS_JSON: ${{ inputs.components }}
+      run: |
+        set -euo pipefail
+        command -v jq >/dev/null
+        command -v realpath >/dev/null
+        if [[ -z "${GHARP_L2_CACHE:-}" ]]; then
+          echo "==> No isolated L2 cache: clean build."
+          exit 0
+        fi
+        [[ "$GHARP_L2_CACHE" == /cache/build/v2 && -d /cache && -w /cache ]] || {
+          echo "::error::Invalid L2 cache mount."
+          exit 1
+        }
+        workspace="$(realpath -e "$GITHUB_WORKSPACE")"
+        while IFS= read -r component_json; do
+          name="$(jq -r '.name // empty' <<<"$component_json")"
+          path="$(jq -r '.path // empty' <<<"$component_json")"
+          [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ && "$name" != .git ]] || {
+            echo "::error::Invalid component name."
+            exit 1
+          }
+          component="$(realpath -e "$workspace/$path" 2>/dev/null || true)"
+          [[ -n "$component" && ( "$component" == "$workspace" || "$component" == "$workspace/"* ) ]] || {
+            echo "::error::Component must resolve inside checkout."
+            exit 1
+          }
+          cache_root="$GHARP_L2_CACHE/$name"
+          mkdir -p "$cache_root"
+          while IFS= read -r rel; do
+            [[ -n "$rel" ]] || continue
+            [[ "$rel" != /* && "$rel" != "." ]] || {
+              echo "::error::Invalid absolute/root cache path."
+              exit 1
+            }
+            IFS=/ read -r -a segments <<<"$rel"
+            for segment in "${segments[@]}"; do
+              [[ -n "$segment" && "$segment" != "." && "$segment" != ".." && "$segment" != ".git" ]] || {
+                echo "::error::Invalid cache path segment."
+                exit 1
+              }
+            done
+            destination="$component/$rel"
+            parent="$(dirname "$destination")"
+            mkdir -p "$parent"
+            resolved_parent="$(realpath -e "$parent")"
+            [[ "$resolved_parent" == "$component" || "$resolved_parent" == "$component/"* ]] || {
+              echo "::error::Cache parent escapes checkout."
+              exit 1
+            }
+            persistent="$cache_root/$rel"
+            mkdir -p "$persistent"
+            resolved_cache="$(realpath -e "$persistent")"
+            [[ "$resolved_cache" == "$cache_root/"* ]] || {
+              echo "::error::L2 cache escapes its component namespace."
+              exit 1
+            }
+            if [[ -e "$destination" || -L "$destination" ]]; then
+              echo "==> Existing directory; not replacing $name/$rel"
+              continue
+            fi
+            ln -s "$resolved_cache" "$destination"
+            echo "==> Direct L2 link: $name/$rel"
+          done < <(jq -r '.build_cache.paths // [] | .[]' <<<"$component_json")
+        done < <(jq -c '.[]' <<<"$COMPONENTS_JSON")
