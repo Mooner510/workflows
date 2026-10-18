@@ -6,7 +6,7 @@ inputs:
     description: JSON array of normalized components in this CI group.
     required: true
   type:
-    description: go, node, or java-kotlin.
+    description: go, node, java-kotlin, or python.
     required: true
   version:
     description: Canonical language runtime version for this group.
@@ -73,7 +73,7 @@ runs:
               echo "FLYWAY_USER=$CI_POSTGRES_USER"
               echo "FLYWAY_PASSWORD=$CI_POSTGRES_PASSWORD"
               ;;
-            node|go)
+            node|go|python)
               echo "DATABASE_URL=$postgres_url"
               ;;
             *)
@@ -194,6 +194,14 @@ runs:
         version: ${{ inputs.version }}
         build-tool: ${{ inputs.build-tool }}
         profile: ${{ inputs.profile }}
+
+    - name: Python CI
+      if: inputs.type == 'python'
+      uses: Mooner510/workflows/.github/actions/ci/python@v1
+      with:
+        components: ${{ inputs.components }}
+        version: ${{ inputs.version }}
+        private_repo_token: ${{ inputs.private-repo-token }}
 
     - name: Save declared build caches
       shell: bash

@@ -98,7 +98,7 @@ Component는 language CI와 migration-validation source만 설명한다.
 
 ```text
 name
-type = go | node | java-kotlin
+type = go | node | java-kotlin | python
 path
 watch
 watch_path
@@ -108,7 +108,7 @@ build_cache
 필요한 경우에만 language/migration metadata를 추가한다.
 
 ```text
-go_version / node_version / java_version
+go_version / node_version / java_version / python_version
 package_manager
 build_tool / profile
 gradle_tasks / maven_goals
@@ -124,6 +124,8 @@ postgres_database_env
 postgres_test_args
 postgres_test_env
 ```
+
+`python` component는 component path에 `pyproject.toml`과 `uv.lock`이 반드시 있어야 한다. `python_version`은 exact `x.y.z`만 허용하며 생략하면 workflows 전체 기본값 CPython `3.14.8`을 사용한다(Go처럼 전체가 하나의 기본 버전을 쓴다). Python component는 `postgres_test`를 지원하지 않으며 migration engine은 `goose`만 허용한다.
 
 `build_cache` is optional component metadata for reusable compiler/framework caches without teaching the central workflow about a specific framework.
 
@@ -151,6 +153,7 @@ database_scope
 migrate
 manual
 expose
+schedule
 ```
 
 - `component`: 해당 service의 language/migration contract를 소유하는 component.
@@ -160,6 +163,26 @@ expose
 - `migrate`: referenced component의 migration engine을 deploy 시 실행. `true`이면 database도 자동으로 필요하다. Migration credential scope는 같은 service의 `database_scope`를 따른다.
 - `manual`: `true`이면 CI image build/scan에는 포함하지만 dev automatic deployment와 service 미지정 production 전체 배포에서는 제외한다. Production에서 해당 service를 실행하려면 local `project deploy <project>/<service>`로 명시한다.
 - `expose`: public Caddy routing intent. Canonical contract에서는 `true` 또는 `false`를 반드시 명시한다.
+- `schedule`: 선택. 있으면 long-running container가 아니라 gharp-deployer scheduler가 주기적으로 실행하는 1회용 job이다.
+
+```yaml
+services:
+  - name: sync
+    path: automation
+    component: sync
+    expose: false
+    schedule:
+      cron: "0 15 * * *"     # 필수. 5필드(분 시 일 월 요일)
+      timezone: Asia/Seoul   # 선택. 기본 Asia/Seoul
+      timeout: 30m           # 선택. 기본 30m, 1m~6h
+```
+
+  - `schedule` key는 `cron`, `timezone`, `timeout`만 허용한다.
+  - `cron`: 공백으로 구분한 정확히 5개 field. 각 field는 `*`, 숫자, `a-b`, `*/n`, `a-b/n`과 이들의 comma list만 허용한다. 범위는 minute 0-59, hour 0-23, day-of-month 1-31, month 1-12, day-of-week 0-7(0과 7은 일요일). 이름(`MON`, `JAN`), `@daily` 같은 macro, 초 field는 금지한다. 의미는 Vixie cron과 같다(day-of-month와 day-of-week가 둘 다 `*`가 아니면 둘 중 하나만 맞아도 실행). 연속 공백은 한 칸으로 정규화한다.
+  - `timezone`: IANA 이름(`^[A-Za-z_]+(/[A-Za-z0-9_+-]+)*$`). 실제 load 가능 여부는 gharp가 promotion 시 검사한다.
+  - `timeout`: `^[1-9][0-9]*(m|h)$`, 1m 이상 6h 이하.
+  - `schedule`이 있으면 `expose: false`여야 하고 image에 `EXPOSE`가 없어야 한다(HEALTHCHECK 불필요).
+  - 기본값을 채운 `{"cron","timezone","timeout"}`이 promotion metadata `service_contract.schedule`로 전달된다. `schedule`이 없는 service의 `service_contract`에는 key 자체가 없다.
 
 Repository service contract에서 host-derived build arguments는 지원하지 않는다. Isolated BuildKit은 host `/opt/stacks` state를 build input으로 읽지 않는다.
 
@@ -204,7 +227,7 @@ build context = repository root
 Consumer는 port 번호를 선언하지 않는다. Built image의 Docker metadata가 internal service port의 source of truth이고, public routing intent는 service의 `expose` field가 별도로 소유한다.
 
 ```text
-0 exposed TCP ports -> process/non-network service
+0 exposed TCP ports -> process/non-network service (scheduled service는 반드시 0)
 1 exposed TCP port  -> canonical internal service port
 2+ exposed ports    -> CI failure
 UDP EXPOSE          -> CI failure
@@ -244,7 +267,7 @@ Security:
 
 ```text
 Semgrep CE
-OSV-Scanner
+OSV-Scanner (Node lockfile, JVM lockfile/pom.xml, Python uv.lock)
 Gitleaks current tree + Git history
 Trivy IaC/Dockerfile misconfiguration
 Trivy built-image HIGH/CRITICAL vulnerabilities
@@ -288,6 +311,14 @@ Node:
 Java/Kotlin:
   centralized Gradle/Maven lifecycle
   optional Android/Spring Boot profile
+
+Python:
+  pinned uv 0.13.1 (release archive SHA-256 고정)
+  canonical default CPython 3.14.8 (uv python install, uv에 내장된 checksum으로 검증)
+  explicit python_version은 exact x.y.z만 허용
+  uv sync --locked (venv는 checkout 밖 job-local 경로)
+  python -m compileall -q .
+  python -m unittest discover (exit code 5 = test 없음은 notice로 통과)
 ```
 
 Database-aware CI는 Gharp가 job마다 생성하는 단일 disposable PostgreSQL을 사용한다. 전체 migration을 먼저 적용한 뒤 같은 PostgreSQL에서 application test를 수행하며 job 종료 시 PostgreSQL과 데이터가 함께 파기된다. Production DB를 CI validation에 사용하지 않는다.

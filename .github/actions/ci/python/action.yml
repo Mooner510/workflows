@@ -1,0 +1,156 @@
+name: Python CI
+description: Install pinned uv and CPython, sync the locked environment, byte-compile, and run unittest for affected Python components.
+
+inputs:
+  components:
+    description: JSON array of affected Python components sharing one CPython version.
+    required: true
+  version:
+    description: Exact CPython x.y.z version installed through the pinned uv.
+    required: true
+  private_repo_token:
+    description: Optional GitHub token with read access to private Git dependencies.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Sync, compile, and test affected Python components
+      shell: bash
+      env:
+        COMPONENTS_JSON: ${{ inputs.components }}
+        PYTHON_VERSION: ${{ inputs.version }}
+        CI_PRIVATE_REPO_TOKEN: ${{ inputs.private_repo_token }}
+      run: |
+        set -euo pipefail
+
+        command -v jq >/dev/null || { echo "::error::jq is required on the runner."; exit 1; }
+        command -v curl >/dev/null || { echo "::error::curl is required on the runner."; exit 1; }
+        command -v sha256sum >/dev/null || { echo "::error::sha256sum is required on the runner."; exit 1; }
+        command -v tar >/dev/null || { echo "::error::tar is required on the runner."; exit 1; }
+        curl_args=(--fail --silent --show-error --location --retry 5 --retry-delay 2 --retry-max-time 90 --connect-timeout 10 --retry-connrefused)
+
+        jq -e 'type == "array" and length > 0' <<<"$COMPONENTS_JSON" >/dev/null || {
+          echo "::error::components must be a non-empty JSON array."
+          exit 1
+        }
+        [[ "$PYTHON_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+          echo "::error::Python CI requires an exact x.y.z CPython version, got '$PYTHON_VERSION'."
+          exit 1
+        }
+
+        work="$(mktemp -d "$RUNNER_TEMP/python-ci-XXXXXX")"
+        git_config="$work/gitconfig"
+        cleanup() {
+          rm -rf -- "$work"
+        }
+        trap cleanup EXIT
+
+        # uv is pinned by exact release and SHA-256. CPython downloads are verified by uv
+        # against the checksums embedded in this exact uv release.
+        uv_version="0.13.1"
+        case "$(uname -m)" in
+          x86_64|amd64)
+            uv_target="x86_64-unknown-linux-gnu"
+            uv_checksum="eadd9d27c134ab5ac1ffd4473b97a741407f3ea238288f03121fc4deddf90220"
+            ;;
+          aarch64|arm64)
+            uv_target="aarch64-unknown-linux-gnu"
+            uv_checksum="9041c73c99fdc5892cf128140beb354eca9231d502068cc36e6cb53a8e59ad14"
+            ;;
+          *)
+            echo "::error::Unsupported runner architecture for uv: $(uname -m)"
+            exit 1
+            ;;
+        esac
+
+        tool_base="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/uv"
+        uv_root="$tool_base/$uv_version/$uv_target"
+        uv="$uv_root/uv"
+        if [[ ! -x "$uv" ]]; then
+          archive="$work/uv-$uv_target.tar.gz"
+          echo "==> Downloading uv $uv_version"
+          curl "${curl_args[@]}" "https://github.com/astral-sh/uv/releases/download/$uv_version/uv-$uv_target.tar.gz" -o "$archive"
+          printf '%s  %s\n' "$uv_checksum" "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$work" "uv-$uv_target/uv"
+          mkdir -p "$uv_root"
+          staged="$uv_root/.uv.$$.$RANDOM"
+          install -m 0755 "$work/uv-$uv_target/uv" "$staged"
+          mv -f "$staged" "$uv"
+        fi
+        [[ "$("$uv" --version)" == "uv $uv_version"* ]] || {
+          echo "::error::Installed uv does not report version $uv_version."
+          exit 1
+        }
+
+        export UV_CACHE_DIR="$tool_base/cache"
+        export UV_PYTHON_INSTALL_DIR="$tool_base/python"
+        export UV_PYTHON_PREFERENCE=only-managed
+        export UV_NO_PROGRESS=1
+        mkdir -p "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR"
+
+        echo "==> Installing CPython $PYTHON_VERSION with uv $uv_version"
+        "$uv" python install "$PYTHON_VERSION"
+        export UV_PYTHON_DOWNLOADS=never
+
+        : >"$git_config"
+        chmod 600 "$git_config"
+        export GIT_CONFIG_GLOBAL="$git_config"
+        if [[ -n "${CI_PRIVATE_REPO_TOKEN:-}" ]]; then
+          echo "::add-mask::$CI_PRIVATE_REPO_TOKEN"
+          auth_prefix="https://x-access-token:${CI_PRIVATE_REPO_TOKEN}@github.com/"
+          git config --file "$git_config" --add url."$auth_prefix".insteadOf "https://github.com/"
+          git config --file "$git_config" --add url."$auth_prefix".insteadOf "ssh://git@github.com/"
+          git config --file "$git_config" --add url."$auth_prefix".insteadOf "git@github.com:"
+        fi
+
+        workspace="$(realpath -e "$GITHUB_WORKSPACE")"
+        declare -A checked=()
+
+        while IFS= read -r component_json; do
+          name="$(jq -r '.name // empty' <<<"$component_json")"
+          path="$(jq -r '.path // empty' <<<"$component_json")"
+          [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid Python component name '$name'."; exit 1; }
+          component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
+          [[ -n "$component" && ( "$component" == "$workspace" || "$component" == "$workspace/"* ) ]] || {
+            echo "::error::Python component '$name' must resolve inside the repository."
+            exit 1
+          }
+          for required_file in pyproject.toml uv.lock; do
+            [[ -f "$component/$required_file" ]] || {
+              echo "::error::Python component '$name' must contain $required_file at its component path."
+              exit 1
+            }
+          done
+
+          if [[ -n "${checked[$component]+x}" ]]; then
+            continue
+          fi
+
+          echo "==> Python component: $name (CPython $PYTHON_VERSION)"
+          (
+            cd "$component"
+            export UV_PROJECT_ENVIRONMENT="$work/venv/$name"
+
+            "$uv" sync --locked --python "$PYTHON_VERSION"
+
+            actual="$("$uv" run --locked --python "$PYTHON_VERSION" python -c 'import platform; print(platform.python_version())')"
+            [[ "$actual" == "$PYTHON_VERSION" ]] || {
+              echo "::error::Python component '$name' resolved CPython $actual instead of $PYTHON_VERSION."
+              exit 1
+            }
+
+            "$uv" run --locked --python "$PYTHON_VERSION" python -m compileall -q .
+
+            status=0
+            "$uv" run --locked --python "$PYTHON_VERSION" python -m unittest discover || status=$?
+            if (( status == 5 )); then
+              echo "::notice::Python component '$name' has no unittest tests (unittest exit code 5)."
+            elif (( status != 0 )); then
+              echo "::error::Python component '$name' unittest failed with exit code $status."
+              exit "$status"
+            fi
+          )
+          checked[$component]=1
+        done < <(jq -c '.[]' <<<"$COMPONENTS_JSON")

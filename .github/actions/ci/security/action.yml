@@ -104,7 +104,7 @@ runs:
           component="$(realpath -e "$GITHUB_WORKSPACE/$path" 2>/dev/null || true)"
 
           case "$type" in
-            go|node|java-kotlin|android) ;;
+            go|node|java-kotlin|android|python) ;;
             *) echo "::error::Unsupported component type '$type' for '$name'."; exit 1 ;;
           esac
 
@@ -154,6 +154,13 @@ runs:
                 exit 1
               }
               realpath --relative-to="$workspace" "$lockfile" >>"$osv_lockfiles"
+              ;;
+            python)
+              [[ -f "$component/uv.lock" ]] || {
+                echo "::error::Python component '$name' must contain uv.lock for OSV dependency scanning."
+                exit 1
+              }
+              realpath --relative-to="$workspace" "$component/uv.lock" >>"$osv_lockfiles"
               ;;
             java-kotlin|android)
               found=false
