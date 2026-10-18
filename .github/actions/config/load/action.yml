@@ -137,13 +137,13 @@ runs:
           path="$(jq -r '.path // empty' <<<"$component")"
 
           [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid component name '$name'."; exit 1; }
-          case "$type" in go|node|java-kotlin) ;; *) echo "::error::Unsupported component type '$type' for '$name'."; exit 1 ;; esac
+          case "$type" in go|node|java-kotlin|python) ;; *) echo "::error::Unsupported component type '$type' for '$name'."; exit 1 ;; esac
           safe_path "$path" "Component '$name' path"
 
           jq -e '
             (keys - [
               "name","type","path","watch","watch_path","build_cache",
-              "go_version","node_version","java_version","package_manager","build_tool","profile",
+              "go_version","node_version","java_version","python_version","package_manager","build_tool","profile",
               "gradle_tasks","maven_goals",
               "migration_engine","migration_path","migration_schema","migration_config","goose_version",
               "postgres_test","postgres_database_env","postgres_test_args","postgres_test_env"
@@ -200,7 +200,83 @@ runs:
               exit 1
             fi
           fi
+
+          if jq -e 'has("python_version")' <<<"$component" >/dev/null && [[ "$type" != "python" ]]; then
+            echo "::error::Component '$name' declares python_version but is not a python component."
+            exit 1
+          fi
+          if [[ "$type" == "python" ]]; then
+            jq -e '(.python_version == null) or ((.python_version | type) == "string" and (.python_version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")))' <<<"$component" >/dev/null || {
+              echo "::error::Python component '$name' python_version must be an exact x.y.z version."
+              exit 1
+            }
+            for required_file in pyproject.toml uv.lock; do
+              [[ -f "$component_root/$required_file" && ! -L "$component_root/$required_file" ]] || {
+                echo "::error::Python component '$name' must contain $required_file at its component path '$path'."
+                exit 1
+              }
+            done
+            if jq -e '(.postgres_test // false) == true' <<<"$component" >/dev/null; then
+              echo "::error::Python component '$name' does not support postgres_test."
+              exit 1
+            fi
+            for unsupported_key in postgres_database_env postgres_test_args postgres_test_env; do
+              if jq -e --arg key "$unsupported_key" 'has($key)' <<<"$component" >/dev/null; then
+                echo "::error::Python component '$name' does not support $unsupported_key."
+                exit 1
+              fi
+            done
+            migration_engine="$(jq -r '.migration_engine // "none"' <<<"$component")"
+            case "$migration_engine" in
+              none|goose) ;;
+              *) echo "::error::Python component '$name' supports only the goose migration engine."; exit 1 ;;
+            esac
+          fi
         done < <(jq -c '.[]' <<<"$components")
+
+        # Scheduled job cron grammar: exactly five numeric fields (minute hour day-of-month month day-of-week).
+        # Each comma-separated item is *, n, a-b, */n, or a-b/n. Names, macros, and seconds are rejected.
+        cron_field_valid() {
+          local field="$1" min="$2" max="$3" item base step lo hi
+          local -a items=()
+          [[ -n "$field" && "$field" != ,* && "$field" != *, && "$field" != *,,* ]] || return 1
+          IFS=',' read -r -a items <<<"$field"
+          for item in "${items[@]}"; do
+            base="$item"
+            if [[ "$item" == */* ]]; then
+              base="${item%%/*}"
+              step="${item#*/}"
+              [[ "$step" =~ ^[0-9]{1,2}$ ]] && (( 10#$step >= 1 )) || return 1
+              [[ "$base" == "*" || "$base" =~ ^[0-9]{1,2}-[0-9]{1,2}$ ]] || return 1
+            fi
+            [[ "$base" == "*" ]] && continue
+            if [[ "$base" =~ ^([0-9]{1,2})-([0-9]{1,2})$ ]]; then
+              lo="$((10#${BASH_REMATCH[1]}))"
+              hi="$((10#${BASH_REMATCH[2]}))"
+            elif [[ "$base" =~ ^[0-9]{1,2}$ ]]; then
+              lo="$((10#$base))"
+              hi="$lo"
+            else
+              return 1
+            fi
+            (( lo >= min && hi <= max && lo <= hi )) || return 1
+          done
+          return 0
+        }
+
+        normalize_cron() {
+          local cron="$1"
+          local -a fields=()
+          [[ "$cron" != *$'\n'* && "$cron" != *$'\r'* ]] || return 1
+          read -r -a fields <<<"$cron"
+          (( ${#fields[@]} == 5 )) || return 1
+          cron_field_valid "${fields[0]}" 0 59 || return 1
+          cron_field_valid "${fields[1]}" 0 23 || return 1
+          cron_field_valid "${fields[2]}" 1 31 || return 1
+          cron_field_valid "${fields[3]}" 1 12 || return 1
+          cron_field_valid "${fields[4]}" 0 7 || return 1
+          printf '%s' "${fields[*]}"
+        }
 
         normalized_services='[]'
         while IFS= read -r service; do
@@ -220,7 +296,7 @@ runs:
           }
 
           jq -e '
-            (keys - ["name","path","component","watch","database","database_scope","migrate","manual","expose"] | length) == 0
+            (keys - ["name","path","component","watch","database","database_scope","migrate","manual","expose","schedule"] | length) == 0
             and ((.watch == null) or ((.watch|type)=="array" and all(.watch[]; type=="string")))
             and ((.database == null) or (.database|type)=="boolean")
             and ((.database_scope == null) or (.database_scope == "project") or (.database_scope == "service"))
@@ -238,6 +314,51 @@ runs:
           fi
 
           while IFS= read -r watch; do safe_path "$watch" "Service '$name' watch"; done < <(jq -r '.watch // [] | .[]' <<<"$service")
+
+          schedule_json=""
+          if jq -e 'has("schedule")' <<<"$service" >/dev/null; then
+            jq -e '(.schedule | type) == "object" and (((.schedule | keys) - ["cron","timezone","timeout"]) | length == 0)' <<<"$service" >/dev/null || {
+              echo "::error::Service '$name' schedule must be an object containing only cron, timezone, and timeout."
+              exit 1
+            }
+            jq -e '(.schedule.cron | type) == "string"' <<<"$service" >/dev/null || {
+              echo "::error::Service '$name' schedule.cron is required and must be a string."
+              exit 1
+            }
+            jq -e '((.schedule.timezone == null) or ((.schedule.timezone | type) == "string")) and ((.schedule.timeout == null) or ((.schedule.timeout | type) == "string"))' <<<"$service" >/dev/null || {
+              echo "::error::Service '$name' schedule.timezone and schedule.timeout must be strings when set."
+              exit 1
+            }
+            [[ "$(jq -c '.expose' <<<"$service")" == "false" ]] || {
+              echo "::error::Scheduled service '$name' must set expose: false."
+              exit 1
+            }
+
+            schedule_cron="$(normalize_cron "$(jq -r '.schedule.cron' <<<"$service")")" || {
+              echo "::error::Service '$name' schedule.cron must be five numeric cron fields (minute hour day-of-month month day-of-week) using only *, numbers, ranges (a-b), steps (*/n, a-b/n), and comma lists."
+              exit 1
+            }
+
+            schedule_timezone="$(jq -r '.schedule.timezone // "Asia/Seoul"' <<<"$service")"
+            [[ "$schedule_timezone" =~ ^[A-Za-z_]+(/[A-Za-z0-9_+-]+)*$ ]] || {
+              echo "::error::Service '$name' schedule.timezone must be an IANA time zone name such as Asia/Seoul."
+              exit 1
+            }
+
+            schedule_timeout="$(jq -r '.schedule.timeout // "30m"' <<<"$service")"
+            [[ "$schedule_timeout" =~ ^([1-9][0-9]{0,3})(m|h)$ ]] || {
+              echo "::error::Service '$name' schedule.timeout must look like 30m or 2h."
+              exit 1
+            }
+            timeout_minutes="${BASH_REMATCH[1]}"
+            [[ "${BASH_REMATCH[2]}" == "m" ]] || timeout_minutes="$((timeout_minutes * 60))"
+            (( timeout_minutes >= 1 && timeout_minutes <= 360 )) || {
+              echo "::error::Service '$name' schedule.timeout must be between 1m and 6h."
+              exit 1
+            }
+
+            schedule_json="$(jq -cn --arg cron "$schedule_cron" --arg timezone "$schedule_timezone" --arg timeout "$schedule_timeout" '{cron:$cron,timezone:$timezone,timeout:$timeout}')"
+          fi
 
           migrate="$(jq -r '.migrate // false' <<<"$service")"
           migration_engine="$(jq -r --arg component "$component" '.[] | select(.name == $component) | .migration_engine // "none"' <<<"$components")"
@@ -262,6 +383,9 @@ runs:
             normalized="$(jq -c --argjson expose "$expose" '. + {expose:$expose}' <<<"$normalized")"
           else
             normalized="$(jq -c 'del(.expose)' <<<"$normalized")"
+          fi
+          if [[ -n "$schedule_json" ]]; then
+            normalized="$(jq -c --argjson schedule "$schedule_json" '. + {schedule:$schedule}' <<<"$normalized")"
           fi
           normalized_services="$(jq -c --argjson item "$normalized" '. + [$item]' <<<"$normalized_services")"
         done < <(jq -c '.[]' <<<"$services")

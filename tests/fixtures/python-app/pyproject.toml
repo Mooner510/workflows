@@ -1,0 +1,6 @@
+[project]
+name = "stacks-python-fixture"
+version = "0.1.0"
+description = "Self-test fixture for the canonical Python CI action."
+requires-python = ">=3.14"
+dependencies = []
