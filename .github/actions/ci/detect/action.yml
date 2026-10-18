@@ -110,7 +110,7 @@ runs:
 
           [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid component name '$name'."; exit 1; }
           case "$type" in
-            go|node|java-kotlin) ;;
+            go|node|java-kotlin|python) ;;
             *) echo "::error::Component '$name' has unsupported type '$type'."; exit 1 ;;
           esac
 
@@ -165,6 +165,17 @@ runs:
                 case "$build_tool" in gradle|maven) ;; *) echo "::error::Invalid build_tool '$build_tool' for '$name'."; exit 1 ;; esac
               fi
               case "$profile" in none|android|spring-boot) ;; *) echo "::error::Invalid profile '$profile' for '$name'."; exit 1 ;; esac
+              ;;
+            python)
+              python_version="$(jq -r '.python_version // empty' <<<"$component")"
+              if [[ -n "$python_version" && ! "$python_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "::error::Python component '$name' python_version must be an exact x.y.z version."
+                exit 1
+              fi
+              if [[ "$(jq -r '.postgres_test // false' <<<"$component")" == "true" ]]; then
+                echo "::error::Python component '$name' does not support postgres_test."
+                exit 1
+              fi
               ;;
           esac
 
@@ -495,6 +506,9 @@ runs:
           printf '%s' "$version"
         }
 
+        # Workflows-wide default CPython for python components (exact patch installable by the pinned uv in ci/python).
+        default_python_version="3.14.8"
+
         normalized='[]'
         while IFS= read -r component; do
           name="$(jq -r '.name' <<<"$component")"
@@ -544,6 +558,16 @@ runs:
               fi
               component="$(jq -c --arg tool "$build_tool" --arg profile "$profile" '.build_tool = $tool | .profile = $profile' <<<"$component")"
               ;;
+            python)
+              for required_file in pyproject.toml uv.lock; do
+                [[ -f "$component_path/$required_file" ]] || {
+                  echo "::error::Python component '$name' must contain $required_file at its component path."
+                  exit 1
+                }
+              done
+              python_version="$(jq -r --arg default "$default_python_version" '.python_version // $default' <<<"$component")"
+              component="$(jq -c --arg version "$python_version" '.python_version = $version' <<<"$component")"
+              ;;
           esac
 
           normalized="$(jq -c --argjson component "$component" '. + [$component]' <<<"$normalized")"
@@ -580,6 +604,15 @@ runs:
                   version: (.[0].java_version // "17"),
                   build_tool: .[0].build_tool,
                   profile: .[0].profile,
+                  components: .
+                }),
+            (map(select(.type == "python"))
+              | group_by(.python_version)[]
+              | {
+                  target: ("Python " + .[0].python_version),
+                  display_name: ("Python " + .[0].python_version),
+                  type: "python",
+                  version: .[0].python_version,
                   components: .
                 })
           ]

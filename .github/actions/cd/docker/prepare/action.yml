@@ -150,6 +150,12 @@ runs:
           exit 1
         fi
         exposed_count="$(jq 'length' <<<"$exposed")"
+        if jq -e 'has("schedule")' <<<"$SERVICE_JSON" >/dev/null; then
+          (( exposed_count == 0 )) || {
+            echo "::error::Scheduled service '$service' image must not EXPOSE any port (found: $(jq -r 'join(", ")' <<<"$exposed"))."
+            exit 1
+          }
+        fi
         (( exposed_count <= 1 )) || {
           echo "::error::Deployable image exposes more than one TCP port."
           exit 1
