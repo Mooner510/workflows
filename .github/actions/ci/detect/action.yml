@@ -302,7 +302,7 @@ runs:
               migration_changed=true
             else
               case "$migration_engine" in
-                goose|go-command)
+                goose)
                   migration_path="$(jq -r '.migration_path // "db/migrations"' <<<"$component")"
                   migration_schema=""
                   ;;

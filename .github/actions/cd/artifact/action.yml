@@ -101,8 +101,11 @@ runs:
         migration_build_tool="$(jq -r '.migration_build_tool // ""' <<<"$component")"
         goose_version="$(jq -r '.goose_version // ""' <<<"$component")"
 
-        if [[ "$migrate" == "true" && "$migration_engine" == "goose" && -z "$migration_path" ]]; then
-          migration_path="db/migrations"
+        if [[ "$migrate" == "true" && -z "$migration_path" ]]; then
+          case "$migration_engine" in
+            goose) migration_path="db/migrations" ;;
+            flyway) migration_path="src/main/resources/db/migration" ;;
+          esac
         fi
 
         target="$GHARP_ARTIFACT_SPOOL/bundles/$service"
@@ -135,38 +138,69 @@ runs:
 
         source_digest=""
         if [[ "$migrate" == "true" ]]; then
-          if [[ "$migration_engine" != "goose" ]]; then
-            echo "::notice::Executable migration engine '$migration_engine' is packaged without host source; trusted deployment remains fail-closed until an isolated migration sandbox exists."
-          else
-            workspace="$(realpath -e "$GITHUB_WORKSPACE")"
-            component_root="$(realpath -e "$workspace/$component_path")"
-            migration_root="$(realpath -e "$component_root/$migration_path")"
-            [[ "$component_root" == "$workspace" || "$component_root" == "$workspace/"* ]] || {
-              echo "::error::Component path escapes repository."
+          case "$migration_engine" in
+            goose|flyway) ;;
+            *)
+              echo "::error::Deploy-time migration engine '$migration_engine' is unsupported; use goose or flyway."
               exit 1
-            }
-            [[ "$migration_root" == "$component_root" || "$migration_root" == "$component_root/"* ]] || {
-              echo "::error::Migration path escapes component."
-              exit 1
-            }
-            [[ -d "$migration_root" ]] || {
-              echo "::error::Goose migration directory is missing: $migration_path"
-              exit 1
-            }
+              ;;
+          esac
+          workspace="$(realpath -e "$GITHUB_WORKSPACE")"
+          component_root="$(realpath -e "$workspace/$component_path")"
+          [[ "$component_root" == "$workspace" || "$component_root" == "$workspace/"* ]] || {
+            echo "::error::Component path escapes repository."
+            exit 1
+          }
+          [[ -d "$component_root/$migration_path" ]] || {
+            echo "::error::Migration directory is missing: $migration_path"
+            exit 1
+          }
+          migration_root="$(realpath -e "$component_root/$migration_path")"
+          [[ "$migration_root" == "$component_root" || "$migration_root" == "$component_root/"* ]] || {
+            echo "::error::Migration path escapes component."
+            exit 1
+          }
+          find "$migration_root" -type l -print -quit | grep -q . && {
+            echo "::error::Migration source bundle must not contain symlinks."
+            exit 1
+          }
 
-            find "$migration_root" -type l -print -quit | grep -q . && {
-              echo "::error::Migration source bundle must not contain symlinks."
-              exit 1
-            }
-
+          source_paths=()
+          if [[ "$migration_engine" == "goose" ]]; then
             source_paths=("$component_path/$migration_path")
             if [[ -f "$component_root/go.mod" ]]; then
               source_paths+=("$component_path/go.mod")
             fi
-            tar -czf "$target/source.tar.gz" -C "$workspace" -- "${source_paths[@]}"
-            chmod 0444 "$target/source.tar.gz"
-            source_digest="sha256:$(sha256sum "$target/source.tar.gz" | awk '{print $1}')"
+          else
+            # Flyway SQL contract shared with gharp: regular V/R files directly
+            # under the migration path, nothing else.
+            declare -A flyway_versions=()
+            while IFS= read -r -d '' entry; do
+              file="${entry##*/}"
+              [[ -f "$entry" ]] || { echo "::error::Flyway migration path must contain only files: '$file'."; exit 1; }
+              if [[ "$file" =~ ^V([^_]+)__[A-Za-z0-9][A-Za-z0-9_.-]*\.sql$ ]]; then
+                v="${BASH_REMATCH[1]}"
+                [[ -z "${flyway_versions[$v]+x}" ]] || { echo "::error::Duplicate Flyway version '$v'."; exit 1; }
+                flyway_versions[$v]=1
+              elif [[ ! "$file" =~ ^R__[A-Za-z0-9][A-Za-z0-9_.-]*\.sql$ ]]; then
+                echo "::error::Unsupported Flyway migration file '$file': only V<version>__<name>.sql and R__<name>.sql are deployed."
+                exit 1
+              fi
+              [[ -s "$entry" ]] || { echo "::error::Empty Flyway migration '$file'."; exit 1; }
+              source_paths+=("$component_path/$migration_path/$file")
+            done < <(find "$migration_root" -mindepth 1 -maxdepth 1 -print0 | sort -z)
+            (( ${#flyway_versions[@]} > 0 )) || {
+              echo "::error::Flyway migrate: true requires at least one V<version>__<name>.sql in $migration_path."
+              exit 1
+            }
           fi
+
+          # Reproducible archive: source_digest changes only with content, so
+          # gharp takes a production pre-migration backup only when needed.
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu \
+            --mode='u+rwX,go+rX,go-w' -cf - -C "$workspace" -- "${source_paths[@]}" | gzip -n -9 >"$target/source.tar.gz"
+          chmod 0444 "$target/source.tar.gz"
+          source_digest="sha256:$(sha256sum "$target/source.tar.gz" | awk '{print $1}')"
         fi
 
         service_contract="$(
