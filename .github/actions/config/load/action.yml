@@ -366,6 +366,10 @@ runs:
             echo "::error::Service '$name' enables migrate but component '$component' has no migration_engine."
             exit 1
           fi
+          if [[ "$migrate" == "true" && "$migration_engine" != "goose" && "$migration_engine" != "flyway" ]]; then
+            echo "::error::Service '$name' enables migrate with '$migration_engine'; deploy-time migrations support only goose and flyway (SQL only)."
+            exit 1
+          fi
 
           database="$(jq -r '.database // false' <<<"$service")"
           [[ "$migrate" != "true" ]] || database=true
@@ -389,6 +393,14 @@ runs:
           fi
           normalized_services="$(jq -c --argjson item "$normalized" '. + [$item]' <<<"$normalized_services")"
         done < <(jq -c '.[]' <<<"$services")
+
+        # One migration history per project database: at most one migrating
+        # service may use the shared project-scope database.
+        project_migrators="$(jq -r '[.[] | select(.migrate == true and .database_scope == "project") | .name] | join(", ")' <<<"$normalized_services")"
+        if (( $(jq '[.[] | select(.migrate == true and .database_scope == "project")] | length' <<<"$normalized_services") > 1 )); then
+          echo "::error::Only one migrate: true service may use database_scope: project (found: $project_migrators)."
+          exit 1
+        fi
 
         normalized_artifacts='[]'
         while IFS= read -r artifact; do
