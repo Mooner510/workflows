@@ -64,10 +64,10 @@ runs:
               v="${BASH_REMATCH[1]}"
               [[ -z "${versions[$v]+x}" ]] || { echo "::error::Duplicate Flyway version '$v'."; exit 1; }
               versions[$v]=1
-            elif [[ "$file" =~ ^(R__|B[^_]+__|U[^_]+__)[A-Za-z0-9][A-Za-z0-9_.-]*\.sql$ ]]; then
+            elif [[ "$file" =~ ^R__[A-Za-z0-9][A-Za-z0-9_.-]*\.sql$ ]]; then
               :
             else
-              echo "::error::Invalid Flyway filename '$file'."; exit 1
+              echo "::error::Invalid Flyway filename '$file': only V<version>__<name>.sql and R__<name>.sql are supported (no undo/baseline/callback files)."; exit 1
             fi
             [[ -s "$migrations/$file" ]] || { echo "::error::Empty Flyway migration '$file'."; exit 1; }
           done
