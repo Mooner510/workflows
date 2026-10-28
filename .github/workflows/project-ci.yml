@@ -259,7 +259,8 @@ jobs:
     name: OCI
     needs: contract
     if: needs.contract.outputs.artifact_required == 'true'
-    runs-on: [self-hosted, linux, "gharp-artifact-${{ github.run_id }}-${{ github.run_attempt }}", "gharp-scratch-${{ matrix.artifact }}"]
+    # On a promotable push, gharp seals the bundle and retains it for host installation after verifying the run.
+    runs-on: [self-hosted, linux, "gharp-artifact-${{ github.run_id }}-${{ github.run_attempt }}", "${{ needs.contract.outputs.promotion_required == 'true' && format('gharp-retain-{0}', matrix.artifact) || format('gharp-scratch-{0}', matrix.artifact) }}"]
     timeout-minutes: 45
     strategy:
       fail-fast: false
