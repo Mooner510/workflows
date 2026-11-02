@@ -595,16 +595,17 @@ runs:
                   package_manager_version: (.[0].package_manager_version // ""),
                   components: .
                 }),
-            (map(select(.type == "java-kotlin"))
-              | group_by([(.java_version // "17"), .build_tool, .profile])[]
+            # One job per JVM component: Gradle builds are the slowest checks, so they run in
+            # parallel, and each job keeps its own persistent cache volume (scoped by job name).
+            (map(select(.type == "java-kotlin"))[]
               | {
-                  target: ("Java " + (.[0].java_version // "17") + " / " + .[0].build_tool + (if .[0].profile == "none" then "" else " / " + .[0].profile end)),
-                  display_name: ("Java " + (.[0].java_version // "17")),
+                  target: ("Java " + (.java_version // "17") + " / " + .build_tool + (if .profile == "none" then "" else " / " + .profile end) + " (" + .name + ")"),
+                  display_name: ("Java " + (.java_version // "17") + " (" + .name + ")"),
                   type: "java-kotlin",
-                  version: (.[0].java_version // "17"),
-                  build_tool: .[0].build_tool,
-                  profile: .[0].profile,
-                  components: .
+                  version: (.java_version // "17"),
+                  build_tool: .build_tool,
+                  profile: .profile,
+                  components: [.]
                 }),
             (map(select(.type == "python"))
               | group_by(.python_version)[]

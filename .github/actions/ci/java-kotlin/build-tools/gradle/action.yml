@@ -16,13 +16,33 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        if [[ "${RUNNER_TOOL_CACHE:-}" == "/opt/cache/tool-cache" ]]; then
-          gradle_home="/opt/cache/gradle"
+        # Gharp mounts the job's persistent cache volume at /cache: writable on trusted
+        # dev/master pushes, read-only on same-repository pull requests.
+        if [[ -d /cache && -w /cache ]]; then
+          gradle_home="/cache/gradle"
+          gradle_cache="persistent (read-write)"
         else
           gradle_home="${GRADLE_USER_HOME:-$HOME/.gradle}"
+          gradle_cache="none"
+          ro_home="/cache/gradle"
+          if [[ -d "$ro_home/caches/modules-2" && -r "$ro_home/caches/modules-2" ]]; then
+            # Dependencies are read in place (Gradle's read-only dependency cache). The wrapper
+            # distribution, generated Gradle API jars and the build cache need a writable copy.
+            echo "GRADLE_RO_DEP_CACHE=$ro_home/caches" >>"$GITHUB_ENV"
+            mkdir -p "$gradle_home/caches" "$gradle_home/wrapper"
+            started=$SECONDS
+            if [[ -d "$ro_home/wrapper/dists" ]]; then
+              cp -a "$ro_home/wrapper/dists" "$gradle_home/wrapper/"
+            fi
+            while IFS= read -r -d '' dir; do
+              cp -a "$dir" "$gradle_home/caches/"
+            done < <(find "$ro_home/caches" -mindepth 1 -maxdepth 1 -type d ! -name modules-2 ! -name journal-1 -print0)
+            gradle_cache="seeded from read-only cache in $((SECONDS - started))s ($(du -sh "$gradle_home" 2>/dev/null | cut -f1))"
+          fi
         fi
         mkdir -p "$gradle_home"
         echo "GRADLE_USER_HOME=$gradle_home" >>"$GITHUB_ENV"
+        echo "==> Gradle user home: $gradle_home (cache: $gradle_cache)"
 
     - name: Run Gradle checks
       shell: bash

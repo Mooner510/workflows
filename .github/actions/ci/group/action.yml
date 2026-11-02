@@ -92,7 +92,8 @@ runs:
         command -v jq >/dev/null || { echo "::error::jq is required on the runner."; exit 1; }
         command -v realpath >/dev/null || { echo "::error::realpath is required on the runner."; exit 1; }
 
-        if [[ ! -d /cache || ! -w /cache ]]; then
+        # Restoring only reads, so a read-only cache (same-repository pull requests) is enough.
+        if [[ ! -d /cache || ! -r /cache ]]; then
           echo "==> Persistent runner cache unavailable; declared build caches are disabled for this job."
           exit 0
         fi
