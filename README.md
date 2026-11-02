@@ -278,7 +278,7 @@ Image scan은 CI 밖의 후처리가 아니다. Docker build와 built-image Triv
 Language CI job names are kept compact and symmetric in the GitHub Actions sidebar:
 
 ```text
-CI (Go 1.27.1)
+CI (Go 1.27.3)
 CI (pnpm 11.27.1)
 ```
 
