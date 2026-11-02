@@ -370,8 +370,8 @@ jobs:
             exit 1
           fi
 
-          grep -q "go-version: '1.27.2'" "$go_format" || {
-            echo "::error file=.github/workflows/go-format.yml::Go Format must use exact Go 1.27.2."
+          grep -q "go-version: '1.27.3'" "$go_format" || {
+            echo "::error file=.github/workflows/go-format.yml::Go Format must use exact Go 1.27.3."
             exit 1
           }
 
