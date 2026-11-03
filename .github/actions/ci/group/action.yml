@@ -34,6 +34,37 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Report persistent runner cache
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        REF_NAME: ${{ github.ref_name }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: |
+        set -euo pipefail
+        # Gharp sets GHARP_CACHE_MODE (rw, ro or none). A cold cache is otherwise silent:
+        # the job just downloads tools and dependencies again and runs slower.
+        mode="${GHARP_CACHE_MODE:-unset}"
+        if [[ ! -d /cache ]]; then
+          trusted_branch=false
+          if [[ "$REF_NAME" == "dev" || ( -n "$DEFAULT_BRANCH" && "$REF_NAME" == "$DEFAULT_BRANCH" ) ]]; then
+            trusted_branch=true
+          fi
+          if [[ ( "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ) && "$trusted_branch" == "true" ]]; then
+            echo "::warning::No persistent runner cache is mounted (GHARP_CACHE_MODE=$mode). Tools and dependencies are downloaded from scratch."
+          else
+            echo "==> No persistent runner cache for this $EVENT_NAME job (GHARP_CACHE_MODE=$mode)."
+          fi
+          exit 0
+        fi
+        access=read-only
+        [[ -w /cache ]] && access=read-write
+        if [[ -z "$(find /cache -mindepth 1 -type f ! -name .gharp-last-used -print -quit 2>/dev/null || true)" ]]; then
+          echo "::warning::The persistent runner cache ($access, GHARP_CACHE_MODE=$mode) is empty: the volume is new or was evicted, so this job downloads tools and dependencies from scratch."
+        else
+          echo "==> Persistent runner cache: $access (GHARP_CACHE_MODE=$mode)"
+        fi
+
     - name: Configure job-scoped PostgreSQL environment
       if: inputs.postgres-required == 'true'
       shell: bash
