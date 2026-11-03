@@ -33,7 +33,7 @@ runs:
         if [[ -x "$android_sdk/cmdline-tools/latest/bin/sdkmanager" ]]; then
           sdkmanager="$android_sdk/cmdline-tools/latest/bin/sdkmanager"
         else
-          sdkmanager="$(find "$android_sdk/cmdline-tools" -mindepth 2 -maxdepth 2 -type f -name sdkmanager -perm -u+x -print 2>/dev/null | sort -V | tail -n1 || true)"
+          sdkmanager="$(find "$android_sdk/cmdline-tools" -mindepth 3 -maxdepth 3 -type f -path "*/bin/sdkmanager" -perm -u+x -print 2>/dev/null | sort -V | tail -n1 || true)"
         fi
         if [[ -n "$sdkmanager" ]] && [[ -f "$android_sdk/licenses/android-sdk-license" ]]; then
           echo "android_sdk_ready=true" >>"$GITHUB_OUTPUT"
@@ -56,7 +56,7 @@ runs:
           if [[ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]]; then
             sdkmanager="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           else
-            sdkmanager="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -mindepth 2 -maxdepth 2 -type f -name sdkmanager -perm -u+x -print 2>/dev/null | sort -V | tail -n1 || true)"
+            sdkmanager="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -mindepth 3 -maxdepth 3 -type f -path "*/bin/sdkmanager" -perm -u+x -print 2>/dev/null | sort -V | tail -n1 || true)"
           fi
         fi
         [[ -n "$sdkmanager" && -x "$sdkmanager" ]] || {
