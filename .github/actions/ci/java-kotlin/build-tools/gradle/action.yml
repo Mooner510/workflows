@@ -62,6 +62,9 @@ runs:
                 rel="${hash_dir#"$ro_home/wrapper/dists/"}"
                 link_entries "$hash_dir" "$gradle_home/wrapper/dists/$rel" all
               done < <(find "$ro_home/wrapper/dists" -mindepth 2 -maxdepth 2 -type d -print0)
+              while IFS= read -r -d '' dist_dir; do
+                mkdir -p "$gradle_home/wrapper/dists/$(basename "$dist_dir")"
+              done < <(find "$ro_home/wrapper/dists" -mindepth 1 -maxdepth 1 -type d -print0)
             fi
 
             while IFS= read -r -d '' dir; do
