@@ -345,6 +345,11 @@ default branch push
 
 여기까지는 production runtime mutation이 아니다. Repository runner는 Docker runtime, `/opt/stacks`, `/var/lib/stacks`, production credential에 접근하지 않는다.
 
+CI-only artifact(`artifacts:`)의 처리는 run 종류에 따라 다르다.
+
+- promotion 대상 push(default branch, dev-enabled의 `dev`): `gharp-retain-<artifact>` runner에서 빌드한다. Gharp가 run 신원을 검증한 뒤 bundle을 host의 `/srv/backup/gharp-artifacts/retained/<owner>/<repo>/<artifact>/<revision>/`에 남긴다(artifact마다 최근 3개). Deployer를 거치지 않는 host 구성요소(예: session image, host binary)는 운영자가 이 bundle로 설치한다.
+- 그 밖의 run: `gharp-scratch-<artifact>`이며, bundle은 job이 끝나면 지운다.
+
 Production runtime mutation은 GitHub와 분리된 host-local operator path 하나뿐이다.
 
 ```text
