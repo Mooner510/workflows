@@ -235,6 +235,31 @@ jobs:
             exit 1
           fi
 
+      - name: Validate Gradle and Android SDK cache paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Gharp mounts the persistent cache at /cache (cmd/gharp-launcher). A different path here
+          # silently disables the cache: every Android/Gradle job downloads everything again.
+          gradle="$GITHUB_WORKSPACE/.github/actions/ci/java-kotlin/build-tools/gradle/action.yml"
+          android="$GITHUB_WORKSPACE/.github/actions/ci/java-kotlin/profiles/android/action.yml"
+          grep -q 'gradle_home="/cache/gradle"' "$gradle" || {
+            echo "::error::Gradle user home must live on the Gharp cache volume (/cache/gradle)."
+            exit 1
+          }
+          grep -q 'GRADLE_RO_DEP_CACHE' "$gradle" || {
+            echo "::error::Read-only Gharp caches must feed Gradle's read-only dependency cache."
+            exit 1
+          }
+          grep -q 'android_sdk="/cache/android-sdk"' "$android" || {
+            echo "::error::Android SDK must live on the Gharp cache volume (/cache/android-sdk)."
+            exit 1
+          }
+          if grep -rn '/opt/cache' "$GITHUB_WORKSPACE/.github/actions"; then
+            echo "::error::/opt/cache is not mounted by Gharp; use /cache."
+            exit 1
+          fi
+
       - name: Validate job-scoped PostgreSQL orchestration
         shell: bash
         run: |
@@ -345,8 +370,8 @@ jobs:
             exit 1
           fi
 
-          grep -q "go-version: '1.27.2'" "$go_format" || {
-            echo "::error file=.github/workflows/go-format.yml::Go Format must use exact Go 1.27.2."
+          grep -q "go-version: '1.27.3'" "$go_format" || {
+            echo "::error file=.github/workflows/go-format.yml::Go Format must use exact Go 1.27.3."
             exit 1
           }
 

@@ -16,13 +16,33 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        if [[ "${RUNNER_TOOL_CACHE:-}" == "/opt/cache/tool-cache" ]]; then
-          gradle_home="/opt/cache/gradle"
+        # Gharp mounts the job's persistent cache volume at /cache: writable on trusted
+        # dev/master pushes, read-only on same-repository pull requests.
+        if [[ -d /cache && -w /cache ]]; then
+          gradle_home="/cache/gradle"
+          gradle_cache="persistent (read-write)"
         else
           gradle_home="${GRADLE_USER_HOME:-$HOME/.gradle}"
+          gradle_cache="none"
+          ro_home="/cache/gradle"
+          if [[ -d "$ro_home/caches/modules-2" && -r "$ro_home/caches/modules-2" ]]; then
+            # Dependencies are read in place (Gradle's read-only dependency cache). The wrapper
+            # distribution, generated Gradle API jars and the build cache need a writable copy.
+            echo "GRADLE_RO_DEP_CACHE=$ro_home/caches" >>"$GITHUB_ENV"
+            mkdir -p "$gradle_home/caches" "$gradle_home/wrapper"
+            started=$SECONDS
+            if [[ -d "$ro_home/wrapper/dists" ]]; then
+              cp -a "$ro_home/wrapper/dists" "$gradle_home/wrapper/"
+            fi
+            while IFS= read -r -d '' dir; do
+              cp -a "$dir" "$gradle_home/caches/"
+            done < <(find "$ro_home/caches" -mindepth 1 -maxdepth 1 -type d ! -name modules-2 ! -name journal-1 -print0)
+            gradle_cache="seeded from read-only cache in $((SECONDS - started))s ($(du -sh "$gradle_home" 2>/dev/null | cut -f1))"
+          fi
         fi
         mkdir -p "$gradle_home"
         echo "GRADLE_USER_HOME=$gradle_home" >>"$GITHUB_ENV"
+        echo "==> Gradle user home: $gradle_home (cache: $gradle_cache)"
 
     - name: Run Gradle checks
       shell: bash
@@ -35,6 +55,22 @@ runs:
         workspace="$(realpath "$GITHUB_WORKSPACE")"
         components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
         declare -A checked=()
+
+        # Gradle's last lines say how much work was reused; put them in the job summary so a
+        # slow run shows whether tasks executed or came from cache.
+        summary_started=false
+        write_summary() {
+          local name="$1" tasks="$2" log="$3" result outcome
+          result="$(grep -E '^BUILD (SUCCESSFUL|FAILED) in ' "$log" | tail -n1 || true)"
+          outcome="$(grep -E '^[0-9]+ actionable tasks?: ' "$log" | tail -n1 | sed -E 's/^[0-9]+ actionable tasks?: //' || true)"
+          [[ -z "$outcome" ]] || echo "==> Gradle tasks for $name: $outcome"
+          [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
+          if [[ "$summary_started" != "true" ]]; then
+            printf '### Gradle\n\n| Component | Tasks | Result | Tasks run |\n|---|---|---|---|\n' >>"$GITHUB_STEP_SUMMARY"
+            summary_started=true
+          fi
+          printf '| `%s` | `%s` | %s | %s |\n' "$name" "$tasks" "${result:-unknown}" "${outcome:-unknown}" >>"$GITHUB_STEP_SUMMARY"
+        }
 
         while IFS= read -r component_json; do
           name="$(jq -r '.name' <<<"$component_json")"
@@ -55,6 +91,11 @@ runs:
           key="$component|$tasks_string"
           [[ -z "${checked[$key]+x}" ]] || continue
           echo "==> Gradle component: $name ($tasks_string)"
-          (cd "$component" && chmod +x ./gradlew && ./gradlew --no-daemon "${tasks[@]}")
+          log="$(mktemp "${RUNNER_TEMP:-/tmp}/gradle-XXXXXX.log")"
+          status=0
+          (cd "$component" && chmod +x ./gradlew && ./gradlew --no-daemon "${tasks[@]}") 2>&1 | tee "$log" || status=$?
+          write_summary "$name" "$tasks_string" "$log"
+          rm -f -- "$log"
+          (( status == 0 )) || exit "$status"
           checked[$key]=1
         done < <(jq -c '.[]' <<<"$components")

@@ -9,12 +9,23 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        if [[ "${RUNNER_TOOL_CACHE:-}" == "/opt/cache/tool-cache" ]]; then
-          android_sdk="/opt/cache/android-sdk"
+        # Gharp mounts the job's persistent cache volume at /cache: writable on trusted
+        # dev/master pushes, read-only on same-repository pull requests.
+        if [[ -d /cache && -w /cache ]]; then
+          android_sdk="/cache/android-sdk"
+          sdk_cache="persistent (read-write)"
+        elif [[ -d /cache/android-sdk/licenses && -r /cache/android-sdk ]]; then
+          # Copy instead of pointing at the read-only SDK: sdkmanager and AGP install missing packages in place.
+          android_sdk="$RUNNER_TEMP/android-sdk"
+          mkdir -p "$android_sdk"
+          cp -a /cache/android-sdk/. "$android_sdk/"
+          sdk_cache="seeded from read-only cache"
         else
           android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$RUNNER_TEMP/android-sdk}}"
+          sdk_cache="none"
         fi
         mkdir -p "$android_sdk"
+        echo "==> Android SDK: $android_sdk (cache: $sdk_cache)"
         echo "ANDROID_HOME=$android_sdk" >>"$GITHUB_ENV"
         echo "ANDROID_SDK_ROOT=$android_sdk" >>"$GITHUB_ENV"
 
@@ -22,7 +33,7 @@ runs:
         if [[ -x "$android_sdk/cmdline-tools/latest/bin/sdkmanager" ]]; then
           sdkmanager="$android_sdk/cmdline-tools/latest/bin/sdkmanager"
         else
-          sdkmanager="$(find "$android_sdk/cmdline-tools" -mindepth 2 -maxdepth 2 -type f -name sdkmanager -perm -u+x -print 2>/dev/null | sort -V | tail -n1 || true)"
+          sdkmanager="$(find "$android_sdk/cmdline-tools" -mindepth 3 -maxdepth 3 -type f -path "*/bin/sdkmanager" -perm -u+x -print 2>/dev/null | sort -V | tail -n1 || true)"
         fi
         if [[ -n "$sdkmanager" ]] && [[ -f "$android_sdk/licenses/android-sdk-license" ]]; then
           echo "android_sdk_ready=true" >>"$GITHUB_OUTPUT"
@@ -45,7 +56,7 @@ runs:
           if [[ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]]; then
             sdkmanager="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           else
-            sdkmanager="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -mindepth 2 -maxdepth 2 -type f -name sdkmanager -perm -u+x -print 2>/dev/null | sort -V | tail -n1 || true)"
+            sdkmanager="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -mindepth 3 -maxdepth 3 -type f -path "*/bin/sdkmanager" -perm -u+x -print 2>/dev/null | sort -V | tail -n1 || true)"
           fi
         fi
         [[ -n "$sdkmanager" && -x "$sdkmanager" ]] || {

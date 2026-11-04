@@ -3,6 +3,7 @@
 import atexit
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -307,6 +308,103 @@ class DetectTest(unittest.TestCase):
         result, outputs = self.detect([{"name": "a", "type": "python", "path": "a", "migration_engine": "goose"}])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(json.loads(outputs["ci_groups_by_target"])["Python 3.14.8"]["postgres_required"])
+
+    def test_java_components_get_one_job_each(self):
+        workspace = Workspace(self)
+        components = [
+            {"name": "app-a", "type": "java-kotlin", "path": "a", "build_tool": "gradle", "profile": "android", "java_version": "21"},
+            {"name": "app-b", "type": "java-kotlin", "path": "b", "build_tool": "gradle", "profile": "android", "java_version": "21"},
+        ]
+        for component in components:
+            workspace.write(f"{component['path']}/gradlew")
+            workspace.write(f"{component['path']}/settings.gradle.kts")
+        result, outputs = workspace.run(
+            run_block("ci/detect", "Validate, detect, and normalize affected components"),
+            {"COMPONENTS_JSON": json.dumps(components), "ARTIFACTS_JSON": "[]", "FORCE_ALL": "true", "EVENT_NAME": "push"},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        groups = json.loads(outputs["ci_groups_by_target"])
+        self.assertEqual(sorted(groups), ["Java 21 / gradle / android (app-a)", "Java 21 / gradle / android (app-b)"])
+        group = groups["Java 21 / gradle / android (app-a)"]
+        self.assertEqual(group["display_name"], "Java 21 (app-a)")
+        self.assertEqual([component["name"] for component in group["components"]], ["app-a"])
+
+
+class PersistentCacheTest(unittest.TestCase):
+    """Gharp mounts the job cache at /cache; the tests point the same scripts at a temporary directory."""
+
+    def setUp(self):
+        if os.geteuid() == 0:
+            self.skipTest("read-only directories are writable for root")
+        self.workspace = Workspace(self)
+        self.cache = self.workspace.root / "cache"
+        self.env_file = self.workspace.root / "github_env"
+        self.env_file.write_text("", encoding="utf-8")
+        self.addCleanup(self.make_writable)
+
+    def make_writable(self):
+        for path in [self.cache, *self.cache.rglob("*")] if self.cache.exists() else []:
+            if path.is_dir() and not path.is_symlink():
+                path.chmod(0o755)
+
+    def run_step(self, action, step):
+        # Only the mount point: "$home/caches" must stay as is.
+        script = re.sub(r"/cache\b", str(self.cache), run_block(action, step))
+        result, outputs = self.workspace.run(script, {"GITHUB_ENV": str(self.env_file), "HOME": str(self.workspace.root / "home")})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result, outputs, read_outputs(self.env_file)
+
+    def seal(self):
+        for path in [self.cache, *self.cache.rglob("*")]:
+            if path.is_dir():
+                path.chmod(0o555)
+
+    def test_gradle_uses_writable_cache_volume(self):
+        self.cache.mkdir()
+        _, _, env = self.run_step("ci/java-kotlin/build-tools/gradle", "Prepare Gradle cache")
+        self.assertEqual(env["GRADLE_USER_HOME"], f"{self.cache}/gradle")
+        self.assertNotIn("GRADLE_RO_DEP_CACHE", env)
+
+    def test_gradle_seeds_from_read_only_cache(self):
+        (self.cache / "gradle/caches/modules-2/files-2.1").mkdir(parents=True)
+        (self.cache / "gradle/caches/9.6.0/generated-gradle-jars").mkdir(parents=True)
+        (self.cache / "gradle/caches/build-cache-1").mkdir(parents=True)
+        (self.cache / "gradle/wrapper/dists/gradle-9.6.0-bin").mkdir(parents=True)
+        self.seal()
+        result, _, env = self.run_step("ci/java-kotlin/build-tools/gradle", "Prepare Gradle cache")
+        home = Path(env["GRADLE_USER_HOME"])
+        self.assertEqual(home, self.workspace.root / "home/.gradle")
+        self.assertEqual(env["GRADLE_RO_DEP_CACHE"], f"{self.cache}/gradle/caches")
+        self.assertTrue((home / "wrapper/dists/gradle-9.6.0-bin").is_dir())
+        self.assertTrue((home / "caches/9.6.0/generated-gradle-jars").is_dir())
+        self.assertTrue((home / "caches/build-cache-1").is_dir())
+        self.assertFalse((home / "caches/modules-2").exists())
+        self.assertIn("seeded from read-only cache", result.stdout)
+
+    def test_gradle_without_cache_is_job_local(self):
+        _, _, env = self.run_step("ci/java-kotlin/build-tools/gradle", "Prepare Gradle cache")
+        self.assertEqual(env["GRADLE_USER_HOME"], str(self.workspace.root / "home/.gradle"))
+        self.assertNotIn("GRADLE_RO_DEP_CACHE", env)
+
+    def test_android_sdk_uses_writable_cache_volume(self):
+        self.cache.mkdir()
+        _, outputs, env = self.run_step("ci/java-kotlin/profiles/android", "Prepare Android SDK paths")
+        self.assertEqual(env["ANDROID_HOME"], f"{self.cache}/android-sdk")
+        self.assertEqual(outputs["android_sdk_ready"], "false")
+
+    def test_android_sdk_seeds_from_read_only_cache(self):
+        sdkmanager = self.cache / "android-sdk/cmdline-tools/latest/bin/sdkmanager"
+        sdkmanager.parent.mkdir(parents=True)
+        sdkmanager.write_text("#!/bin/sh\n", encoding="utf-8")
+        sdkmanager.chmod(0o755)
+        (self.cache / "android-sdk/licenses").mkdir()
+        (self.cache / "android-sdk/licenses/android-sdk-license").write_text("accepted\n", encoding="utf-8")
+        self.seal()
+        _, outputs, env = self.run_step("ci/java-kotlin/profiles/android", "Prepare Android SDK paths")
+        sdk = Path(env["ANDROID_HOME"])
+        self.assertEqual(sdk, self.workspace.temp / "android-sdk")
+        self.assertTrue((sdk / "cmdline-tools/latest/bin/sdkmanager").is_file())
+        self.assertEqual(outputs["android_sdk_ready"], "true")
 
 
 SERVICE_CONTRACT_VARIABLES = """
