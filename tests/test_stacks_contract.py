@@ -366,20 +366,58 @@ class PersistentCacheTest(unittest.TestCase):
         self.assertNotIn("GRADLE_RO_DEP_CACHE", env)
 
     def test_gradle_seeds_from_read_only_cache(self):
-        (self.cache / "gradle/caches/modules-2/files-2.1").mkdir(parents=True)
-        (self.cache / "gradle/caches/9.6.0/generated-gradle-jars").mkdir(parents=True)
-        (self.cache / "gradle/caches/build-cache-1").mkdir(parents=True)
-        (self.cache / "gradle/wrapper/dists/gradle-9.6.0-bin").mkdir(parents=True)
+        ro = self.cache / "gradle"
+        (ro / "caches/modules-2/files-2.1").mkdir(parents=True)
+        (ro / "caches/9.6.0/generated-gradle-jars").mkdir(parents=True)
+        (ro / "caches/9.6.0/generated-gradle-jars/gradle-api-9.6.0.jar").write_text("jar", encoding="utf-8")
+        (ro / "caches/9.6.0/generated-gradle-jars/generated-gradle-jars.lock").write_text("", encoding="utf-8")
+        (ro / "caches/9.6.0/transforms/abc/transformed").mkdir(parents=True)
+        # Fine-grained caches keep per-entry locks and cleanup markers under .internal.
+        (ro / "caches/9.6.0/transforms/.internal/locks").mkdir(parents=True)
+        (ro / "caches/9.6.0/transforms/.internal/locks/abc.lock").write_text("", encoding="utf-8")
+        (ro / "caches/9.6.0/transforms/.internal/gc/abc").mkdir(parents=True)
+        (ro / "caches/9.6.0/transforms/.internal/gc/abc/soft.deleted").write_text("", encoding="utf-8")
+        (ro / "caches/9.6.0/fileHashes").mkdir(parents=True)
+        (ro / "caches/9.6.0/fileHashes/fileHashes.bin").write_text("h", encoding="utf-8")
+        (ro / "caches/build-cache-1").mkdir(parents=True)
+        (ro / "caches/build-cache-1/0123abcd").write_text("entry", encoding="utf-8")
+        (ro / "caches/build-cache-1/build-cache-1.lock").write_text("", encoding="utf-8")
+        dist = ro / "wrapper/dists/gradle-9.6.0-bin/hash"
+        (dist / "gradle-9.6.0/bin").mkdir(parents=True)
+        (dist / "gradle-9.6.0-bin.zip.ok").write_text("", encoding="utf-8")
+        (dist / "gradle-9.6.0-bin.zip.lck").write_text("", encoding="utf-8")
         self.seal()
         result, _, env = self.run_step("ci/java-kotlin/build-tools/gradle", "Prepare Gradle cache")
         home = Path(env["GRADLE_USER_HOME"])
         self.assertEqual(home, self.workspace.root / "home/.gradle")
         self.assertEqual(env["GRADLE_RO_DEP_CACHE"], f"{self.cache}/gradle/caches")
-        self.assertTrue((home / "wrapper/dists/gradle-9.6.0-bin").is_dir())
-        self.assertTrue((home / "caches/9.6.0/generated-gradle-jars").is_dir())
-        self.assertTrue((home / "caches/build-cache-1").is_dir())
         self.assertFalse((home / "caches/modules-2").exists())
-        self.assertIn("seeded from read-only cache", result.stdout)
+        # Large immutable entries are linked, not copied.
+        for linked in [
+            "wrapper/dists/gradle-9.6.0-bin/hash/gradle-9.6.0",
+            "caches/9.6.0/generated-gradle-jars/gradle-api-9.6.0.jar",
+            "caches/9.6.0/transforms/abc",
+            "caches/build-cache-1/0123abcd",
+        ]:
+            self.assertTrue((home / linked).is_symlink(), linked)
+        # The directories holding them, locks and small mutable state stay writable copies.
+        for copied in [
+            "wrapper/dists/gradle-9.6.0-bin/hash",
+            "caches/9.6.0/transforms",
+            # Gradle creates a lock here for every transform it runs: linking .internal to the
+            # read-only cache fails the first transform that is not in the cache.
+            "caches/9.6.0/transforms/.internal",
+            "caches/9.6.0/transforms/.internal/locks",
+            "caches/9.6.0/transforms/.internal/locks/abc.lock",
+            "caches/9.6.0/transforms/.internal/gc/abc/soft.deleted",
+            "caches/9.6.0/fileHashes/fileHashes.bin",
+            "caches/9.6.0/generated-gradle-jars/generated-gradle-jars.lock",
+            "caches/build-cache-1/build-cache-1.lock",
+        ]:
+            self.assertTrue((home / copied).exists() and not (home / copied).is_symlink(), copied)
+        self.assertFalse((home / "wrapper/dists/gradle-9.6.0-bin/hash/gradle-9.6.0-bin.zip.lck").exists())
+        self.assertIn("Cleanup.DISABLED", (home / "init.d/gharp-read-only-cache.gradle").read_text(encoding="utf-8"))
+        self.assertIn("linked to read-only cache", result.stdout)
 
     def test_gradle_without_cache_is_job_local(self):
         _, _, env = self.run_step("ci/java-kotlin/build-tools/gradle", "Prepare Gradle cache")
@@ -399,12 +437,24 @@ class PersistentCacheTest(unittest.TestCase):
         sdkmanager.chmod(0o755)
         (self.cache / "android-sdk/licenses").mkdir()
         (self.cache / "android-sdk/licenses/android-sdk-license").write_text("accepted\n", encoding="utf-8")
+        (self.cache / "android-sdk/build-tools/36.0.0").mkdir(parents=True)
+        (self.cache / "android-sdk/platform-tools").mkdir()
+        # sdkmanager's package store and its lock live in a hidden directory at the SDK root.
+        (self.cache / "android-sdk/.sdk").mkdir()
+        (self.cache / "android-sdk/.sdk/lock").write_text("", encoding="utf-8")
         self.seal()
         _, outputs, env = self.run_step("ci/java-kotlin/profiles/android", "Prepare Android SDK paths")
         sdk = Path(env["ANDROID_HOME"])
         self.assertEqual(sdk, self.workspace.temp / "android-sdk")
         self.assertTrue((sdk / "cmdline-tools/latest/bin/sdkmanager").is_file())
         self.assertEqual(outputs["android_sdk_ready"], "true")
+        # Installed packages are linked; their parent directories stay writable for new packages.
+        for linked in ["cmdline-tools/latest", "build-tools/36.0.0", "platform-tools"]:
+            self.assertTrue((sdk / linked).is_symlink(), linked)
+        for writable in ["build-tools", "cmdline-tools", "licenses", ".sdk"]:
+            self.assertFalse((sdk / writable).is_symlink(), writable)
+        self.assertTrue((sdk / ".sdk/lock").is_file())
+        self.assertTrue((sdk / "licenses/android-sdk-license").is_file())
 
 
 SERVICE_CONTRACT_VARIABLES = """

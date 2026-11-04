@@ -26,18 +26,76 @@ runs:
           gradle_cache="none"
           ro_home="/cache/gradle"
           if [[ -d "$ro_home/caches/modules-2" && -r "$ro_home/caches/modules-2" ]]; then
-            # Dependencies are read in place (Gradle's read-only dependency cache). The wrapper
-            # distribution, generated Gradle API jars and the build cache need a writable copy.
+            # Dependencies are read in place (Gradle's read-only dependency cache). The rest of
+            # the Gradle home must be writable, but copying 1-2 GB per job wears the runner
+            # disk, so large immutable entries (wrapper distributions, transform workspaces,
+            # build cache entries, generated API jars) are linked into a writable tree and only
+            # small mutable state (indexes, locks) is copied. This Gradle home is thrown away
+            # with the job, so cache cleanup is disabled: it must never touch linked entries.
             echo "GRADLE_RO_DEP_CACHE=$ro_home/caches" >>"$GITHUB_ENV"
-            mkdir -p "$gradle_home/caches" "$gradle_home/wrapper"
+            mkdir -p "$gradle_home/caches" "$gradle_home/wrapper/dists" "$gradle_home/init.d"
+            cat >"$gradle_home/init.d/gharp-read-only-cache.gradle" <<'GRADLE'
+        beforeSettings { settings ->
+            settings.caches.cleanup.set(org.gradle.api.cache.Cleanup.DISABLED)
+        }
+        GRADLE
             started=$SECONDS
+
+            # link_entries SRC DEST MODE: link SRC's child directories into DEST (MODE=all also
+            # links regular files); lock and properties files are always copied. Hidden entries
+            # are copied too: fine-grained caches (<version>/transforms) keep per-entry lock files
+            # and cleanup markers in .internal, and Gradle creates a lock there for every
+            # transform it runs, so .internal must stay writable.
+            link_entries() {
+              local src="$1" dest="$2" mode="$3" entry name
+              mkdir -p "$dest"
+              while IFS= read -r -d '' entry; do
+                name="$(basename "$entry")"
+                if [[ "$name" != .* ]] && { [[ -d "$entry" ]] || [[ "$mode" == all && "$name" != *.lock && "$name" != *.lck && "$name" != *.properties ]]; }; then
+                  ln -s "$entry" "$dest/$name"
+                elif [[ "$name" != *.lck ]]; then
+                  cp -a "$entry" "$dest/"
+                fi
+              done < <(find "$src" -mindepth 1 -maxdepth 1 -print0)
+            }
+
             if [[ -d "$ro_home/wrapper/dists" ]]; then
-              cp -a "$ro_home/wrapper/dists" "$gradle_home/wrapper/"
+              # dists/<distribution>/<hash>/: the wrapper writes its lock next to the unpacked distribution.
+              while IFS= read -r -d '' hash_dir; do
+                rel="${hash_dir#"$ro_home/wrapper/dists/"}"
+                link_entries "$hash_dir" "$gradle_home/wrapper/dists/$rel" all
+              done < <(find "$ro_home/wrapper/dists" -mindepth 2 -maxdepth 2 -type d -print0)
+              while IFS= read -r -d '' dist_dir; do
+                mkdir -p "$gradle_home/wrapper/dists/$(basename "$dist_dir")"
+              done < <(find "$ro_home/wrapper/dists" -mindepth 1 -maxdepth 1 -type d -print0)
             fi
+
             while IFS= read -r -d '' dir; do
-              cp -a "$dir" "$gradle_home/caches/"
+              name="$(basename "$dir")"
+              case "$name" in
+                build-cache-*)
+                  link_entries "$dir" "$gradle_home/caches/$name" all
+                  ;;
+                transforms-*|jars-*)
+                  link_entries "$dir" "$gradle_home/caches/$name" dirs
+                  ;;
+                [0-9]*)
+                  # Per-Gradle-version caches: link the large immutable stores, copy the rest.
+                  mkdir -p "$gradle_home/caches/$name"
+                  while IFS= read -r -d '' sub; do
+                    case "$(basename "$sub")" in
+                      transforms) link_entries "$sub" "$gradle_home/caches/$name/transforms" dirs ;;
+                      generated-gradle-jars) link_entries "$sub" "$gradle_home/caches/$name/generated-gradle-jars" all ;;
+                      *) cp -a "$sub" "$gradle_home/caches/$name/" ;;
+                    esac
+                  done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0)
+                  ;;
+                *)
+                  cp -a "$dir" "$gradle_home/caches/"
+                  ;;
+              esac
             done < <(find "$ro_home/caches" -mindepth 1 -maxdepth 1 -type d ! -name modules-2 ! -name journal-1 -print0)
-            gradle_cache="seeded from read-only cache in $((SECONDS - started))s ($(du -sh "$gradle_home" 2>/dev/null | cut -f1))"
+            gradle_cache="linked to read-only cache in $((SECONDS - started))s ($(du -sh "$gradle_home" 2>/dev/null | cut -f1) written)"
           fi
         fi
         mkdir -p "$gradle_home"
