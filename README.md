@@ -125,6 +125,8 @@ postgres_test_args
 postgres_test_env
 ```
 
+Gradle `java-kotlin` component가 watch하는 Gradle version catalog(`*.versions.toml`)만 바뀌었으면, detector는 base와 head의 catalog를 비교해 바뀐 alias(`version.ref` 연쇄와 bundle 포함)를 구하고 component path와 watch 경로의 build 파일이 그 접근자(`libs.<alias>`, `libs.plugins.*`, `libs.versions.*`, `libs.bundles.*`)를 쓸 때만 component를 affected로 둔다. 파싱 실패, catalog 추가·삭제, 알 수 없는 catalog 이름처럼 판정이 불확실하면 지금처럼 affected로 둔다(fail-safe). 규칙은 `.github/actions/ci/detect/catalog_impact.py` 참고.
+
 `python` component는 component path에 `pyproject.toml`과 `uv.lock`이 반드시 있어야 한다. `python_version`은 exact `x.y.z`만 허용하며 생략하면 workflows 전체 기본값 CPython `3.14.8`을 사용한다(Go처럼 전체가 하나의 기본 버전을 쓴다). Python component는 `postgres_test`를 지원하지 않으며 migration engine은 `goose`만 허용한다.
 
 `build_cache` is optional component metadata for reusable compiler/framework caches without teaching the central workflow about a specific framework.
