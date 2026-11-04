@@ -152,6 +152,68 @@ class MigrationCIRulesTest(unittest.TestCase):
         self.assertNotIn("U[^_]+__", text)
         self.assertIn("^R__[A-Za-z0-9][A-Za-z0-9_.-]*\\.sql$", text)
 
+    def postgres_env(self, component_type):
+        workspace = Workspace(self)
+        github_env = workspace.root / "github_env"
+        github_env.write_text("", encoding="utf-8")
+        result, _ = workspace.run(
+            run_block("ci/group", "Configure job-scoped PostgreSQL environment"),
+            {
+                "COMPONENT_TYPE": component_type,
+                "GITHUB_ENV": str(github_env),
+                "CI_POSTGRES_HOST": "127.0.0.1",
+                "CI_POSTGRES_PORT": "5432",
+                "CI_POSTGRES_USER": "ci_user",
+                "CI_POSTGRES_PASSWORD": "ci_secret",
+                "CI_POSTGRES_DB": "ci_db",
+            },
+        )
+        return result, github_env.read_text(encoding="utf-8").splitlines()
+
+    def test_java_kotlin_ci_gets_runtime_database_url(self):
+        result, lines = self.postgres_env("java-kotlin")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        env = dict(line.partition("=")[::2] for line in lines)
+        self.assertEqual(env["DATABASE_URL"], "postgresql://ci_user:ci_secret@127.0.0.1:5432/ci_db")
+        self.assertTrue(env["DATABASE_URL"].startswith("postgresql://"))
+        self.assertEqual(sorted(env), ["CI_POSTGRES_URL", "DATABASE_URL"])
+        for line in lines:
+            self.assertFalse(line.startswith(("SPRING_DATASOURCE_", "FLYWAY_")), line)
+
+    def test_every_component_type_gets_the_same_postgres_env(self):
+        _, expected = self.postgres_env("java-kotlin")
+        for component_type in ("node", "go", "python"):
+            with self.subTest(component_type):
+                result, lines = self.postgres_env(component_type)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(lines, expected)
+        result, _ = self.postgres_env("rust")
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_flyway_ci_builds_jdbc_url_from_job_postgres(self):
+        script = run_block("ci/migration/flyway", "Validate and apply Flyway migrations")
+        for key in ("CI_POSTGRES_HOST", "CI_POSTGRES_PORT", "CI_POSTGRES_DB", "CI_POSTGRES_USER", "CI_POSTGRES_PASSWORD"):
+            self.assertIn(key, script)
+        self.assertIn('jdbc_url="jdbc:postgresql://$CI_POSTGRES_HOST:$CI_POSTGRES_PORT/$CI_POSTGRES_DB"', script)
+        self.assertIn('GharpFlywayMigrate "$jdbc_url" "$CI_POSTGRES_USER" "$CI_POSTGRES_PASSWORD"', script)
+        self.assertNotIn("FLYWAY_", script)
+        self.assertNotIn("GITHUB_ENV", script)
+
+    def test_flyway_ci_requires_job_postgres_env(self):
+        script = segment("ci/migration/flyway", "Validate and apply Flyway migrations",
+                         "        for key in CI_POSTGRES_HOST", '        workspace="$(realpath')
+        env = {"CI_POSTGRES_HOST": "127.0.0.1", "CI_POSTGRES_PORT": "5432", "CI_POSTGRES_DB": "ci_db",
+               "CI_POSTGRES_USER": "ci_user", "CI_POSTGRES_PASSWORD": "ci_secret"}
+        result, _ = Workspace(self).run(script + 'printf "%s" "$jdbc_url"\n', env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.endswith("jdbc:postgresql://127.0.0.1:5432/ci_db"), result.stdout)
+        for missing in env:
+            with self.subTest(missing):
+                partial = {k: v for k, v in env.items() if k != missing}
+                result, _ = Workspace(self).run(script, partial)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"{missing} is required", result.stdout)
+
     def test_go_command_remnant_is_gone(self):
         for action in ("ci/detect", "cd/artifact", "config/load"):
             self.assertNotIn("go-command", (ACTIONS / action / "action.yml").read_text(encoding="utf-8"), action)

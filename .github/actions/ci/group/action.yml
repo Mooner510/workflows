@@ -90,21 +90,13 @@ runs:
         echo "::add-mask::$CI_POSTGRES_PASSWORD"
 
         postgres_url="postgresql://$CI_POSTGRES_USER:$CI_POSTGRES_PASSWORD@$CI_POSTGRES_HOST:$CI_POSTGRES_PORT/$CI_POSTGRES_DB"
-        jdbc_url="jdbc:postgresql://$CI_POSTGRES_HOST:$CI_POSTGRES_PORT/$CI_POSTGRES_DB"
 
+        # Every component type gets the same postgresql:// URL the deployed runtime receives.
+        # Java/Kotlin apps convert it themselves; Flyway CI builds its JDBC URL from CI_POSTGRES_*.
         {
           echo "CI_POSTGRES_URL=$postgres_url"
           case "$COMPONENT_TYPE" in
-            java-kotlin)
-              echo "DATABASE_URL=$jdbc_url"
-              echo "SPRING_DATASOURCE_URL=$jdbc_url"
-              echo "SPRING_DATASOURCE_USERNAME=$CI_POSTGRES_USER"
-              echo "SPRING_DATASOURCE_PASSWORD=$CI_POSTGRES_PASSWORD"
-              echo "FLYWAY_URL=$jdbc_url"
-              echo "FLYWAY_USER=$CI_POSTGRES_USER"
-              echo "FLYWAY_PASSWORD=$CI_POSTGRES_PASSWORD"
-              ;;
-            node|go|python)
+            java-kotlin|node|go|python)
               echo "DATABASE_URL=$postgres_url"
               ;;
             *)
