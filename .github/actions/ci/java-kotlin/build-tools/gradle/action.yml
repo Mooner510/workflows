@@ -56,6 +56,22 @@ runs:
         components="$(jq -c '.' <<<"$COMPONENTS_JSON")"
         declare -A checked=()
 
+        # Gradle's last lines say how much work was reused; put them in the job summary so a
+        # slow run shows whether tasks executed or came from cache.
+        summary_started=false
+        write_summary() {
+          local name="$1" tasks="$2" log="$3" result outcome
+          result="$(grep -E '^BUILD (SUCCESSFUL|FAILED) in ' "$log" | tail -n1 || true)"
+          outcome="$(grep -E '^[0-9]+ actionable tasks?: ' "$log" | tail -n1 | sed -E 's/^[0-9]+ actionable tasks?: //' || true)"
+          [[ -z "$outcome" ]] || echo "==> Gradle tasks for $name: $outcome"
+          [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
+          if [[ "$summary_started" != "true" ]]; then
+            printf '### Gradle\n\n| Component | Tasks | Result | Tasks run |\n|---|---|---|---|\n' >>"$GITHUB_STEP_SUMMARY"
+            summary_started=true
+          fi
+          printf '| `%s` | `%s` | %s | %s |\n' "$name" "$tasks" "${result:-unknown}" "${outcome:-unknown}" >>"$GITHUB_STEP_SUMMARY"
+        }
+
         while IFS= read -r component_json; do
           name="$(jq -r '.name' <<<"$component_json")"
           path="$(jq -r '.path' <<<"$component_json")"
@@ -75,6 +91,11 @@ runs:
           key="$component|$tasks_string"
           [[ -z "${checked[$key]+x}" ]] || continue
           echo "==> Gradle component: $name ($tasks_string)"
-          (cd "$component" && chmod +x ./gradlew && ./gradlew --no-daemon "${tasks[@]}")
+          log="$(mktemp "${RUNNER_TEMP:-/tmp}/gradle-XXXXXX.log")"
+          status=0
+          (cd "$component" && chmod +x ./gradlew && ./gradlew --no-daemon "${tasks[@]}") 2>&1 | tee "$log" || status=$?
+          write_summary "$name" "$tasks_string" "$log"
+          rm -f -- "$log"
+          (( status == 0 )) || exit "$status"
           checked[$key]=1
         done < <(jq -c '.[]' <<<"$components")
