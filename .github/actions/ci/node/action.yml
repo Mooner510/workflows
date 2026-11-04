@@ -44,7 +44,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        cache_root="${RUNNER_TOOL_CACHE:-$HOME/.cache/github-actions-tool-cache}"
+        cache_root="${GHARP_DEPENDENCY_CACHE:-${RUNNER_TOOL_CACHE:-$HOME/.cache/github-actions-tool-cache}}"
         pnpm_store="$RUNNER_TEMP/pnpm-store"
         mkdir -p \
           "$cache_root/corepack" \

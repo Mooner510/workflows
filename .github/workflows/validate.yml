@@ -202,7 +202,7 @@ jobs:
             echo "::error::pnpm content store must stay job-local on the runner workspace filesystem."
             exit 1
           }
-          if grep -nE 'PNPM_STORE_DIR=.*(RUNNER_TOOL_CACHE|/cache)' "$node_ci"; then
+          if grep -nE 'PNPM_STORE_DIR=.*(RUNNER_TOOL_CACHE|GHARP_DEPENDENCY_CACHE|/cache)' "$node_ci"; then
             echo "::error::pnpm content store must not use the persistent Gharp cache/tool volume."
             exit 1
           fi

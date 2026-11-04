@@ -125,7 +125,7 @@ runs:
 
         trivy_version="0.74.0"
         trivy_expected="2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
-        trivy_root="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/trivy/$trivy_version"
+        trivy_root="${GHARP_DEPENDENCY_CACHE:-${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}}/trivy/$trivy_version"
         trivy="$trivy_root/trivy"
         if [[ ! -x "$trivy" ]]; then
           trivy_archive="$(mktemp "$RUNNER_TEMP/trivy-XXXXXX.tar.gz")"

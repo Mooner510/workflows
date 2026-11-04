@@ -17,7 +17,7 @@ runs:
           exit 1
         }
 
-        tool_base="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/isolated-scanners"
+        tool_base="${GHARP_DEPENDENCY_CACHE:-${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}}/isolated-scanners"
         bin_dir="$tool_base/bin"
         mkdir -p "$bin_dir"
 
