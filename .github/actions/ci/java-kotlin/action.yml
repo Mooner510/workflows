@@ -59,16 +59,8 @@ runs:
           name="$(basename "$dir")"
           [[ "$name" == "$JAVA_VERSION" || "$name" == "$JAVA_VERSION".* || "$name" == "$JAVA_VERSION"-* ]] || continue
           [[ ! -e "$dest/$name" ]] || continue
-          # Link the JDK instead of copying it: it is only read, and copying ~200 MB per job
-          # wears the runner disk. Marker files (<arch>.complete) are copied.
-          mkdir -p "$dest/$name"
-          while IFS= read -r -d '' entry; do
-            if [[ -d "$entry" ]]; then
-              ln -s "$entry" "$dest/$name/$(basename "$entry")"
-            else
-              cp -a "$entry" "$dest/$name/"
-            fi
-          done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0)
+          mkdir -p "$dest"
+          cp -a "$dir" "$dest/"
           seeded+=("$name")
         done < <(find "$src" -mindepth 1 -maxdepth 1 -type d -print0)
         if (( ${#seeded[@]} > 0 )); then
