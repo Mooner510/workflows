@@ -372,6 +372,11 @@ class PersistentCacheTest(unittest.TestCase):
         (ro / "caches/9.6.0/generated-gradle-jars/gradle-api-9.6.0.jar").write_text("jar", encoding="utf-8")
         (ro / "caches/9.6.0/generated-gradle-jars/generated-gradle-jars.lock").write_text("", encoding="utf-8")
         (ro / "caches/9.6.0/transforms/abc/transformed").mkdir(parents=True)
+        # Fine-grained caches keep per-entry locks and cleanup markers under .internal.
+        (ro / "caches/9.6.0/transforms/.internal/locks").mkdir(parents=True)
+        (ro / "caches/9.6.0/transforms/.internal/locks/abc.lock").write_text("", encoding="utf-8")
+        (ro / "caches/9.6.0/transforms/.internal/gc/abc").mkdir(parents=True)
+        (ro / "caches/9.6.0/transforms/.internal/gc/abc/soft.deleted").write_text("", encoding="utf-8")
         (ro / "caches/9.6.0/fileHashes").mkdir(parents=True)
         (ro / "caches/9.6.0/fileHashes/fileHashes.bin").write_text("h", encoding="utf-8")
         (ro / "caches/build-cache-1").mkdir(parents=True)
@@ -399,6 +404,12 @@ class PersistentCacheTest(unittest.TestCase):
         for copied in [
             "wrapper/dists/gradle-9.6.0-bin/hash",
             "caches/9.6.0/transforms",
+            # Gradle creates a lock here for every transform it runs: linking .internal to the
+            # read-only cache fails the first transform that is not in the cache.
+            "caches/9.6.0/transforms/.internal",
+            "caches/9.6.0/transforms/.internal/locks",
+            "caches/9.6.0/transforms/.internal/locks/abc.lock",
+            "caches/9.6.0/transforms/.internal/gc/abc/soft.deleted",
             "caches/9.6.0/fileHashes/fileHashes.bin",
             "caches/9.6.0/generated-gradle-jars/generated-gradle-jars.lock",
             "caches/build-cache-1/build-cache-1.lock",
@@ -428,6 +439,9 @@ class PersistentCacheTest(unittest.TestCase):
         (self.cache / "android-sdk/licenses/android-sdk-license").write_text("accepted\n", encoding="utf-8")
         (self.cache / "android-sdk/build-tools/36.0.0").mkdir(parents=True)
         (self.cache / "android-sdk/platform-tools").mkdir()
+        # sdkmanager's package store and its lock live in a hidden directory at the SDK root.
+        (self.cache / "android-sdk/.sdk").mkdir()
+        (self.cache / "android-sdk/.sdk/lock").write_text("", encoding="utf-8")
         self.seal()
         _, outputs, env = self.run_step("ci/java-kotlin/profiles/android", "Prepare Android SDK paths")
         sdk = Path(env["ANDROID_HOME"])
@@ -437,8 +451,9 @@ class PersistentCacheTest(unittest.TestCase):
         # Installed packages are linked; their parent directories stay writable for new packages.
         for linked in ["cmdline-tools/latest", "build-tools/36.0.0", "platform-tools"]:
             self.assertTrue((sdk / linked).is_symlink(), linked)
-        for writable in ["build-tools", "cmdline-tools", "licenses"]:
+        for writable in ["build-tools", "cmdline-tools", "licenses", ".sdk"]:
             self.assertFalse((sdk / writable).is_symlink(), writable)
+        self.assertTrue((sdk / ".sdk/lock").is_file())
         self.assertTrue((sdk / "licenses/android-sdk-license").is_file())
 
 

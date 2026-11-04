@@ -42,13 +42,16 @@ runs:
             started=$SECONDS
 
             # link_entries SRC DEST MODE: link SRC's child directories into DEST (MODE=all also
-            # links regular files); lock and properties files are always copied.
+            # links regular files); lock and properties files are always copied. Hidden entries
+            # are copied too: fine-grained caches (<version>/transforms) keep per-entry lock files
+            # and cleanup markers in .internal, and Gradle creates a lock there for every
+            # transform it runs, so .internal must stay writable.
             link_entries() {
               local src="$1" dest="$2" mode="$3" entry name
               mkdir -p "$dest"
               while IFS= read -r -d '' entry; do
                 name="$(basename "$entry")"
-                if [[ -d "$entry" ]] || [[ "$mode" == all && "$name" != *.lock && "$name" != *.lck && "$name" != *.properties ]]; then
+                if [[ "$name" != .* ]] && { [[ -d "$entry" ]] || [[ "$mode" == all && "$name" != *.lock && "$name" != *.lck && "$name" != *.properties ]]; }; then
                   ln -s "$entry" "$dest/$name"
                 elif [[ "$name" != *.lck ]]; then
                   cp -a "$entry" "$dest/"
