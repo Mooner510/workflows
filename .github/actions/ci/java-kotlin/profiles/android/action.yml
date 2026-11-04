@@ -15,11 +15,41 @@ runs:
           android_sdk="/cache/android-sdk"
           sdk_cache="persistent (read-write)"
         elif [[ -d /cache/android-sdk/licenses && -r /cache/android-sdk ]]; then
-          # Copy instead of pointing at the read-only SDK: sdkmanager and AGP install missing packages in place.
+          # sdkmanager and AGP install missing packages in place, so the SDK root must be writable,
+          # but copying ~500 MB per job wears the runner disk. Build a writable tree of links:
+          # each installed package (build-tools/<v>, platforms/<v>, platform-tools, ...) links to
+          # the read-only cache, and a missing package installs next to them. Small files
+          # (licenses, metadata) and hidden entries (sdkmanager's .sdk store and its lock,
+          # .temp download dirs) are copied, so installing a package never writes to the cache.
           android_sdk="$RUNNER_TEMP/android-sdk"
           mkdir -p "$android_sdk"
-          cp -a /cache/android-sdk/. "$android_sdk/"
-          sdk_cache="seeded from read-only cache"
+          ro_sdk=/cache/android-sdk
+          while IFS= read -r -d '' entry; do
+            name="$(basename "$entry")"
+            case "$name" in
+              build-tools|platforms|cmdline-tools|ndk|cmake|system-images|sources|extras|add-ons)
+                mkdir -p "$android_sdk/$name"
+                while IFS= read -r -d '' package; do
+                  if [[ -d "$package" && "$(basename "$package")" != .* ]]; then
+                    ln -s "$package" "$android_sdk/$name/$(basename "$package")"
+                  else
+                    cp -a "$package" "$android_sdk/$name/"
+                  fi
+                done < <(find "$entry" -mindepth 1 -maxdepth 1 -print0)
+                ;;
+              licenses|.*)
+                cp -a "$entry" "$android_sdk/"
+                ;;
+              *)
+                if [[ -d "$entry" ]]; then
+                  ln -s "$entry" "$android_sdk/$name"
+                else
+                  cp -a "$entry" "$android_sdk/"
+                fi
+                ;;
+            esac
+          done < <(find "$ro_sdk" -mindepth 1 -maxdepth 1 -print0)
+          sdk_cache="linked to read-only cache"
         else
           android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$RUNNER_TEMP/android-sdk}}"
           sdk_cache="none"
