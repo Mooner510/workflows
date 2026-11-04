@@ -283,12 +283,17 @@ jobs:
               exit 1
             }
           done
-          for required in CI_POSTGRES_HOST CI_POSTGRES_PASSWORD CI_POSTGRES_DB DATABASE_URL SPRING_DATASOURCE_URL FLYWAY_URL; do
+          for required in CI_POSTGRES_HOST CI_POSTGRES_PASSWORD CI_POSTGRES_DB DATABASE_URL; do
             grep -q "$required" "$group" || {
               echo "::error file=.github/actions/ci/group/action.yml::Missing PostgreSQL environment mapping: $required"
               exit 1
             }
           done
+          # java-kotlin must receive the same DATABASE_URL=postgresql://... as the runtime, not a JDBC/Spring/Flyway env set.
+          if grep -nE '^[[:space:]]*java-kotlin\)|SPRING_DATASOURCE_|FLYWAY_(URL|USER|PASSWORD)|jdbc:postgresql' "$group"; then
+            echo "::error file=.github/actions/ci/group/action.yml::PostgreSQL env must not special-case java-kotlin; every component type gets DATABASE_URL=postgresql://..."
+            exit 1
+          fi
 
       - name: Validate job PostgreSQL migration boundary
         shell: bash
@@ -309,7 +314,7 @@ jobs:
             fi
           done
           grep -q 'CI_POSTGRES_URL' "$GITHUB_WORKSPACE/.github/actions/ci/migration/goose/action.yml" || exit 1
-          grep -q 'FLYWAY_URL' "$GITHUB_WORKSPACE/.github/actions/ci/migration/flyway/action.yml" || exit 1
+          grep -q 'CI_POSTGRES_HOST' "$GITHUB_WORKSPACE/.github/actions/ci/migration/flyway/action.yml" || exit 1
           grep -q 'DATABASE_URL' "$GITHUB_WORKSPACE/.github/actions/ci/migration/prisma/action.yml" || exit 1
           grep -q 'DATABASE_URL' "$GITHUB_WORKSPACE/.github/actions/ci/migration/drizzle/action.yml" || exit 1
 

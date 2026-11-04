@@ -18,9 +18,12 @@ runs:
         command -v jq >/dev/null || { echo "::error::jq is required."; exit 1; }
         command -v java >/dev/null || { echo "::error::Java must be prepared before Flyway migration CI."; exit 1; }
         command -v javac >/dev/null || { echo "::error::javac is required."; exit 1; }
-        for key in FLYWAY_URL FLYWAY_USER FLYWAY_PASSWORD; do
+        # Gharp injects CI_POSTGRES_* into the job container; the JDBC URL stays local to this step.
+        for key in CI_POSTGRES_HOST CI_POSTGRES_PORT CI_POSTGRES_DB CI_POSTGRES_USER CI_POSTGRES_PASSWORD; do
           [[ -n "${!key:-}" ]] || { echo "::error::$key is required."; exit 1; }
         done
+        echo "::add-mask::$CI_POSTGRES_PASSWORD"
+        jdbc_url="jdbc:postgresql://$CI_POSTGRES_HOST:$CI_POSTGRES_PORT/$CI_POSTGRES_DB"
 
         workspace="$(realpath "$GITHUB_WORKSPACE")"
         source_dir="$RUNNER_TEMP/gharp-flyway"
@@ -104,6 +107,6 @@ runs:
           rm -rf "$source_dir/classes"
           mkdir -p "$source_dir/classes"
           javac -cp "$classpath" -d "$source_dir/classes" "$source_dir/GharpFlywayMigrate.java"
-          java -cp "$classpath:$source_dir/classes" GharpFlywayMigrate "$FLYWAY_URL" "$FLYWAY_USER" "$FLYWAY_PASSWORD" "$migrations"
+          java -cp "$classpath:$source_dir/classes" GharpFlywayMigrate "$jdbc_url" "$CI_POSTGRES_USER" "$CI_POSTGRES_PASSWORD" "$migrations"
           rm -f "$cp_file"
         done < <(jq -c '.[]' <<<"$COMPONENTS_JSON")
