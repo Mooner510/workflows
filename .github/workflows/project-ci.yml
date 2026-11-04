@@ -177,7 +177,10 @@ jobs:
     name: ${{ fromJSON(needs.contract.outputs.ci_groups)[matrix.target].display_name || matrix.target }}
     needs: contract
     if: needs.contract.outputs.ci_required == 'true'
-    runs-on: ${{ fromJSON(fromJSON(needs.contract.outputs.ci_groups)[matrix.target].postgres_required && format('["self-hosted","linux","gharp-ci-{0}-{1}","gharp-postgres"]', github.run_id, github.run_attempt) || format('["self-hosted","linux","gharp-ci-{0}-{1}"]', github.run_id, github.run_attempt)) }}
+    # gharp-matrix-<index> makes each matrix job's label set unique. Without it every CI
+    # matrix job of a run has the same labels, GitHub hands a job to whichever JIT runner
+    # registers first, and the job runs with the cache volume launched for another target.
+    runs-on: ${{ fromJSON(fromJSON(needs.contract.outputs.ci_groups)[matrix.target].postgres_required && format('["self-hosted","linux","gharp-ci-{0}-{1}","gharp-matrix-{2}","gharp-postgres"]', github.run_id, github.run_attempt, strategy.job-index) || format('["self-hosted","linux","gharp-ci-{0}-{1}","gharp-matrix-{2}"]', github.run_id, github.run_attempt, strategy.job-index)) }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -259,7 +262,8 @@ jobs:
     name: OCI
     needs: contract
     if: needs.contract.outputs.artifact_required == 'true'
-    runs-on: [self-hosted, linux, "gharp-artifact-${{ github.run_id }}-${{ github.run_attempt }}", "gharp-scratch-${{ matrix.artifact }}"]
+    # On a promotable push, gharp seals the bundle and retains it for host installation after verifying the run.
+    runs-on: [self-hosted, linux, "gharp-artifact-${{ github.run_id }}-${{ github.run_attempt }}", "${{ needs.contract.outputs.promotion_required == 'true' && format('gharp-retain-{0}', matrix.artifact) || format('gharp-scratch-{0}', matrix.artifact) }}"]
     timeout-minutes: 45
     strategy:
       fail-fast: false

@@ -41,6 +41,34 @@ runs:
           exit 1
         fi
 
+    - name: Seed Java from read-only runner cache
+      shell: bash
+      env:
+        JAVA_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        # Read-only jobs (same-repository pull requests) get a job-local RUNNER_TOOL_CACHE, so
+        # setup-java would download the JDK again. Trusted writers install it under /cache/tool.
+        src=/cache/tool/Java_Temurin-Hotspot_jdk
+        if [[ "${GHARP_CACHE_MODE:-}" != "ro" || ! -d "$src" || -z "${RUNNER_TOOL_CACHE:-}" ]]; then
+          exit 0
+        fi
+        dest="$RUNNER_TOOL_CACHE/Java_Temurin-Hotspot_jdk"
+        seeded=()
+        while IFS= read -r -d '' dir; do
+          name="$(basename "$dir")"
+          [[ "$name" == "$JAVA_VERSION" || "$name" == "$JAVA_VERSION".* || "$name" == "$JAVA_VERSION"-* ]] || continue
+          [[ ! -e "$dest/$name" ]] || continue
+          mkdir -p "$dest"
+          cp -a "$dir" "$dest/"
+          seeded+=("$name")
+        done < <(find "$src" -mindepth 1 -maxdepth 1 -type d -print0)
+        if (( ${#seeded[@]} > 0 )); then
+          echo "==> Seeded JDK from read-only runner cache: ${seeded[*]}"
+        else
+          echo "==> No cached JDK $JAVA_VERSION in the read-only runner cache."
+        fi
+
     - name: Set up Java
       uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
       with:
