@@ -1,0 +1,31 @@
+# Trimmed from Mooner510/mooner-webapps gradle/libs.versions.toml at master (f6f2c7c).
+[versions]
+agp = "9.4.1"
+kotlin = "2.4.0"
+ksp = "2.3.12"
+coroutines = "1.11.0"
+webkit = "1.14.0"
+junit = "4.13.2"
+lifecycle = "2.10.0"
+core-ktx = "1.18.0"
+# navi
+knsdk = "1.12.8-hotfix05"
+# ssh
+sshj = "0.41.2"
+
+[libraries]
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+androidx-webkit = { module = "androidx.webkit:webkit", version.ref = "webkit" }
+junit = { module = "junit:junit", version.ref = "junit" }
+androidx-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycle" }
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx" }
+kakao-knsdk = { module = "com.kakaomobility.knsdk:knsdk", version.ref = "knsdk" }
+sshj = { module = "com.hierynomus:sshj", version.ref = "sshj" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

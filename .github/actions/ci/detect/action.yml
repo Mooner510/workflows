@@ -49,6 +49,7 @@ runs:
         PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         PUSH_BEFORE_SHA: ${{ github.event.before }}
         DIFF_BASE: ${{ inputs.diff_base }}
+        CATALOG_IMPACT_SCRIPT: ${{ github.action_path }}/catalog_impact.py
       run: |
         set -euo pipefail
 
@@ -228,8 +229,11 @@ runs:
 
         force_all=false
         changed_file_list="$(mktemp)"
-        trap 'rm -f "$changed_file_list"' EXIT
+        catalog_summary_log="$(mktemp)"
+        trap 'rm -f "$changed_file_list" "$catalog_summary_log"' EXIT
         git_log_opts="--all"
+        diff_from=""
+        diff_to=""
 
         if [[ "$FORCE_ALL" == "true" ]]; then
           force_all=true
@@ -247,6 +251,8 @@ runs:
           }
           git diff --name-only --no-renames --diff-filter=ACMRD "$DIFF_BASE" "$HEAD_SHA" >"$changed_file_list"
           git_log_opts="${DIFF_BASE}..${HEAD_SHA}"
+          diff_from="$DIFF_BASE"
+          diff_to="$HEAD_SHA"
         elif [[ "$EVENT_NAME" == "pull_request" ]]; then
           base_sha="$PR_BASE_SHA"
           head_sha="$HEAD_SHA"
@@ -255,10 +261,14 @@ runs:
           merge_base="$(git merge-base "$base_sha" "$head_sha")"
           git diff --name-only --no-renames --diff-filter=ACMRD "$merge_base" "$head_sha" >"$changed_file_list"
           git_log_opts="${merge_base}..${head_sha}"
+          diff_from="$merge_base"
+          diff_to="$head_sha"
         elif [[ "$EVENT_NAME" == "push" ]] && [[ -n "${PUSH_BEFORE_SHA:-}" ]] && [[ ! "$PUSH_BEFORE_SHA" =~ ^0+$ ]]; then
           require_local_commit "$PUSH_BEFORE_SHA" "push before"
           git diff --name-only --no-renames --diff-filter=ACMRD "$PUSH_BEFORE_SHA" "$HEAD_SHA" >"$changed_file_list"
           git_log_opts="${PUSH_BEFORE_SHA}..${HEAD_SHA}"
+          diff_from="$PUSH_BEFORE_SHA"
+          diff_to="$HEAD_SHA"
         else
           force_all=true
           echo "No reliable diff base for event '$EVENT_NAME'; every configured component is affected."
@@ -288,6 +298,32 @@ runs:
           fi
         }
 
+        # A Gradle version catalog (*.versions.toml) is often watched by every JVM component. When such a
+        # file is the only watched change, catalog_impact.py keeps the component only if its build files
+        # reference a changed alias; any uncertainty keeps it (fail-safe). See that script for the rules.
+        catalog_keeps_component() {
+          local component="$1"
+          shift
+          local name decision
+          name="$(jq -r '.name' <<<"$component")"
+          if [[ -z "${CATALOG_IMPACT_SCRIPT:-}" || ! -f "$CATALOG_IMPACT_SCRIPT" ]]; then
+            echo "catalog: $name: fail-safe (catalog impact helper not found)"
+            return 0
+          fi
+          if ! command -v python3 >/dev/null || ! python3 -I -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+            echo "catalog: $name: fail-safe (python3 >= 3.11 is unavailable)"
+            return 0
+          fi
+          decision="$(python3 -I "$CATALOG_IMPACT_SCRIPT" --workspace "$GITHUB_WORKSPACE" --base "$diff_from" --head "$diff_to" --component "$component" --summary-log "$catalog_summary_log" -- "$@")" || decision=""
+          case "$decision" in
+            drop) return 1 ;;
+            keep) return 0 ;;
+            *) echo "catalog: $name: fail-safe (catalog impact helper failed)"; return 0 ;;
+          esac
+        }
+
+        catalog_kept=()
+        catalog_dropped=()
         selected='[]'
         for ((i = 0; i < count; i++)); do
           component="$(jq -c ".[$i]" <<<"$components")"
@@ -362,20 +398,39 @@ runs:
           fi
 
           if [[ "$affected" != "true" ]]; then
+            catalog_hits=()
             while IFS= read -r changed; do
               if [[ "$changed" == ".github/workflows/"* || "$changed" == ".github/actions/"* ]]; then
                 affected=true
                 break
               fi
 
+              watched=false
               while IFS= read -r watch; do
                 watch="${watch%/}"
                 if [[ "$watch" == "." ]] || [[ "$changed" == "$watch" ]] || [[ "$changed" == "$watch/"* ]]; then
-                  affected=true
-                  break 2
+                  watched=true
+                  break
                 fi
               done < <(jq -r '((if (.watch_path // true) then [.path] else [] end) + (.watch // [])) | unique | .[]' <<<"$component")
+              if [[ "$watched" == "true" ]]; then
+                if [[ "$changed" == *.versions.toml ]] && jq -e '.type == "java-kotlin" and (.build_tool // "gradle") == "gradle"' <<<"$component" >/dev/null; then
+                  catalog_hits+=("$changed")
+                else
+                  affected=true
+                  break
+                fi
+              fi
             done <"$changed_file_list"
+
+            if [[ "$affected" != "true" ]] && (( ${#catalog_hits[@]} > 0 )); then
+              if catalog_keeps_component "$component" "${catalog_hits[@]}"; then
+                affected=true
+                catalog_kept+=("$name")
+              else
+                catalog_dropped+=("$name")
+              fi
+            fi
           fi
 
           if [[ "$affected" == "true" ]]; then
@@ -384,6 +439,10 @@ runs:
             echo "Affected: $name ($(jq -r '.path' <<<"$component"))"
           fi
         done
+
+        if (( ${#catalog_kept[@]} + ${#catalog_dropped[@]} > 0 )); then
+          echo "catalog: narrowed to [${catalog_kept[*]}] (dropped: [${catalog_dropped[*]}])"
+        fi
 
         resolve_node_manager() {
           local component="$1"
