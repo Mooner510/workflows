@@ -51,7 +51,7 @@ runs:
           pnpm_version="${BASH_REMATCH[1]}"
 
           if [[ -z "${installed[$root]+x}" ]]; then
-            tool_root="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/pnpm/$pnpm_version"
+            tool_root="${GHARP_DEPENDENCY_CACHE:-${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}}/pnpm/$pnpm_version"
             pnpm_bin="$tool_root/bin/pnpm"
             if [[ ! -x "$pnpm_bin" ]]; then
               echo "==> Installing pnpm $pnpm_version"

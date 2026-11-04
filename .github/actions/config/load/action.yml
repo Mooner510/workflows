@@ -54,7 +54,7 @@ runs:
             exit 1
             ;;
         esac
-        tool_root="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/yq/$version"
+        tool_root="${GHARP_DEPENDENCY_CACHE:-${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}}/yq/$version"
         yq="$tool_root/yq"
         if [[ ! -x "$yq" ]]; then
           mkdir -p "$tool_root"

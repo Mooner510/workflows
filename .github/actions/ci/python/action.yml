@@ -84,8 +84,11 @@ runs:
           exit 1
         }
 
-        export UV_CACHE_DIR="$tool_base/cache"
-        export UV_PYTHON_INSTALL_DIR="$tool_base/python"
+        # The uv binary may come from the runner image tool cache; its package cache and the
+        # managed CPython persist in GHARP_DEPENDENCY_CACHE when gharp provides one (rw jobs).
+        dependency_base="${GHARP_DEPENDENCY_CACHE:-${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}}/uv"
+        export UV_CACHE_DIR="$dependency_base/cache"
+        export UV_PYTHON_INSTALL_DIR="$dependency_base/python"
         export UV_PYTHON_PREFERENCE=only-managed
         export UV_NO_PROGRESS=1
         mkdir -p "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR"
