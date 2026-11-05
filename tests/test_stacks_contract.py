@@ -716,15 +716,15 @@ class GradleRunTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(calls, ["a --no-daemon compileDebugKotlin"])
 
-    def test_group_shares_one_daemon_and_stops_it(self):
+    def test_group_runs_each_component_in_a_single_use_daemon(self):
         result, calls = self.run_components(["a", "b"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(calls, ["a compileDebugKotlin", "b compileDebugKotlin", "b --stop"])
+        self.assertEqual(calls, ["a --no-daemon compileDebugKotlin", "b --no-daemon compileDebugKotlin"])
 
     def test_group_checks_every_component_before_failing(self):
         result, calls = self.run_components(["a", "b", "c"], failing=("a", "c"))
         self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
-        self.assertEqual(calls, ["a compileDebugKotlin", "b compileDebugKotlin", "c compileDebugKotlin", "c --stop"])
+        self.assertEqual(calls, ["a --no-daemon compileDebugKotlin", "b --no-daemon compileDebugKotlin", "c --no-daemon compileDebugKotlin"])
         self.assertIn("Gradle checks failed for: a c", result.stdout)
 
 
