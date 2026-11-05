@@ -46,17 +46,20 @@ runs:
             # are copied too: fine-grained caches (<version>/transforms) keep per-entry lock files
             # and cleanup markers in .internal, and Gradle creates a lock there for every
             # transform it runs, so .internal must stay writable.
+            # A transforms store holds thousands of entries, so links and copies are made in batches
+            # (find -exec ... +) instead of forking basename/ln/cp once per entry.
             link_entries() {
-              local src="$1" dest="$2" mode="$3" entry name
+              local src="$1" dest="$2" mode="$3"
               mkdir -p "$dest"
-              while IFS= read -r -d '' entry; do
-                name="$(basename "$entry")"
-                if [[ "$name" != .* ]] && { [[ -d "$entry" ]] || [[ "$mode" == all && "$name" != *.lock && "$name" != *.lck && "$name" != *.properties ]]; }; then
-                  ln -s "$entry" "$dest/$name"
-                elif [[ "$name" != *.lck ]]; then
-                  cp -a "$entry" "$dest/"
-                fi
-              done < <(find "$src" -mindepth 1 -maxdepth 1 -print0)
+              if [[ "$mode" == all ]]; then
+                find "$src" -mindepth 1 -maxdepth 1 ! -name '.*' \( -xtype d -o \( ! -name '*.lock' ! -name '*.lck' ! -name '*.properties' \) \) \
+                  -exec ln -s -t "$dest" -- {} +
+                find "$src" -mindepth 1 -maxdepth 1 ! -name '*.lck' \( -name '.*' -o \( ! -xtype d \( -name '*.lock' -o -name '*.properties' \) \) \) \
+                  -exec cp -a -t "$dest" -- {} +
+              else
+                find "$src" -mindepth 1 -maxdepth 1 ! -name '.*' -xtype d -exec ln -s -t "$dest" -- {} +
+                find "$src" -mindepth 1 -maxdepth 1 ! -name '*.lck' \( -name '.*' -o ! -xtype d \) -exec cp -a -t "$dest" -- {} +
+              fi
             }
 
             if [[ -d "$ro_home/wrapper/dists" ]]; then
@@ -130,6 +133,19 @@ runs:
           printf '| `%s` | `%s` | %s | %s |\n' "$name" "$tasks" "${result:-unknown}" "${outcome:-unknown}" >>"$GITHUB_STEP_SUMMARY"
         }
 
+        # A grouped job (several components) keeps one Gradle daemon for all of its builds: the
+        # JVM, Gradle's and the plugins' classes and the file hashes stay warm, and outputs of
+        # builds they share (an included platform build) are already up to date for the next one.
+        # Every component is checked even after one fails, so a run reports all failures.
+        daemon_args=(--no-daemon)
+        last_gradlew=""
+        if (( $(jq 'length' <<<"$components") > 1 )); then
+          daemon_args=()
+          trap '[[ -z "$last_gradlew" ]] || (cd "$(dirname "$last_gradlew")" && ./gradlew --stop >/dev/null 2>&1) || true' EXIT
+        fi
+        failed=()
+        first_status=0
+
         while IFS= read -r component_json; do
           name="$(jq -r '.name' <<<"$component_json")"
           path="$(jq -r '.path' <<<"$component_json")"
@@ -151,9 +167,19 @@ runs:
           echo "==> Gradle component: $name ($tasks_string)"
           log="$(mktemp "${RUNNER_TEMP:-/tmp}/gradle-XXXXXX.log")"
           status=0
-          (cd "$component" && chmod +x ./gradlew && ./gradlew --no-daemon "${tasks[@]}") 2>&1 | tee "$log" || status=$?
+          chmod +x "$component/gradlew"
+          last_gradlew="$component/gradlew"
+          (cd "$component" && ./gradlew "${daemon_args[@]}" "${tasks[@]}") 2>&1 | tee "$log" || status=$?
           write_summary "$name" "$tasks_string" "$log"
           rm -f -- "$log"
-          (( status == 0 )) || exit "$status"
+          if (( status != 0 )); then
+            failed+=("$name")
+            (( first_status != 0 )) || first_status=$status
+          fi
           checked[$key]=1
         done < <(jq -c '.[]' <<<"$components")
+
+        if (( ${#failed[@]} > 0 )); then
+          echo "::error::Gradle checks failed for: ${failed[*]}"
+          exit "$first_status"
+        fi

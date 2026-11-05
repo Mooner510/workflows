@@ -654,17 +654,20 @@ runs:
                   package_manager_version: (.[0].package_manager_version // ""),
                   components: .
                 }),
-            # One job per JVM component: Gradle builds are the slowest checks, so they run in
-            # parallel, and each job keeps its own persistent cache volume (scoped by job name).
-            (map(select(.type == "java-kotlin"))[]
+            # Like the other languages, JVM components that share a toolchain (Java version, build
+            # tool, profile) share one CI job: job setup, toolchain, cache preparation and one Gradle
+            # daemon are paid once, and only affected components are in the group. Parallel jobs
+            # gave no speed-up on the shared runner host; they competed for its CPU and disk.
+            (map(select(.type == "java-kotlin"))
+              | group_by([(.java_version // "17"), .build_tool, .profile])[]
               | {
-                  target: ("Java " + (.java_version // "17") + " / " + .build_tool + (if .profile == "none" then "" else " / " + .profile end) + " (" + .name + ")"),
-                  display_name: ("Java " + (.java_version // "17") + " (" + .name + ")"),
+                  target: ("Java " + (.[0].java_version // "17") + " / " + .[0].build_tool + (if .[0].profile == "none" then "" else " / " + .[0].profile end)),
+                  display_name: ("Java " + (.[0].java_version // "17") + " (" + (if .[0].profile == "none" then .[0].build_tool else .[0].profile end) + ")"),
                   type: "java-kotlin",
-                  version: (.java_version // "17"),
-                  build_tool: .build_tool,
-                  profile: .profile,
-                  components: [.]
+                  version: (.[0].java_version // "17"),
+                  build_tool: .[0].build_tool,
+                  profile: .[0].profile,
+                  components: .
                 }),
             (map(select(.type == "python"))
               | group_by(.python_version)[]

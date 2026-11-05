@@ -9,9 +9,21 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        # The Gharp runner image ships an Android SDK with accepted licenses and sets ANDROID_HOME
+        # to it (gharp deploy/runner/Dockerfile). Use it in place: nothing is linked, copied or
+        # bootstrapped. It belongs to the runner user, so AGP can still install a package the
+        # image lacks; that install is job-local (the container layer), so keep the image's
+        # package list in step with what the projects compile against.
+        image_sdk="${ANDROID_HOME:-}"
         # Gharp mounts the job's persistent cache volume at /cache: writable on trusted
         # dev/master pushes, read-only on same-repository pull requests.
-        if [[ -d /cache && -w /cache ]]; then
+        if [[ -n "$image_sdk" && "$image_sdk" != /cache && "$image_sdk" != /cache/* \
+              && -f "$image_sdk/licenses/android-sdk-license" \
+              && -x "$image_sdk/cmdline-tools/latest/bin/sdkmanager" \
+              && -d "$image_sdk/platforms" && -w "$image_sdk" ]]; then
+          android_sdk="$image_sdk"
+          sdk_cache="runner image"
+        elif [[ -d /cache && -w /cache ]]; then
           android_sdk="/cache/android-sdk"
           sdk_cache="persistent (read-write)"
         elif [[ -d /cache/android-sdk/licenses && -r /cache/android-sdk ]]; then
