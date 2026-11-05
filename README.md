@@ -112,6 +112,7 @@ go_version / node_version / java_version / python_version
 package_manager
 build_tool / profile
 gradle_tasks / maven_goals
+ci_scripts        (node)
 
 migration_engine = goose | prisma | drizzle | flyway
 migration_path
@@ -126,6 +127,10 @@ postgres_test_env
 ```
 
 Gradle `java-kotlin` component가 watch하는 Gradle version catalog(`*.versions.toml`)만 바뀌었으면, detector는 base와 head의 catalog를 비교해 바뀐 alias(`version.ref` 연쇄와 bundle 포함)를 구하고 component path와 watch 경로의 build 파일이 그 접근자(`libs.<alias>`, `libs.plugins.*`, `libs.versions.*`, `libs.bundles.*`)를 쓸 때만 component를 affected로 둔다. 파싱 실패, catalog 추가·삭제, 알 수 없는 catalog 이름처럼 판정이 불확실하면 지금처럼 affected로 둔다(fail-safe). 규칙은 `.github/actions/ci/detect/catalog_impact.py` 참고.
+
+`java-kotlin` component는 다른 언어처럼 Java version, build tool, profile이 같으면 CI job 하나(`Java <version> (<profile>)`, profile이 없으면 build tool 이름)로 묶인다. 영향받은 component만 그 job에 들어간다. job 준비, JDK/SDK 준비, Gradle cache 준비는 한 번만 하고, component가 둘 이상이면 Gradle daemon 하나로 선언 순서대로 검사한다. 앞 component가 실패해도 나머지를 끝까지 검사한 뒤 실패한 component를 모아 실패로 끝난다. 묶는 기준은 CI(language check)뿐이며 Docker image·OCI artifact job은 지금처럼 service·artifact마다 따로 돈다.
+
+`node` component의 `ci_scripts`는 기본 검사(lint, type check, test, build)를 대신해 실행할 package script 목록이다(최대 8개, 중복 불가). 나열한 순서대로 실행하고, package.json에 없는 script가 있으면 실패한다. 생략하면 기본 검사를 그대로 한다.
 
 `python` component는 component path에 `pyproject.toml`과 `uv.lock`이 반드시 있어야 한다. `python_version`은 exact `x.y.z`만 허용하며 생략하면 workflows 전체 기본값 CPython `3.14.8`을 사용한다(Go처럼 전체가 하나의 기본 버전을 쓴다). Python component는 `postgres_test`를 지원하지 않으며 migration engine은 `goose`만 허용한다.
 
@@ -309,10 +314,12 @@ Node:
   type check
   test
   build
+  (ci_scripts를 선언하면 위 네 검사 대신 그 script만 실행)
 
 Java/Kotlin:
   centralized Gradle/Maven lifecycle
   optional Android/Spring Boot profile
+  Java version·build tool·profile이 같은 component는 job 하나와 Gradle daemon 하나를 공유
 
 Python:
   pinned uv 0.13.1 (release archive SHA-256 고정)

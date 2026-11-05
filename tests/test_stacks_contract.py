@@ -309,11 +309,13 @@ class DetectTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(json.loads(outputs["ci_groups_by_target"])["Python 3.14.8"]["postgres_required"])
 
-    def test_java_components_get_one_job_each(self):
+    def test_java_components_share_a_job_per_toolchain(self):
         workspace = Workspace(self)
         components = [
             {"name": "app-a", "type": "java-kotlin", "path": "a", "build_tool": "gradle", "profile": "android", "java_version": "21"},
             {"name": "app-b", "type": "java-kotlin", "path": "b", "build_tool": "gradle", "profile": "android", "java_version": "21"},
+            {"name": "api", "type": "java-kotlin", "path": "api", "build_tool": "gradle", "java_version": "21"},
+            {"name": "legacy", "type": "java-kotlin", "path": "legacy", "build_tool": "gradle", "profile": "android", "java_version": "17"},
         ]
         for component in components:
             workspace.write(f"{component['path']}/gradlew")
@@ -324,10 +326,13 @@ class DetectTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         groups = json.loads(outputs["ci_groups_by_target"])
-        self.assertEqual(sorted(groups), ["Java 21 / gradle / android (app-a)", "Java 21 / gradle / android (app-b)"])
-        group = groups["Java 21 / gradle / android (app-a)"]
-        self.assertEqual(group["display_name"], "Java 21 (app-a)")
-        self.assertEqual([component["name"] for component in group["components"]], ["app-a"])
+        self.assertEqual(sorted(groups), ["Java 17 / gradle / android", "Java 21 / gradle", "Java 21 / gradle / android"])
+        group = groups["Java 21 / gradle / android"]
+        self.assertEqual(group["display_name"], "Java 21 (android)")
+        self.assertEqual((group["type"], group["version"], group["build_tool"], group["profile"]), ("java-kotlin", "21", "gradle", "android"))
+        # Declaration order is kept, so a shared build listed first is checked first.
+        self.assertEqual([component["name"] for component in group["components"]], ["app-a", "app-b"])
+        self.assertEqual(groups["Java 21 / gradle"]["display_name"], "Java 21 (gradle)")
 
 
 class PersistentCacheTest(unittest.TestCase):
@@ -427,6 +432,51 @@ class PersistentCacheTest(unittest.TestCase):
     def test_android_sdk_uses_writable_cache_volume(self):
         self.cache.mkdir()
         _, outputs, env = self.run_step("ci/java-kotlin/profiles/android", "Prepare Android SDK paths")
+        self.assertEqual(env["ANDROID_HOME"], f"{self.cache}/android-sdk")
+        self.assertEqual(outputs["android_sdk_ready"], "false")
+
+    def image_sdk(self):
+        sdk = self.workspace.root / "opt/android-sdk"
+        sdkmanager = sdk / "cmdline-tools/latest/bin/sdkmanager"
+        sdkmanager.parent.mkdir(parents=True)
+        sdkmanager.write_text("#!/bin/sh\n", encoding="utf-8")
+        sdkmanager.chmod(0o755)
+        (sdk / "licenses").mkdir()
+        (sdk / "licenses/android-sdk-license").write_text("accepted\n", encoding="utf-8")
+        (sdk / "platforms/android-36").mkdir(parents=True)
+        return sdk
+
+    def run_android_with_image(self, sdk):
+        script = re.sub(r"/cache\b", str(self.cache), run_block("ci/java-kotlin/profiles/android", "Prepare Android SDK paths"))
+        result, outputs = self.workspace.run(
+            script, {"GITHUB_ENV": str(self.env_file), "HOME": str(self.workspace.root / "home"), "ANDROID_HOME": str(sdk)}
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result, outputs, read_outputs(self.env_file)
+
+    def test_android_sdk_from_runner_image_wins_in_every_cache_mode(self):
+        sdk = self.image_sdk()
+        for mode in ["none", "rw", "ro"]:
+            with self.subTest(mode=mode):
+                if mode == "rw":
+                    self.cache.mkdir(exist_ok=True)
+                if mode == "ro":
+                    (self.cache / "android-sdk/licenses").mkdir(parents=True, exist_ok=True)
+                    self.seal()
+                self.env_file.write_text("", encoding="utf-8")
+                result, outputs, env = self.run_android_with_image(sdk)
+                self.assertEqual(env["ANDROID_HOME"], str(sdk))
+                self.assertEqual(env["ANDROID_SDK_ROOT"], str(sdk))
+                self.assertEqual(outputs["android_sdk_ready"], "true")
+                self.assertIn("(cache: runner image)", result.stdout)
+        # Nothing was linked or copied into a job-local SDK.
+        self.assertFalse((self.workspace.temp / "android-sdk").exists())
+
+    def test_incomplete_image_sdk_falls_back_to_the_cache_volume(self):
+        sdk = self.image_sdk()
+        (sdk / "licenses/android-sdk-license").unlink()
+        self.cache.mkdir()
+        _, outputs, env = self.run_android_with_image(sdk)
         self.assertEqual(env["ANDROID_HOME"], f"{self.cache}/android-sdk")
         self.assertEqual(outputs["android_sdk_ready"], "false")
 
@@ -599,6 +649,133 @@ class PythonCITest(unittest.TestCase):
         result = self.run_ci(lambda path: (path / "uv.lock").unlink())
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("must contain uv.lock", result.stdout)
+
+
+def java_component(name, **extra):
+    component = {"name": name, "type": "java-kotlin", "path": name, "build_tool": "gradle", "profile": "android", "java_version": "21"}
+    component.update(extra)
+    return component
+
+
+class CiScriptsLoaderTest(unittest.TestCase):
+    def load(self, components):
+        workspace = Workspace(self)
+        for component in components:
+            workspace.write(f"{component['path']}/gradlew")
+            workspace.write(f"{component['path']}/package.json", "{}")
+        workspace.write(".github/stacks.yml", json.dumps({"version": 1, "components": components}))
+        return workspace.run(run_block("config/load", "Load project contract"))
+
+    def assert_fails(self, components, message):
+        result, _ = self.load(components)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(message, result.stdout)
+
+    def test_ci_scripts_are_kept(self):
+        result, outputs = self.load([{"name": "web", "type": "node", "path": "web", "ci_scripts": ["typecheck", "check:types"]}])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(outputs["components"])[0]["ci_scripts"], ["typecheck", "check:types"])
+
+    def test_ci_scripts_only_for_node(self):
+        self.assert_fails([java_component("app", ci_scripts=["build"])], "is not a node component")
+
+    def test_ci_scripts_shape(self):
+        for bad in [[], "typecheck", ["typecheck", "typecheck"], ["rm -rf"], [1], ["a"] * 9]:
+            with self.subTest(bad=bad):
+                self.assert_fails([{"name": "web", "type": "node", "path": "web", "ci_scripts": bad}], "ci_scripts must be")
+
+
+FAKE_GRADLEW = """#!/bin/bash
+echo "$(basename "$(pwd)") $*" >>"$GRADLEW_CALLS"
+[[ "$*" == --stop ]] && exit 0
+[[ -e fail ]] && { echo "BUILD FAILED in 1s"; exit 3; }
+echo "BUILD SUCCESSFUL in 1s"
+echo "2 actionable tasks: 2 executed"
+"""
+
+
+class GradleRunTest(unittest.TestCase):
+    def run_components(self, names, failing=()):
+        workspace = Workspace(self)
+        for name in names:
+            gradlew = workspace.write(f"{name}/gradlew", FAKE_GRADLEW)
+            gradlew.chmod(0o755)
+            if name in failing:
+                workspace.write(f"{name}/fail")
+        calls = workspace.root / "calls"
+        calls.write_text("", encoding="utf-8")
+        components = [java_component(name, gradle_tasks="compileDebugKotlin") for name in names]
+        result, _ = workspace.run(
+            run_block("ci/java-kotlin/build-tools/gradle", "Run Gradle checks"),
+            {"COMPONENTS_JSON": json.dumps(components), "PROFILE": "android", "GRADLEW_CALLS": str(calls)},
+        )
+        return result, calls.read_text(encoding="utf-8").splitlines()
+
+    def test_single_component_uses_a_single_use_daemon(self):
+        result, calls = self.run_components(["a"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(calls, ["a --no-daemon compileDebugKotlin"])
+
+    def test_group_shares_one_daemon_and_stops_it(self):
+        result, calls = self.run_components(["a", "b"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(calls, ["a compileDebugKotlin", "b compileDebugKotlin", "b --stop"])
+
+    def test_group_checks_every_component_before_failing(self):
+        result, calls = self.run_components(["a", "b", "c"], failing=("a", "c"))
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertEqual(calls, ["a compileDebugKotlin", "b compileDebugKotlin", "c compileDebugKotlin", "c --stop"])
+        self.assertIn("Gradle checks failed for: a c", result.stdout)
+
+
+FAKE_NODE = """#!/bin/bash
+# Only `node -e <has_script> <name>` is used: succeed when package.json defines the script.
+exec python3 -c 'import json, sys; sys.exit(0 if sys.argv[1] in json.load(open("package.json")).get("scripts", {}) else 1)' "${@: -1}"
+"""
+FAKE_PNPM = """#!/bin/bash
+echo "$*" >>"$NODE_CALLS"
+"""
+
+
+class NodeScriptsTest(unittest.TestCase):
+    def run_component(self, **extra):
+        workspace = Workspace(self)
+        scripts = {name: "true" for name in ["lint", "typecheck", "test", "build"]}
+        workspace.write("web/package.json", json.dumps({"scripts": scripts}))
+        bin_dir = workspace.root / "bin"
+        bin_dir.mkdir()
+        for tool, body in [("node", FAKE_NODE), ("pnpm", FAKE_PNPM)]:
+            (bin_dir / tool).write_text(body, encoding="utf-8")
+            (bin_dir / tool).chmod(0o755)
+        calls = workspace.root / "calls"
+        calls.write_text("", encoding="utf-8")
+        component = {"name": "web", "type": "node", "path": "web", "package_manager": "pnpm", **extra}
+        result, _ = workspace.run(
+            run_block("ci/node", "Run common Node checks"),
+            {
+                "COMPONENTS_JSON": json.dumps([component]),
+                "PACKAGE_MANAGER": "pnpm",
+                "NODE_CALLS": str(calls),
+                "PATH": f"{bin_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+            },
+        )
+        return result, calls.read_text(encoding="utf-8").splitlines()
+
+    def test_default_checks(self):
+        result, calls = self.run_component()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(calls, ["run lint", "run typecheck", "run test", "run build"])
+
+    def test_ci_scripts_replace_default_checks(self):
+        result, calls = self.run_component(ci_scripts=["typecheck"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(calls, ["run typecheck"])
+
+    def test_missing_ci_script_fails_before_running_any(self):
+        result, calls = self.run_component(ci_scripts=["typecheck", "compile"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("which package.json does not define", result.stdout)
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

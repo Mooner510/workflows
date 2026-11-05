@@ -162,6 +162,20 @@ runs:
           fi
 
           echo "==> Node component: $name ($PACKAGE_MANAGER)"
+          # ci_scripts replaces the default checks: exactly these scripts run, and each must exist.
+          if jq -e 'has("ci_scripts")' <<<"$component_json" >/dev/null; then
+            mapfile -t ci_scripts < <(jq -r '.ci_scripts[]' <<<"$component_json")
+            for script in "${ci_scripts[@]}"; do
+              [[ "$script" =~ ^[A-Za-z0-9][A-Za-z0-9:._-]*$ ]] || { echo "::error::Node component '$name' has an invalid ci_scripts entry '$script'."; exit 1; }
+              has_script "$component" "$script" || { echo "::error::Node component '$name' lists ci_scripts '$script', which package.json does not define."; exit 1; }
+            done
+            for script in "${ci_scripts[@]}"; do
+              run_script "$component" "$script"
+            done
+            checked[$component]=1
+            continue
+          fi
+
           if has_script "$component" lint; then
             run_script "$component" lint
           fi
