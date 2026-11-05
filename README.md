@@ -128,7 +128,7 @@ postgres_test_env
 
 Gradle `java-kotlin` component가 watch하는 Gradle version catalog(`*.versions.toml`)만 바뀌었으면, detector는 base와 head의 catalog를 비교해 바뀐 alias(`version.ref` 연쇄와 bundle 포함)를 구하고 component path와 watch 경로의 build 파일이 그 접근자(`libs.<alias>`, `libs.plugins.*`, `libs.versions.*`, `libs.bundles.*`)를 쓸 때만 component를 affected로 둔다. 파싱 실패, catalog 추가·삭제, 알 수 없는 catalog 이름처럼 판정이 불확실하면 지금처럼 affected로 둔다(fail-safe). 규칙은 `.github/actions/ci/detect/catalog_impact.py` 참고.
 
-`java-kotlin` component는 다른 언어처럼 Java version, build tool, profile이 같으면 CI job 하나(`Java <version> (<profile>)`, profile이 없으면 build tool 이름)로 묶인다. 영향받은 component만 그 job에 들어간다. job 준비, JDK/SDK 준비, Gradle cache 준비는 한 번만 하고, component가 둘 이상이면 Gradle daemon 하나로 선언 순서대로 검사한다. 앞 component가 실패해도 나머지를 끝까지 검사한 뒤 실패한 component를 모아 실패로 끝난다. 묶는 기준은 CI(language check)뿐이며 Docker image·OCI artifact job은 지금처럼 service·artifact마다 따로 돈다.
+`java-kotlin` component는 다른 언어처럼 Java version, build tool, profile이 같으면 CI job 하나(`Java <version> (<profile>)`, profile이 없으면 build tool 이름)로 묶인다. 영향받은 component만 그 job에 들어간다. job 준비, JDK/SDK 준비, Gradle cache 준비는 한 번만 하고, component는 선언 순서대로 각자 일회용 Gradle JVM(`--no-daemon`)에서 검사한다. daemon 하나를 여러 Android 빌드가 같이 쓰면 Metaspace가 부족해지기 때문이다. 앞 component가 실패해도 나머지를 끝까지 검사한 뒤 실패한 component를 모아 실패로 끝난다. 묶는 기준은 CI(language check)뿐이며 Docker image·OCI artifact job은 지금처럼 service·artifact마다 따로 돈다.
 
 `node` component의 `ci_scripts`는 기본 검사(lint, type check, test, build)를 대신해 실행할 package script 목록이다(최대 8개, 중복 불가). 나열한 순서대로 실행하고, package.json에 없는 script가 있으면 실패한다. 생략하면 기본 검사를 그대로 한다.
 
@@ -319,7 +319,7 @@ Node:
 Java/Kotlin:
   centralized Gradle/Maven lifecycle
   optional Android/Spring Boot profile
-  Java version·build tool·profile이 같은 component는 job 하나와 Gradle daemon 하나를 공유
+  Java version·build tool·profile이 같은 component는 job 하나를 공유(Gradle은 component마다 `--no-daemon`)
 
 Python:
   pinned uv 0.13.1 (release archive SHA-256 고정)
