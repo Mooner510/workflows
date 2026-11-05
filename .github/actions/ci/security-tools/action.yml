@@ -20,6 +20,19 @@ runs:
         tool_base="${GHARP_DEPENDENCY_CACHE:-${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}}/isolated-scanners"
         bin_dir="$tool_base/bin"
         mkdir -p "$bin_dir"
+        # Read-only jobs (same-repository pull requests) run the copy the trusted writer downloaded
+        # into the read-only cache in place instead of downloading it again.
+        ro_tool_cache=""
+        if [[ "${GHARP_CACHE_MODE:-}" == ro && -d /cache/tool ]]; then ro_tool_cache=/cache/tool; fi
+        ro_bin_dir="${ro_tool_cache:+$ro_tool_cache/isolated-scanners/bin}"
+        # link_ro NAME: link the read-only cache's scanner into bin_dir when this job has none.
+        link_ro() {
+          [[ -n "$ro_bin_dir" && ! -e "$bin_dir/$1" && -x "$ro_bin_dir/$1" ]] || return 0
+          ln -s "$ro_bin_dir/$1" "$bin_dir/$1"
+        }
+        link_ro osv-scanner
+        link_ro gitleaks
+        link_ro trivy
 
         osv_version="2.6.0"
         osv="$bin_dir/osv-scanner"
