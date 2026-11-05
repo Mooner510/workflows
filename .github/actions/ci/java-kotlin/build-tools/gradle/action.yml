@@ -133,16 +133,11 @@ runs:
           printf '| `%s` | `%s` | %s | %s |\n' "$name" "$tasks" "${result:-unknown}" "${outcome:-unknown}" >>"$GITHUB_STEP_SUMMARY"
         }
 
-        # A grouped job (several components) keeps one Gradle daemon for all of its builds: the
-        # JVM, Gradle's and the plugins' classes and the file hashes stay warm, and outputs of
-        # builds they share (an included platform build) are already up to date for the next one.
+        # Every component runs in its own single-use Gradle JVM, also in a grouped job. Sharing one
+        # daemon across builds keeps every build's plugin and Kotlin compiler classes loaded, and
+        # by the fourth Android build the daemon ran out of Metaspace. Up-to-date state and the
+        # build cache live on disk, so later builds still reuse what earlier ones produced.
         # Every component is checked even after one fails, so a run reports all failures.
-        daemon_args=(--no-daemon)
-        last_gradlew=""
-        if (( $(jq 'length' <<<"$components") > 1 )); then
-          daemon_args=()
-          trap '[[ -z "$last_gradlew" ]] || (cd "$(dirname "$last_gradlew")" && ./gradlew --stop >/dev/null 2>&1) || true' EXIT
-        fi
         failed=()
         first_status=0
 
@@ -168,8 +163,7 @@ runs:
           log="$(mktemp "${RUNNER_TEMP:-/tmp}/gradle-XXXXXX.log")"
           status=0
           chmod +x "$component/gradlew"
-          last_gradlew="$component/gradlew"
-          (cd "$component" && ./gradlew "${daemon_args[@]}" "${tasks[@]}") 2>&1 | tee "$log" || status=$?
+          (cd "$component" && ./gradlew --no-daemon "${tasks[@]}") 2>&1 | tee "$log" || status=$?
           write_summary "$name" "$tasks_string" "$log"
           rm -f -- "$log"
           if (( status != 0 )); then
