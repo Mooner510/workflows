@@ -144,7 +144,7 @@ runs:
             (keys - [
               "name","type","path","watch","watch_path","build_cache",
               "go_version","node_version","java_version","python_version","package_manager","build_tool","profile",
-              "gradle_tasks","maven_goals",
+              "gradle_tasks","maven_goals","ci_scripts",
               "migration_engine","migration_path","migration_schema","migration_config","goose_version",
               "postgres_test","postgres_database_env","postgres_test_args","postgres_test_env"
             ] | length) == 0
@@ -152,6 +152,20 @@ runs:
             echo "::error::Component '$name' contains unsupported project-local CI/CD controls."
             exit 1
           }
+
+          # ci_scripts: the package scripts a Node component runs instead of the default lint/typecheck/test/build.
+          if jq -e 'has("ci_scripts")' <<<"$component" >/dev/null; then
+            [[ "$type" == "node" ]] || { echo "::error::Component '$name' declares ci_scripts but is not a node component."; exit 1; }
+            jq -e '
+              (.ci_scripts | type) == "array"
+              and (.ci_scripts | length > 0 and length <= 8)
+              and all(.ci_scripts[]; type == "string" and test("^[A-Za-z0-9][A-Za-z0-9:._-]{0,63}$"))
+              and ((.ci_scripts | unique | length) == (.ci_scripts | length))
+            ' <<<"$component" >/dev/null || {
+              echo "::error::Component '$name' ci_scripts must be a non-empty array of at most 8 unique package script names."
+              exit 1
+            }
+          fi
 
           jq -e '(.watch == null) or ((.watch|type)=="array" and all(.watch[]; type=="string"))' <<<"$component" >/dev/null || {
             echo "::error::Component '$name' watch must be a string array."
