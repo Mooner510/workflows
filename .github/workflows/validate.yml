@@ -395,6 +395,7 @@ jobs:
             "$GITHUB_WORKSPACE/.github/workflows/project-ci.yml"
             "$GITHUB_WORKSPACE/.github/workflows/project-checks.yml"
             "$GITHUB_WORKSPACE/.github/workflows/go-format.yml"
+            "$GITHUB_WORKSPACE/.github/workflows/remote-deploy.yml"
           )
 
           for workflow in "${workflows[@]}"; do
