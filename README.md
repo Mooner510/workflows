@@ -14,6 +14,7 @@
 .github/workflows/project-ci.yml      # deployment-capable project CI + verified artifact publication
 .github/workflows/project-checks.yml  # non-deploy project CI
 .github/workflows/go-format.yml       # manual Go formatting/tidy maintenance
+.github/workflows/remote-deploy.yml   # manual dev deploy to a server outside this pipeline (SSH ForceCommand)
 ```
 
 Consumer는 위 reusable workflow만 호출한다. `.github/actions/**`는 central implementation detail이며 consumer가 직접 조립하지 않는다.
@@ -496,13 +497,48 @@ jobs:
     secrets: inherit
 ```
 
+### `remote-deploy.yml`
+
+이 파이프라인(gharp-deployer) 밖의 별도 서버에 있는 **dev 환경**으로, default branch 최신 commit을 수동 배포한다. Production은 다루지 않는다.
+
+- `workflow_dispatch`에서만 실행한다. dispatch한 ref와 상관없이 default branch HEAD를 checkout한다.
+- `require_ci`(기본 true): 그 commit의 `ci.yml` push run이 성공해야 한다.
+- 원격 계정은 sshd `ForceCommand`로 `check <revision>`(0 배포 필요, 3 이미 배포됨)과 `deploy <revision> <파일> <sha256>`(stdin artifact)만 받는다. 3이면 배포를 거부하고 run을 실패로 끝낸다.
+- `build_command`는 repository root에서 실행하고 `RELEASE_REVISION`·`RELEASE_SHORT`를 받는다. 결과는 `artifact_glob`에 정확히 하나 맞아야 한다.
+- secret은 `REMOTE_DEPLOY_SSH_KEY`(원격 계정 개인키)만 명시적으로 넘긴다. `known_hosts`는 고정한 host 공개키다.
+
+```yaml
+name: Deploy dev
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  deploy:
+    uses: Mooner510/workflows/.github/workflows/remote-deploy.yml@v1
+    with:
+      build_command: ./gradlew --no-daemon serverPackArchive -Pversion="0.1.0-$RELEASE_SHORT"
+      artifact_glob: build/distributions/*.tgz
+      java_version: "25"
+      target_host: ssh.example.net
+      target_user: example-ci
+      known_hosts: |
+        ssh.example.net ssh-ed25519 AAAA...
+    secrets:
+      REMOTE_DEPLOY_SSH_KEY: ${{ secrets.REMOTE_DEPLOY_SSH_KEY }}
+```
+
 Production용 `.github/workflows/deploy.yml`은 만들지 않는다. Consumer workflow에 repository-local deployment implementation이나 direct central composite-action 조립을 추가하지 않는다.
 
 ## Runner
 
 Private personal/organization repositories는 모두 Gharp의 disposable repository-scoped JIT runner를 사용한다. 상주형 personal/organization self-hosted runner는 canonical execution plane이 아니다.
 
-Central validation은 `project-ci.yml`, `project-checks.yml`, `go-format.yml`의 self-hosted job이 `self-hosted`, `linux`, run-scoped `gharp-*` label을 함께 요구하는지 검사한다.
+Central validation은 `project-ci.yml`, `project-checks.yml`, `go-format.yml`, `remote-deploy.yml`의 self-hosted job이 `self-hosted`, `linux`, run-scoped `gharp-*` label을 함께 요구하는지 검사한다.
 
 각 job은 generic `[self-hosted, linux]`만으로 배정하지 않고 run-scoped Gharp label을 함께 요구한다.
 

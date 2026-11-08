@@ -1,0 +1,249 @@
+name: Remote Dev Deploy
+
+# 수동(workflow_dispatch) 트리거로 default branch 최신 commit을 빌드해, 이 파이프라인 밖의 원격 서버
+# dev 환경에 SSH로 넘긴다. 원격 쪽 계정은 sshd ForceCommand로 아래 두 명령만 받아야 한다.
+#
+#   check  <revision>                         0: 배포 필요, 3: 이미 그 commit이 배포됨(거부)
+#   deploy <revision> <파일 이름> <sha256>     stdin으로 artifact를 받아 적용. 3이면 이미 배포됨
+#
+# production 배포는 다루지 않는다. 원격 쪽이 dev만 허용하도록 권한을 제한한다.
+
+on:
+  workflow_call:
+    inputs:
+      build_command:
+        description: Repository-root shell command that builds exactly one artifact. RELEASE_REVISION and RELEASE_SHORT are set.
+        required: true
+        type: string
+      artifact_glob:
+        description: Repository-relative glob that must match exactly one built file.
+        required: true
+        type: string
+      java_version:
+        description: Temurin JDK to install before building. Empty skips Java setup.
+        required: false
+        type: string
+        default: ''
+      target_host:
+        description: Remote SSH host.
+        required: true
+        type: string
+      target_port:
+        description: Remote SSH port.
+        required: false
+        type: number
+        default: 22
+      target_user:
+        description: Remote SSH account restricted by ForceCommand.
+        required: true
+        type: string
+      known_hosts:
+        description: Pinned known_hosts lines (public host keys) for target_host.
+        required: true
+        type: string
+      require_ci:
+        description: Require a successful push run of .github/workflows/ci.yml for the revision.
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      REMOTE_DEPLOY_SSH_KEY:
+        description: Private SSH key of target_user (ed25519).
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: remote-deploy-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy dev
+    runs-on: [self-hosted, linux, "gharp-deploy-${{ github.run_id }}-${{ github.run_attempt }}"]
+    timeout-minutes: 60
+    steps:
+      - name: Require manual dispatch
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          [[ "$EVENT_NAME" == "workflow_dispatch" ]] || {
+            echo "::error::Remote dev deploy runs only from workflow_dispatch (got $EVENT_NAME)."
+            exit 1
+          }
+
+      - name: Checkout default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Resolve revision
+        id: rev
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          revision="$(git rev-parse HEAD)"
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Unexpected revision '$revision'."; exit 1; }
+          {
+            echo "revision=$revision"
+            echo "short=${revision:0:7}"
+          } >>"$GITHUB_OUTPUT"
+          echo "==> $DEFAULT_BRANCH @ $revision"
+          echo "### Deploy $DEFAULT_BRANCH @ \`${revision:0:7}\`" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Require successful CI
+        if: inputs.require_ci
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ steps.rev.outputs.revision }}
+        run: |
+          set -euo pipefail
+          command -v jq >/dev/null || { echo "::error::jq is required on the runner."; exit 1; }
+          url="https://api.github.com/repos/$REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$REVISION&event=push&per_page=20"
+          runs="$(curl -fsSL --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$url")"
+          if jq -e '[.workflow_runs[] | select(.conclusion == "success")] | length > 0' <<<"$runs" >/dev/null; then
+            echo "==> CI succeeded for $REVISION"
+            exit 0
+          fi
+          if jq -e '[.workflow_runs[] | select(.status != "completed")] | length > 0' <<<"$runs" >/dev/null; then
+            echo "::error::CI for $REVISION is still running. Dispatch again after it succeeds."
+          else
+            echo "::error::No successful push CI run for $REVISION."
+          fi
+          exit 1
+
+      - name: Prepare SSH
+        id: ssh
+        shell: bash
+        env:
+          SSH_KEY: ${{ secrets.REMOTE_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ inputs.known_hosts }}
+          TARGET_HOST: ${{ inputs.target_host }}
+          TARGET_PORT: ${{ inputs.target_port }}
+          TARGET_USER: ${{ inputs.target_user }}
+        run: |
+          set -euo pipefail
+          [[ -n "$SSH_KEY" ]] || { echo "::error::REMOTE_DEPLOY_SSH_KEY is empty."; exit 1; }
+          [[ "$TARGET_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "::error::Invalid target_host."; exit 1; }
+          [[ "$TARGET_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "::error::Invalid target_user."; exit 1; }
+          [[ "$TARGET_PORT" =~ ^[0-9]+$ ]] || { echo "::error::Invalid target_port."; exit 1; }
+          grep -qE '^[^#[:space:]]+ (ssh-ed25519|ecdsa-sha2-nistp256|ssh-rsa) ' <<<"$KNOWN_HOSTS" || {
+            echo "::error::known_hosts must contain at least one pinned host key."
+            exit 1
+          }
+          dir="$RUNNER_TEMP/remote-deploy-ssh"
+          install -d -m 700 "$dir"
+          (umask 077 && printf '%s\n' "$SSH_KEY" >"$dir/key")
+          printf '%s\n' "$KNOWN_HOSTS" >"$dir/known_hosts"
+          cat >"$dir/config" <<EOF
+          Host remote-deploy-target
+            HostName $TARGET_HOST
+            Port $TARGET_PORT
+            User $TARGET_USER
+            IdentityFile $dir/key
+            IdentitiesOnly yes
+            BatchMode yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile $dir/known_hosts
+            ConnectTimeout 20
+            ServerAliveInterval 30
+            ServerAliveCountMax 6
+          EOF
+          echo "config=$dir/config" >>"$GITHUB_OUTPUT"
+
+      - name: Refuse already deployed revision
+        shell: bash
+        env:
+          SSH_CONFIG: ${{ steps.ssh.outputs.config }}
+          REVISION: ${{ steps.rev.outputs.revision }}
+        run: |
+          set -euo pipefail
+          set +e
+          ssh -F "$SSH_CONFIG" remote-deploy-target "check $REVISION"
+          code=$?
+          set -e
+          case "$code" in
+            0) ;;
+            3)
+              echo "::error::dev already runs ${REVISION:0:7}. Deploy refused."
+              echo "Refused: dev already runs \`${REVISION:0:7}\`." >>"$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+            *) echo "::error::Remote check failed (exit $code)."; exit 1 ;;
+          esac
+
+      - name: Set up Java
+        if: inputs.java_version != ''
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+
+      - name: Build artifact
+        id: build
+        shell: bash
+        env:
+          BUILD_COMMAND: ${{ inputs.build_command }}
+          ARTIFACT_GLOB: ${{ inputs.artifact_glob }}
+          RELEASE_REVISION: ${{ steps.rev.outputs.revision }}
+          RELEASE_SHORT: ${{ steps.rev.outputs.short }}
+        run: |
+          set -euo pipefail
+          # Trusted dispatch jobs get a writable persistent cache at /cache. Others build from scratch.
+          if [[ -d /cache && -w /cache ]]; then
+            export GRADLE_USER_HOME=/cache/gradle
+          fi
+          bash -euo pipefail -c "$BUILD_COMMAND"
+          shopt -s nullglob
+          # shellcheck disable=SC2206 # the glob is intentionally expanded
+          matches=($ARTIFACT_GLOB)
+          (( ${#matches[@]} == 1 )) || {
+            echo "::error::artifact_glob must match exactly one file (matched ${#matches[@]}): ${matches[*]:-none}"
+            exit 1
+          }
+          file="${matches[0]}"
+          [[ -f "$file" && ! -L "$file" ]] || { echo "::error::Artifact is not a regular file: $file"; exit 1; }
+          name="$(basename "$file")"
+          [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "::error::Unsafe artifact name: $name"; exit 1; }
+          sum="$(sha256sum "$file" | cut -d' ' -f1)"
+          {
+            echo "path=$file"
+            echo "name=$name"
+            echo "sha256=$sum"
+          } >>"$GITHUB_OUTPUT"
+          echo "==> $name ($(stat -c %s "$file") bytes, sha256 $sum)"
+          echo "Artifact: \`$name\` sha256 \`$sum\`" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy to remote dev
+        shell: bash
+        env:
+          SSH_CONFIG: ${{ steps.ssh.outputs.config }}
+          REVISION: ${{ steps.rev.outputs.revision }}
+          ARTIFACT_PATH: ${{ steps.build.outputs.path }}
+          ARTIFACT_NAME: ${{ steps.build.outputs.name }}
+          ARTIFACT_SHA256: ${{ steps.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          set +e
+          ssh -F "$SSH_CONFIG" remote-deploy-target "deploy $REVISION $ARTIFACT_NAME $ARTIFACT_SHA256" <"$ARTIFACT_PATH"
+          code=$?
+          set -e
+          case "$code" in
+            0) echo "Deployed \`${REVISION:0:7}\` to dev." >>"$GITHUB_STEP_SUMMARY" ;;
+            3) echo "::error::dev already runs ${REVISION:0:7}. Deploy refused."; exit 1 ;;
+            *) echo "::error::Remote deploy failed (exit $code)."; exit 1 ;;
+          esac
+
+      - name: Remove SSH key
+        if: always()
+        shell: bash
+        run: rm -rf -- "$RUNNER_TEMP/remote-deploy-ssh"
