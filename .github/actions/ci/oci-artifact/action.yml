@@ -26,6 +26,9 @@ runs:
     - name: Set up isolated BuildKit
       uses: Mooner510/workflows/.github/actions/ci/buildkit@v1
 
+    - name: Prepare Trivy cache
+      uses: Mooner510/workflows/.github/actions/ci/trivy-cache@v1
+
     - name: Build, scan, and package OCI artifact
       id: build
       shell: bash
@@ -127,6 +130,13 @@ runs:
         trivy_expected="2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
         trivy_root="${GHARP_DEPENDENCY_CACHE:-${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}}/trivy/$trivy_version"
         trivy="$trivy_root/trivy"
+        # Read-only jobs (same-repository pull requests) run the copy the trusted writer downloaded
+        # into the read-only cache in place instead of downloading it again.
+        ro_tool_cache=""
+        if [[ "${GHARP_CACHE_MODE:-}" == ro && -d /cache/tool ]]; then ro_tool_cache=/cache/tool; fi
+        if [[ ! -x "$trivy" && -n "$ro_tool_cache" && -x "$ro_tool_cache/trivy/$trivy_version/trivy" ]]; then
+          trivy="$ro_tool_cache/trivy/$trivy_version/trivy"
+        fi
         if [[ ! -x "$trivy" ]]; then
           trivy_archive="$(mktemp "$RUNNER_TEMP/trivy-XXXXXX.tar.gz")"
           trap 'rm -f "$trivy_archive"' EXIT

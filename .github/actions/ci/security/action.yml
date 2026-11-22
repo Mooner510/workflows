@@ -73,6 +73,9 @@ runs:
     - name: Set up pinned security scanners
       uses: Mooner510/workflows/.github/actions/ci/security-tools@v1
 
+    - name: Prepare Trivy cache
+      uses: Mooner510/workflows/.github/actions/ci/trivy-cache@v1
+
     - name: Resolve unique scan targets
       id: targets
       shell: bash

@@ -69,6 +69,10 @@ runs:
           cache_root="${GHARP_DEPENDENCY_CACHE:-${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}}/goose/$version/$arch"
           binary="$cache_root/goose"
           if [[ -x "$binary" ]]; then printf '%s' "$binary"; return; fi
+          # Read-only jobs run the trusted writer's verified download in place.
+          if [[ "${GHARP_CACHE_MODE:-}" == ro && -x "/cache/tool/goose/$version/$arch/goose" ]]; then
+            printf '%s' "/cache/tool/goose/$version/$arch/goose"; return
+          fi
           mkdir -p "$cache_root"
           tmp="$(mktemp -d)"
           curl "${curl_args[@]}" "https://github.com/pressly/goose/releases/download/$version/checksums.txt" -o "$tmp/checksums.txt"

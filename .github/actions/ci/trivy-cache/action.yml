@@ -1,0 +1,46 @@
+name: Prepare Trivy cache
+description: Point Trivy at a persistent cache so scans stop downloading and unpacking its vulnerability DB on every job.
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare Trivy cache
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Trivy keeps its vulnerability DB (about 1 GB unpacked) and its misconfiguration checks
+        # bundle in its cache directory, so a job-local cache downloads and unpacks both on every
+        # scan. Trusted writers (rw) keep the cache on the persistent volume; Trivy refreshes the
+        # DB there when it is due. Scan results themselves are not cached (memory backend), so the
+        # persistent cache does not grow with every scanned image.
+        cache_dir="${GHARP_DEPENDENCY_CACHE:-${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}}/trivy-cache"
+        mkdir -p "$cache_dir"
+        {
+          echo "TRIVY_CACHE_DIR=$cache_dir"
+          echo "TRIVY_CACHE_BACKEND=memory"
+        } >>"$GITHUB_ENV"
+
+        # Read-only jobs (same-repository pull requests) read the trusted writer's DB in place:
+        # Trivy opens it read-only, so a link replaces the download. A DB older than
+        # max_age_hours is not reused; Trivy then downloads a fresh one into the job-local cache.
+        # The Java DB (sqlite) is not linked: it is only fetched for images that contain jars.
+        ro_cache=/cache/tool/trivy-cache
+        max_age_hours=72
+        if [[ "${GHARP_CACHE_MODE:-}" == ro && -f "$ro_cache/db/trivy.db" && -f "$ro_cache/db/metadata.json" && ! -e "$cache_dir/db" ]]; then
+          updated="$(jq -r '.UpdatedAt // empty' "$ro_cache/db/metadata.json" 2>/dev/null || true)"
+          updated_epoch="$(date -u -d "$updated" +%s 2>/dev/null || echo 0)"
+          age_hours=$(( ($(date -u +%s) - updated_epoch) / 3600 ))
+          if [[ -n "$updated" ]] && (( updated_epoch > 0 && age_hours <= max_age_hours )); then
+            ln -s "$ro_cache/db" "$cache_dir/db"
+            echo "TRIVY_SKIP_DB_UPDATE=true" >>"$GITHUB_ENV"
+            echo "==> Trivy DB: linked to read-only cache (updated $updated)"
+          else
+            echo "==> Trivy DB: read-only cache is older than ${max_age_hours}h (${updated:-unknown}); downloading"
+          fi
+          if [[ -f "$ro_cache/policy/metadata.json" && ! -e "$cache_dir/policy" ]]; then
+            ln -s "$ro_cache/policy" "$cache_dir/policy"
+            echo "TRIVY_SKIP_CHECK_UPDATE=true" >>"$GITHUB_ENV"
+            echo "==> Trivy checks bundle: linked to read-only cache"
+          fi
+        fi
+        echo "==> Trivy cache: $cache_dir"
